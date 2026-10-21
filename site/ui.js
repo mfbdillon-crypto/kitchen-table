@@ -487,8 +487,8 @@
     const T = S().turn;
     const landUsed = T.active && T.lands && T.lands[KEY] >= 1;
     return [
-      land ? { label: landUsed ? 'Play land (you already played one this turn)' : 'Play land', fn: () => G.playLand(c.id), disabled: landUsed || (T.active && T.active !== KEY) }
-        : { label: S().prio && S().prio.holder === KEY ? 'Cast in response' : 'Cast', fn: () => castFlow(c, 'hand') },
+      land ? { label: landUsed ? 'Play land (already played one this turn)' : 'Play land', fn: () => G.playLand(c.id), disabled: !!(T.active && T.active !== KEY) }
+        : { label: S().prio && S().prio.holder === KEY && R.stackTop(S()) ? 'Cast in response' : 'Cast', fn: () => castFlow(c, 'hand') },
       two && land ? { label: `Play the back face (${c.d.faces[1].n})`, fn: () => G.fromHand([c.id], 'battlefield', { backFace: true, playLand: true }) } : null,
       !land ? { label: 'Cast face down (morph, disguise…)', fn: () => G.fromHand([c.id], 'stack', { faceDown: true }) } : null,
       { label: G.isRevealed(c.id) ? 'Stop revealing' : 'Reveal to everyone', fn: () => G.toggleReveal(c.id) },
@@ -870,7 +870,6 @@
     );
     if (COARSE || innerWidth < 760) {
       const all = () => [
-        { label: 'Invite players', fn: inviteModal },
         me ? { label: 'New game ▸', sub: newGameMenu() } : null,
         { label: 'Decks', fn: () => deckManager() },
         me ? { label: 'Tokens', fn: () => tokenModal() } : null,
@@ -1132,6 +1131,7 @@
   // ======================= hand bar =======================
   function handBar() {
     const P = G.P, me = G.me();
+    if (!me && S().kicked && S().kicked[KEY]) return h('div', { id: 'hand', class: 'spect' }, h('span', null, 'The host removed you from this table. You can keep watching; you can sit down again when a new game starts.'));
     if (!me) return h('div', { id: 'hand', class: 'spect' }, h('span', null, 'You’re watching. '), h('button', { class: 'primary', onclick: nameModal }, 'Take a seat'));
     const bar = h('div', { id: 'hand', class: COARSE ? 'drawer' + (G.drawerOpen ? ' open' : '') : '' });
     if (COARSE) bar.append(h('button', { class: 'handle', onclick: () => { G.drawerOpen = !G.drawerOpen; render(); } }, `Hand (${P.hand.length}) ${G.drawerOpen ? '▾' : '▴'}`));
@@ -1266,7 +1266,7 @@
       const p = S().players[pid]; if (!p) { b.append(h('p', null, 'That AI left the table.')); return; }
       b.append(h('h4', null, 'Skill'), h('div', { class: 'skills' }, SKILLS.map(([k, l, d]) => h('button', { class: 'skill' + (p.ai && p.ai.skill === k ? ' on' : ''), onclick: () => { aiPost(a.id, { t: 'skill', v: k }); G.toast(`${p.name} will play on ${l}.`); setTimeout(refreshModal, 1500); } }, h('b', null, l), h('span', null, d)))));
       b.append(h('h4', null, 'Deck'), h('p', { class: 'muted small' }, `Playing ${p.deckName || '—'}. Choosing another deck restarts its side of the game.`),
-        h('div', { class: 'aidecks' }, G.decks().map(d => h('button', { class: 'dk', onclick: () => { aiPost(a.id, { t: 'deck', deck: Object.assign({}, d, { mat: null }) }); G.toast(`${p.name} switches to ${d.name}.`); closeModal(); } }, h('img', { src: d.sleeve || BACK, alt: '' }), h('span', null, h('b', null, d.name))))));
+        h('div', { class: 'aidecks' }, G.decks().map(d => h('button', { class: 'dk' + (d.name === p.deckName ? ' on' : ''), title: d.name === p.deckName ? 'Playing this deck now' : '', onclick: () => { aiPost(a.id, { t: 'deck', deck: Object.assign({}, d, { mat: null }) }); G.toast(`${p.name} switches to ${d.name}.`); closeModal(); } }, h('img', { src: d.sleeve || BACK, alt: '' }), h('span', null, h('b', null, d.name))))));
       b.append(h('div', { class: 'row' }, h('button', { class: 'ghost danger', onclick: () => choose(`Remove ${p.name}?`, `${p.name} leaves the table and its cards go with it.`, [{ label: 'Remove', primary: true, fn: () => { aiPost(a.id, { t: 'remove' }); closeModal(); G.toast(`${p.name} is leaving the table.`); } }, { label: 'Cancel', fn: () => {} }]) }, 'Remove this AI')));
     }, { live: true });
   }
@@ -1277,13 +1277,15 @@
     const time = t => new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
     const lastSay = {}; for (const m of s.aichat || []) if (m.kind === 'say') lastSay[m.pid] = m.id;
     const list = h('div', { class: 'loglist aichat', 'data-scroll': 'aichat' }, (s.aichat || []).length ? (s.aichat || []).map(m => h('div', { class: 'cm ' + m.kind + (m.pid === KEY ? ' mine' : '') },
-      h('div', { class: 'cmh' }, h('b', null, m.pid === KEY ? 'You' : nameOf(m.pid)), m.kind === 'q' && m.to ? h('span', { class: 'muted' }, ' → ' + nameOf(m.to)) : null, h('time', null, time(m.t))),
+      h('div', { class: 'cmh' }, h('b', null, m.pid === KEY ? 'You' : (s.players[m.pid] ? nameOf(m.pid) : m.name || 'A player who left')), m.kind === 'q' && m.to ? h('span', { class: 'muted' }, ' → ' + (s.players[m.to] ? nameOf(m.to) : m.toName || 'a player who left')) : null, h('time', null, time(m.t))),
       h('div', { class: 'cmt' }, m.text),
       m.kind === 'a' && m.why && m.why.length ? h('ul', { class: 'why' }, m.why.map(w => h('li', null, w))) : null,
       m.kind === 'say' && m.why && m.why.length && s.players[m.pid] && s.players[m.pid].ai && G.seated() ? h('button', { class: 'ghost small legal' + (lastSay[m.pid] === m.id ? ' latest' : ''), onclick: () => G.act({ type: 'aiAsk', to: m.pid, text: 'Is this legal?', re: m.id }) }, 'Is this legal?') : null))
       : h('p', { class: 'muted' }, ais.length ? 'The AI explains its moves here.' : 'No AI players yet.'));
     // Follow new messages only while you're reading the latest ones (scrolling up to read stays put).
-    list.addEventListener('scroll', () => { G.aiStick = list.scrollTop + list.clientHeight >= list.scrollHeight - 40; });
+    let touched = false;
+    for (const ev of ['wheel', 'touchstart', 'pointerdown', 'keydown']) list.addEventListener(ev, () => { touched = true; }, { passive: true });
+    list.addEventListener('scroll', () => { if (touched) G.aiStick = list.scrollTop + list.clientHeight >= list.scrollHeight - 40; });
     setTimeout(() => { if (G.aiStick !== false) list.scrollTop = list.scrollHeight; }, 0);
     let to = G.aiAskTo && ais.includes(G.aiAskTo) ? G.aiAskTo : ais[0];
     const inp = h('input', { type: 'text', id: 'aiask', value: G.aiDraft || '', placeholder: ais.length ? 'Ask the AI — “Is that legal?”, “Why attack me?”…' : 'Add an AI player first', disabled: !ais.length || !G.seated(), oninput: e => { G.aiDraft = e.target.value; } });
@@ -1392,7 +1394,7 @@
     const toggle = h('button', { class: 'ghost small', onclick: () => { st.open = !st.open; area.hidden = !st.open; toggle.textContent = st.open ? 'Hide the paste box' : 'Paste a deck list instead'; if (st.open) area.focus(); } }, st.open ? 'Hide the paste box' : 'Paste a deck list instead');
     wrap.append(h('div', { class: 'imhead' }, 'Import a deck from Moxfield'),
       h('div', { class: 'row imrow' }, link, h('button', { class: 'primary', onclick: go }, 'Import')),
-      st.fail && moxUrl() ? h('button', { class: 'small', onclick: () => window.open(moxUrl(), '_blank', 'noopener') }, 'Open the deck on Moxfield ↗') : null,
+      st.fail && moxUrl() ? h('button', { class: 'small', onclick: () => window.open(moxUrl(), '_blank', 'noopener') }, 'Open the deck on Moxfield ↗') : '',
       toggle, area, btn);
     return wrap;
   }

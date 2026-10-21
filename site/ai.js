@@ -56,9 +56,18 @@
       const m = C.manaSource(c);
       if (!m || m.sac) continue;
       if (isCreature(c) && R.sick(S(), c) && !kw(c).has('haste')) continue;
-      out.push({ id: c.id, amount: m.amount, colors: m.colors, units: m.units, name: cn(c) });
+      let colors = m.colors;
+      // Command Tower, Arcane Signet: only my commander's colors (903.4).
+      if (/commander's color identity/i.test(C.text(c))) { const ci = myIdentity(); if (ci) colors = ci || 'C'; }
+      out.push({ id: c.id, amount: m.amount, colors, units: m.units, name: cn(c) });
     }
     return out;
+  }
+  function myIdentity() {
+    const cm = Object.values(S().cards).filter(c => c.cmdr && c.owner === ME());
+    if (!cm.length) return null;
+    const set = new Set(); for (const c of cm) { for (const x of (c.d && (c.d.ci || c.d.col)) || C.colorsOf(c)) set.add(x); }
+    return [...set].filter(x => 'WUBRG'.includes(x)).join('');
   }
   const manaAvailable = () => sources().reduce((a, s) => a + s.amount, 0);
   function costFor(c) {
@@ -507,6 +516,13 @@
     }
     if (faq) return { text: faq[1] };
     if (/(legal|allowed|cheat|illegal)/.test(t) && lastWhy) return { text: `My last move was: “${lastWhy.text}” I checked the rules before doing it:`, why: lastWhy.why.length ? lastWhy.why : ['It didn’t need any special permission.'] };
+    const card = cardInQuestion(t);
+    if (card) {
+      const nm = cn(card), tl = R.typeLine(card), k = kw(card);
+      if (/\b(block|blocks)\b/.test(t) && /(fly|flier|flyer|flying)/.test(t)) return { text: isCreature(card) ? (k.has('flying') || k.has('reach') ? `Yes — ${nm} has ${k.has('reach') ? 'reach' : 'flying'}, so it can block creatures with flying (702.9b).` : `No — ${nm} has neither flying nor reach, so it can’t block a creature with flying (702.9b).`) : `${nm} isn’t a creature, so it can’t block.` };
+      if (/(instant|when can|during (my|your|their|an?|the)|cast it|in response|at instant speed|flash)/.test(t)) return { text: C.instantSpeed(card) ? `${nm} is ${/instant/i.test(tl) ? 'an instant' : 'a card with flash'}, so it can be cast any time its controller has priority — including on another player’s turn or in response (117.1a).` : `${nm} is a ${tl.toLowerCase()}, so it can be cast only in its controller’s own main phase while the stack is empty (307.1).` };
+      if (/(trigger|ability|does|what)/.test(t)) return { text: `${nm} — ${tl}: ${C.text(card).replace(/\n/g, ' ').slice(0, 320)}` };
+    }
     if (/(mana|untapped|lands)/.test(t)) {
       const src = sources();
       return { text: `I have ${src.reduce((a, x) => a + x.amount, 0)} mana available right now${src.length ? ': ' + src.map(x => `${x.name} ({${x.colors.split('').join('/')}})`).join(', ') : ''}.` };
@@ -517,9 +533,17 @@
     if (/(attack|block)/.test(t) && lastCombat) return { text: lastCombat };
     if (/(skill|level|difficulty|how good)/.test(t)) return { text: `I’m playing on ${skill()} — ${skill() === 'easy' ? 'I play loosely and don’t respond to spells' : skill() === 'normal' ? 'I play on curve, make sensible attacks and blocks, and sometimes counter big spells' : 'I look for lethal, hold up answers, and make careful trades'}. The player who added me can change it.` };
     if (/\b(hi|hello|hey|good game|gg)\b/.test(t)) return { text: 'Hello! Good luck — ask me anything about what I’m doing or about the rules.' };
-    return { text: 'I’m the table’s built-in rules engine, so I can answer things like “Is that legal?”, “Why did you attack Alex?”, “How much mana do you have?” or “What does trample do?”.' };
+    const someone = nameOf(opps()[0] || s.seats.find(p => p !== ME()) || ME());
+    return { text: `I’m the table’s built-in rules engine, so I can answer things like “Is that legal?”, “Why did you attack ${someone}?”, “How much mana do you have?”, “Is Lightning Bolt an instant?” or “What does trample do?”.` };
   }
   let lastCombat = '';
+  // A card the question names: anything on the table, in a graveyard, on the stack, or in my hand (longest name wins).
+  function cardInQuestion(t) {
+    const pool = Object.values(S().cards).filter(c => !c.faceDown && c.d).concat(hand());
+    let best = null;
+    for (const c of pool) { const n = cn(c).toLowerCase(); if (n.length > 3 && t.includes(n) && (!best || n.length > cn(best).length)) best = c; else { const short = n.split(',')[0]; if (short.length > 4 && t.includes(short) && !best) best = c; } }
+    return best;
+  }
   function planText() {
     const s = S(), T = s.turn;
     if (!T.active) return 'Waiting for the game to start.';
@@ -658,7 +682,8 @@
       const blocks = planBlocks();
       const r = await G.block(blocks);
       if (r.ok) {
-        lastCombat = blocks.length ? `I blocked ${blocks.map(b => `${cn(s.cards[b.att])} with ${cn(s.cards[b.id])}`).join(', ')} — ${skill() === 'easy' ? 'it looked fun' : 'those blocks either kill the attacker, survive, or keep me alive'}.` : 'I didn’t block — none of my blocks were worth it.';
+        const canAny = creaturesOf(ME()).some(b => !b.tapped && Object.keys(K.att).some(id => s.cards[id] && !C.blockProblem(s, b, s.cards[id])));
+        lastCombat = blocks.length ? `I blocked ${blocks.map(b => `${cn(s.cards[b.att])} with ${cn(s.cards[b.id])}`).join(', ')} — ${skill() === 'easy' ? 'it looked fun' : 'those blocks either kill the attacker, survive, or keep me alive'}.` : canAny ? 'I didn’t block — none of my blocks were worth it.' : 'I didn’t block — I had no creatures that could block.';
         say(lastCombat, ['Declare blockers step, and these creatures are attacking me (509.1).', 'Each blocker is untapped and blocks only one attacker.', 'Flying attackers were only blocked by creatures with flying or reach; menace attackers by two or more.']);
       }
       return true;
@@ -677,7 +702,7 @@
     const s = S(), T = s.turn, ph = PH[T.phase];
     const key = s.gameId + ':' + T.n;
     // Turn 1: let everyone draw and keep an opening hand first (103.5) — up to a minute and a half.
-    if (T.n === 1 && s.seats.some(p => p !== ME() && !s.players[p].lost && s.players[p].handCount === 0 && s.players[p].libCount > 0)) {
+    if (T.n === 1 && s.seats.some(p => p !== ME() && !s.players[p].lost && s.players[p].libCount > 0 && (s.players[p].handCount === 0 || !s.players[p].kept))) {
       if (!openWaitSince) { openWaitSince = Date.now(); say('I’ll wait for everyone to draw and keep their opening hands before I start.'); return true; }
       if (Date.now() - openWaitSince < 90000) return false;
     }

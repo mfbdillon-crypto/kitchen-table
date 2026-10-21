@@ -114,7 +114,7 @@ window.KTPhone = (function () {
           h('img', { src: img(c), alt: c.d.n }),
           h('div', { class: 'pacts' },
             h('b', null, c.d.n),
-            c.land ? b('Play land', 'land', 'primary') : b(info.prio && info.prio.mine ? 'Cast in response' : 'Cast', 'cast', 'primary'),
+            c.land ? b('Play land', 'land', 'primary') : b(info.prio && info.prio.mine && !info.prio.step ? 'Cast in response' : 'Cast', 'cast', 'primary'),
             h('div', { class: 'pmove' }, 'Move to'),
             b('Battlefield', 'battlefield'),
             b('Battlefield, tapped', 'tapped'),

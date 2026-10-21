@@ -179,6 +179,7 @@
     P.phase = 'deciding'; P.mull = 0;
     savePriv();
     log(`drew an opening hand of ${P.hand.length}`);
+    if (me() && me().kept) act({ type: 'player', patch: { kept: false } });
   };
 
   G.mulligan = function () {
@@ -198,6 +199,7 @@
     if (n > 0) { P.phase = 'bottom'; P.bottomN = Math.min(n, P.hand.length); savePriv(); return; }
     P.phase = 'kept'; savePriv();
     log(`kept their opening hand of ${P.hand.length}`);
+    act({ type: 'player', patch: { kept: true } });
     autoDraw();
   };
 
@@ -207,6 +209,7 @@
     P.phase = 'kept'; P.bottomN = 0;
     savePriv();
     log(`kept ${P.hand.length} cards and put ${plural(cards.length, 'card')} on the bottom of their library`);
+    act({ type: 'player', patch: { kept: true } });
     autoDraw();
   };
 
@@ -526,6 +529,15 @@
     }
   }
 
+  // When the game starts, everyone's opening hand is dealt for them; they then keep or mulligan (103.5).
+  function autoOpening() {
+    const s = G.S; if (MODE === 'hand' || !s || !s.turn || !s.turn.active || !me() || me().lost) return;
+    if (P.phase !== 'none' || P.hand.length || !P.library.length || !P.deckId) return;
+    if (s.turn.n > 1 || G._opened === s.gameId) return;
+    G._opened = s.gameId;
+    G.openingHand();
+    if (MODE !== 'ai' && G.toast) G.toast('Here’s your opening hand — keep it or take a mulligan.', 'info');
+  }
   function autoDraw() {
     const T = G.S.turn;
     // The draw step happened, even if the turn skipped ahead (e.g. a land played from upkeep moved it to main).
@@ -597,7 +609,7 @@
     }
     if (me()) {
       if (!G.phone && MODE === 'table') G.startPhoneLink(true); // always ready for your phone once you're seated
-      processInbox(); processTodo(); identify(); autoDraw(); scheduleCounts(); commanderCheck(); zeroCheck();
+      processInbox(); processTodo(); identify(); autoOpening(); autoDraw(); scheduleCounts(); commanderCheck(); zeroCheck();
       if (!me().deckName && P.deckId) act({ type: 'deck', name: P.deckName, sleeveRev: Date.now() });
     }
     notify(s);

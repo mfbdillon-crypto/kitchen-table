@@ -1,1 +1,1 @@
-v4.4 2026-10-21T16:33:52Z AI audit fixes: no self-kills, lethal cmdr/poison blocks, legal sacrifices, protection, more triggers, Karoo lands
+v4.5 2026-10-21T16:42:59Z opening hands dealt at start, AI waits for keeps, chat fixes, deck list fixes

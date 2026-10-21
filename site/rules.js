@@ -537,6 +537,7 @@
             for (const [k, v] of Object.entries(p.cmdDmg)) { const n = num(v, 0, 999); if (n) me.cmdDmg[k.slice(0, 40)] = n; else delete me.cmdDmg[k]; }
           }
           if (p.phone !== undefined) me.phone = !!p.phone;
+          if (p.kept !== undefined) me.kept = !!p.kept;
           alertChecks(s, pid);
           checkLoss(s, notes); fixUp(s, notes); for (const n of notes) log(s, null, n, 'auto');
           s.rev++; return { ok: true };
@@ -1295,7 +1296,7 @@
 
   function chat(s, m) {
     s.aichat = s.aichat || [];
-    s.aichat.push(Object.assign({ id: rid(6), t: Date.now() }, m));
+    s.aichat.push(Object.assign({ id: rid(6), t: Date.now(), name: m.pid && s.players[m.pid] ? s.players[m.pid].name : undefined, toName: m.to && s.players[m.to] ? s.players[m.to].name : undefined }, m));
     if (s.aichat.length > 160) s.aichat.splice(0, s.aichat.length - 160);
   }
 
