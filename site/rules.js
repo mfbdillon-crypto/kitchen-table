@@ -525,6 +525,7 @@
           }
           if (p.phone !== undefined) me.phone = !!p.phone;
           alertChecks(s, pid);
+          checkLoss(s, notes); fixUp(s, notes); for (const n of notes) log(s, null, n, 'auto');
           s.rev++; return { ok: true };
         }
         case 'table': {
@@ -658,6 +659,7 @@
             if (src.tapped) return { ok: false, err: `${cardName(src)} is already tapped.` };
             if (sick(s, src)) return { ok: false, err: `${cardName(src)} hasn’t been under your control since your turn began, so it can’t use {T} abilities yet (summoning sickness, 302.6).` };
           }
+          if (ab.equip && (s.turn.active !== pid || stackCards(s).length || !/^Main/.test(PHASES[s.turn.phase]))) return { ok: false, err: 'Equip only as a sorcery: in your main phase with an empty stack (702.6a).' };
           if (ab.loyalty !== undefined) {
             const have = (src.counters || {}).loyalty || 0;
             if (s.turn.active !== pid || stackCards(s).length || !/^Main/.test(PHASES[s.turn.phase])) return { ok: false, err: 'Loyalty abilities can be activated only in your main phase with an empty stack (606.3).' };
@@ -713,7 +715,7 @@
             if (sick(s, c) && !kw.has('haste')) return { ok: false, err: `${cardName(c)} hasn’t been under your control since your turn began and doesn’t have haste, so it can’t attack yet (summoning sickness, 302.6).` };
             if (kw.has('defender') || kw.has("can't attack")) return { ok: false, err: `${cardName(c)} can’t attack.` };
             let def = null;
-            if (it.p && s.players[it.p] && it.p !== pid) def = { p: it.p };
+            if (it.p && s.players[it.p] && it.p !== pid && alive(s, it.p)) def = { p: it.p };
             else if (it.c && s.cards[it.c] && s.cards[it.c].zone === 'battlefield' && s.cards[it.c].ctrl !== pid && (isType(s.cards[it.c], 'planeswalker') || isType(s.cards[it.c], 'battle'))) def = { c: it.c };
             if (!def) return { ok: false, err: 'Choose an opponent (or their planeswalker) to attack.' };
             att[c.id] = { def, blk: [] };
@@ -764,6 +766,21 @@
           else log(s, pid, 'didn’t block');
           if (K.waiting.every(p => K.ok[p] || !live(s, p))) combatDamage(s, notes);
           remember(); sba(s, notes); for (const n of notes) log(s, null, n, 'auto'); s.rev++; return { ok: true };
+        }
+        case 'lose': {
+          need();
+          lose(s, pid, a.why === 'concede' ? 'conceded' : 'drew from an empty library (704.5b)', notes);
+          remember(); for (const n of notes) log(s, null, n, 'auto'); s.rev++; return { ok: true };
+        }
+        case 'unlose': {
+          // A mistake (life typed wrong…): put a player back in once their totals are fine again.
+          need();
+          const P = s.players[a.pid || pid];
+          if (!P || !P.lost) return { ok: true };
+          if (P.life <= 0 || P.poison >= 10 || Object.values(P.cmdDmg || {}).some(v => v >= 21)) return { ok: false, err: `Fix ${P.name}’s life, poison or commander damage first.` };
+          delete P.lost;
+          if (s.winner && s.seats.filter(p => alive(s, p)).length > 1) s.winner = null;
+          return done(`put ${P.name} back in the game`);
         }
         case 'todoAck': {
           need();
@@ -845,12 +862,35 @@
       if (!s.legend[key]) log(s, list[0].ctrl, `controls two copies of the legendary ${cardName(list[0])} — keep one and put the other into the graveyard (legend rule)`, 'alert');
     }
     s.legend = now;
+    checkLoss(s, notes);
   }
 
   // ======================= stack, priority, resolving =======================
   const PI = name => PHASES.indexOf(name);
   // Online, or only just dropped (a reload or a host change takes a few seconds — don't skip them for that).
-  const live = (s, p) => { const P = s.players[p]; return !!P && (P.online !== false || Date.now() - (P.offAt || 0) < 9000); };
+  const live = (s, p) => { const P = s.players[p]; return !!P && !P.lost && (P.online !== false || Date.now() - (P.offAt || 0) < 9000); };
+  const alive = (s, p) => !!(s.players[p] && !s.players[p].lost);
+  // 704.5a / 704.5c / 903.10a: a player with 0 or less life, 10 poison counters or 21 damage from one commander loses.
+  function checkLoss(s, notes) {
+    for (const pid of s.seats) {
+      const P = s.players[pid];
+      if (!P || P.lost) continue;
+      let why = null;
+      if (P.life <= 0) why = `has ${P.life} life (704.5a)`;
+      else if (P.poison >= 10) why = `has ${P.poison} poison counters (704.5c)`;
+      else { const cd = Object.entries(P.cmdDmg || {}).find(([, v]) => v >= 21); if (cd) why = `took ${cd[1]} combat damage from ${s.cards[cd[0]] ? cardName(s.cards[cd[0]]) : 'one commander'} (903.10a)`; }
+      if (why) lose(s, pid, why, notes);
+    }
+  }
+  function lose(s, pid, why, notes) {
+    const P = s.players[pid]; if (!P || P.lost) return;
+    P.lost = { why: String(why).slice(0, 120), t: Date.now() };
+    log(s, pid, `lost the game — ${P.lost.why}`, 'alert');
+    const left = s.seats.filter(p => alive(s, p));
+    if (s.seats.length >= 2 && left.length === 1 && !s.winner) { s.winner = left[0]; log(s, left[0], 'wins the game!', 'alert'); }
+    if (s.combat && !s.combat.done) { delete s.combat.ok[pid]; s.combat.waiting = s.combat.waiting.filter(p => p !== pid); for (const [id, x] of Object.entries(s.combat.att)) if (x.def.p === pid) delete s.combat.att[id]; }
+    if (s.turn.active === pid && left.length >= 1 && !s.winner) { s.prio = null; for (const c of Object.values(s.cards)) if (c.zone === 'stack' && c.ctrl === pid) { if (c.ab || c.token) delete s.cards[c.id]; } passTurn(s, pid, notes, () => ({ ok: true })); }
+  }
   function stackCards(s) { return Object.values(s.cards).filter(c => c.zone === 'stack').sort((a, b) => a.seq - b.seq); }
   function stackTop(s) { const st = stackCards(s); return st[st.length - 1] || null; }
   // Summoning sickness (302.6): it came under this player's control this turn.
@@ -1035,7 +1075,7 @@
       c.dmg = (c.dmg || 0) + n;
     };
     for (const e of effects) {
-      const T = pick(e.ti);
+      const T = e.tis ? [].concat(...e.tis.map(pick)) : pick(e.ti);
       switch (e.k) {
         case 'dmg': {
           const n = val(e.n);
@@ -1055,6 +1095,7 @@
         case 'reanimate': for (const t of T) { const c = tcard(t); if (!c) continue; moveOne(s, c, 'battlefield', 'top', { by, tapped: e.tapped }, notes); notes.push(`${srcName} returned ${cardName(c)} to the battlefield`); } break;
         case 'counter': for (const t of T) { const c = tcard(t); if (!c || c.zone !== 'stack') continue; const nm = cardName(c); if (c.ab || c.token) delete s.cards[c.id]; else moveOne(s, c, 'graveyard', 'top', null, notes); notes.push(`${srcName} countered ${nm}`); } break;
         case 'pump': for (const t of T) { const c = tcard(t); if (!c) continue; const p = /x/.test(e.p) ? Math.sign(parseInt(e.p + '1', 10)) * X : parseInt(e.p, 10), q = /x/.test(e.t) ? Math.sign(parseInt(e.t + '1', 10)) * X : parseInt(e.t, 10); c.mod = [(c.mod ? c.mod[0] : 0) + p, (c.mod ? c.mod[1] : 0) + q]; grant(c, e.kws); notes.push(`${cardName(c)} got ${p >= 0 ? '+' : ''}${p}/${q >= 0 ? '+' : ''}${q} until end of turn`); } break;
+        case 'attachSrc': { const eq = src.ab && s.cards[src.ab.src]; const t = T[0] && tcard(T[0]); if (eq && t && eq.zone === 'battlefield' && eq.ctrl === by && t.id !== eq.id) { eq.attachedTo = t.id; notes.push(`${cardName(eq)} is now attached to ${cardName(t)}`); } break; }
         case 'grant': for (const t of T) { const c = tcard(t); if (!c) continue; grant(c, e.kws); notes.push(`${cardName(c)} gained ${e.kws} until end of turn`); } break;
         case 'pumpAll': { const p = parseInt(e.p, 10), q = parseInt(e.t, 10); for (const c of Object.values(s.cards)) if (c.zone === 'battlefield' && c.ctrl === by && (c.faceDown || isType(c, 'creature'))) { c.mod = [(c.mod ? c.mod[0] : 0) + p, (c.mod ? c.mod[1] : 0) + q]; grant(c, e.kws); } notes.push(`creatures ${nameOf(s, by)} controls got ${e.p}/${e.t} until end of turn`); break; }
         case 'grantAll': { for (const c of Object.values(s.cards)) if (c.zone === 'battlefield' && c.ctrl === by) grant(c, e.kws); notes.push(`${nameOf(s, by)}’s permanents gained ${e.kws} until end of turn`); break; }
@@ -1188,13 +1229,14 @@
 
   function passTurn(s, pid, notes, done) {
     const T = s.turn;
-    if (stackCards(s).length) return { ok: false, err: 'Wait until everything on the stack has resolved.' };
+    if (stackCards(s).length && alive(s, T.active)) return { ok: false, err: 'Wait until everything on the stack has resolved.' };
     clearMods(s);
     // 514.2: damage wears off and "until end of turn" effects end.
     for (const c of Object.values(s.cards)) { c.dmg = 0; c.dtd = false; c.grant = null; }
     s.combat = null; s.prio = null; T.lands = {};
     const idx = s.seats.indexOf(T.active);
-    const next = s.seats[(idx + 1) % s.seats.length];
+    let next = s.seats[(idx + 1) % s.seats.length];
+    for (let k = 2; k <= s.seats.length && !alive(s, next); k++) next = s.seats[(idx + k) % s.seats.length];
     T.active = next; T.n++; T.phase = 0;
     // 502.3: the active player untaps their permanents during the untap step.
     let n = 0;
@@ -1241,5 +1283,5 @@
 
   root.Rules = { PHASES, ROWS, PUBLIC_ZONES, KEYWORD_COUNTERS, SUGGESTED_COUNTERS, MAX_SEATS, START_LIFE,
     newState, apply, canAct, zoneCards, cardName, typeLine, isType, face, rowFor, ptOf, rid, listNames, nameOf,
-    stackCards, stackTop, sick, fixUp: (s) => { const key = () => JSON.stringify([s.prio && [s.prio.holder, s.prio.top, s.prio.passed.length], s.combat && s.combat.done, stackCards(s).length]); const before = key(); const notes = []; fixUp(s, notes); for (const n of notes) log(s, null, n, 'auto'); return notes.length > 0 || key() !== before; }, landCheck: (s, pid) => landCheck(JSON.parse(JSON.stringify(s)), pid), PI };
+    stackCards, stackTop, sick, alive, fixUp: (s) => { const key = () => JSON.stringify([s.prio && [s.prio.holder, s.prio.top, s.prio.passed.length], s.combat && s.combat.done, stackCards(s).length]); const before = key(); const notes = []; fixUp(s, notes); for (const n of notes) log(s, null, n, 'auto'); return notes.length > 0 || key() !== before; }, landCheck: (s, pid) => landCheck(JSON.parse(JSON.stringify(s)), pid), PI };
 })(typeof window !== 'undefined' ? window : globalThis);

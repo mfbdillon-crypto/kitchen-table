@@ -286,7 +286,7 @@
     if (!t) return false;
     if (t.p) {
       if (!req.kinds.includes('player')) return false;
-      if (!s.players[t.p]) return false;
+      if (!s.players[t.p] || s.players[t.p].lost) return false;
       if (req.ctrl === 'opp' && t.p === by) return false;
       if (req.ctrl === 'you' && t.p !== by) return false;
       return true;
@@ -370,6 +370,7 @@
       } else if ((m = s.match(/^destroy (target|up to (?:one|two|three) target|two target) /))) { out.push({ k: 'destroy', ti: t0, all: /two target|up to/.test(m[1]) }); hit = true; }
       else if ((m = s.match(/^destroy all ([a-z ',]+?)$/)) || (m = s.match(/^destroy each ([a-z ',]+?)$/))) { out.push({ k: 'destroyAll', what: m[1] }); hit = true; }
       else if ((m = s.match(/^exile (target|up to one target|another target) /))) { out.push({ k: 'exile', ti: t0 }); hit = true; }
+      else if ((m = s.match(/^attach this to target creature you control$/))) { out.push({ k: 'attachSrc', ti: t0 }); hit = true; }
       else if ((m = s.match(/^exile all ([a-z ',]+?)$/))) { out.push({ k: 'exileAll', what: m[1] }); hit = true; }
       else if ((m = s.match(/^return (?:target|up to one target|another target) [a-z ,']*? to (?:its|their) owner(?:'s|s'|s)? hands?$/))) { out.push({ k: 'bounce', ti: t0 }); hit = true; }
       else if ((m = s.match(/^its controller gains life equal to its power$/))) { out.push({ k: 'lifeEqPow', ti: t0 - 1 }); hit = true; }
@@ -407,6 +408,8 @@
       else if ((m = s.match(/^(target player|target opponent|each opponent) discards (a|one|two|three|\d+) cards?$/))) { out.push({ k: 'discard', n: toNum(m[2]), who: m[1], ti: m[1].startsWith('target') ? t0 : null }); hit = true; }
       else if ((m = s.match(/^(each opponent|target player|target opponent) sacrifices (a|an|one|two) ([a-z ]+?)$/))) { out.push({ k: 'sacrifice', n: toNum(m[2]), what: m[3], who: m[1], ti: m[1].startsWith('target') ? t0 : null }); hit = true; }
       else if (/^(shuffle|then shuffle|it can't be regenerated|they can't be regenerated|this spell can't be countered|this spell costs|choose one|you may|its controller|that player|if )/.test(s)) { hit = true; }
+      // "Destroy target artifact, target creature, target enchantment, and target land": one effect, several targets.
+      if (nT > 1) for (const e of out) if (e.ti === t0 && ['destroy', 'exile', 'bounce', 'tap', 'untap', 'dmg'].includes(e.k) && e.ti2 == null && !e.tis) e.tis = Array.from({ length: nT }, (_, k) => t0 + k);
       ti = carried ? ti : t0 + nT;
       if (!hit) understood = false;
     }
@@ -432,6 +435,11 @@
       if (!m) continue;
       if (/^add\b/i.test(m[2])) continue;           // mana abilities don't use the stack
       out.push({ cost: m[1].trim(), tap: /\{T\}/.test(m[1]), sac: /sacrifice this/i.test(m[1]), mana: parseCost(m[1].replace(/\{T\}|\{Q\}/g, '')), text: m[2].trim() });
+    }
+    // Equip {N}: attach to a creature you control, only as a sorcery (702.6).
+    for (const line of lines(c)) {
+      const m = line.match(/^equip(?: [a-z ]+)? ((?:\{[^}]+\})+)/i);
+      if (m && !/^equip\b[^{]*—/i.test(line)) out.push({ cost: 'Equip ' + m[1], equip: true, tap: false, sac: false, mana: parseCost(m[1]), text: 'Attach this to target creature you control.' });
     }
     // Planeswalker loyalty abilities: "+1: …", "−3: …"
     if (isType(c, 'planeswalker')) for (const line of lines(c)) {

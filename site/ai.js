@@ -70,11 +70,11 @@
   const HARM = ['dmg', 'destroy', 'exile', 'bounce', 'tap', 'counter', 'discard', 'sacrifice', 'mill'];
   const HELP = ['pump', 'grant', 'counters', 'untap', 'gyToHand', 'reanimate'];
   function intentFor(card, eff, i) {
-    const es = eff.effects.filter(e => e.ti === i || e.ti2 === i || e.forTargetCtrl === i);
+    const es = eff.effects.filter(e => e.ti === i || e.ti2 === i || e.forTargetCtrl === i || (e.tis && e.tis.includes(i)));
     if (es.some(e => e.k === 'bite' || e.k === 'fight')) return es.some(e => e.ti === i) ? 'mine-fighter' : 'theirs';
     if (es.some(e => e.k === 'life' && e.sign < 0) || es.some(e => HARM.includes(e.k))) return 'theirs';
     if (es.some(e => e.k === 'draw' || (e.k === 'life' && e.sign > 0))) return 'me';
-    if (es.some(e => HELP.includes(e.k))) return 'mine';
+    if (es.some(e => HELP.includes(e.k) || e.k === 'attachSrc')) return 'mine';
     const t = C.text(card).toLowerCase();
     if (/enchanted creature (gets [+]|has )/.test(t)) return 'mine';
     if (/enchanted creature (gets -|can't|doesn't untap|loses)/.test(t)) return 'theirs';
@@ -207,6 +207,7 @@
   }
   async function cast(p, when) {
     const s = S();
+    const why = whyCast(p, when);          // before casting: commander tax goes up once it's cast
     if (p.pay.length) { const r = await G.tap(p.pay, true); if (!r.ok) return false; }
     const opts = { tg: p.tg, mode: p.mode, x: p.x };
     let r;
@@ -215,7 +216,7 @@
     if (!r || !r.ok) return false;
     const tgt = p.desc.length ? ` targeting ${R.listNames(p.desc)}` : '';
     const how = C.isPermanentCard(p.card) ? '' : explainEffect(p);
-    say(`I cast ${cn(p.card)}${tgt}.${how ? ' ' + how : ''}`, whyCast(p, when));
+    say(`I cast ${cn(p.card)}${tgt}.${how ? ' ' + how : ''}`, why);
     return true;
   }
   function explainEffect(p) {
@@ -290,6 +291,7 @@
     for (const c of mineC) {
       if (held.has(c.id)) continue;
       if (ptOf(c)[0] <= 0) continue;
+      if (sk !== 'easy' && C.manaSource(c) && ptOf(c)[0] <= 1) continue;      // keep mana creatures home for mana
       const defs = sk === 'easy' ? [targets[Math.floor(Math.random() * targets.length)]] : order;
       let chosen = null, safe = false;
       for (const p of defs) {
@@ -477,6 +479,12 @@
       return false;
     }
     if (me.ai && cfg.skill && me.ai.skill !== cfg.skill) { await G.act({ type: 'aiMeta', skill: cfg.skill }); return true; }
+    if (s.winner && !tried.has('gg:' + s.gameId)) { tried.add('gg:' + s.gameId); say(s.winner === ME() ? 'Good game — thanks for playing! Press Rematch for another.' : `Good game, ${nameOf(s.winner)}!`); return true; }
+    if (me.lost || s.winner) {
+      // Still answer questions after the game.
+      const q = (s.aichat || []).find(m => m.kind === 'q' && m.to === ME() && !answered.has(m.id));
+      if (!q) return false;
+    }
     // Questions for me.
     for (const q of (s.aichat || []).filter(m => m.kind === 'q' && m.to === ME() && !answered.has(m.id))) {
       answered.add(q.id);
@@ -583,6 +591,20 @@
         const ok = await cast(pick, 'main');
         if (ok) return true;
       }
+      // Equipment: put unattached equipment on my best creature.
+      if (skill() !== 'easy') for (const eq of mine('battlefield').filter(c => R.isType(c, 'equipment') && !(c.attachedTo && S().cards[c.attachedTo] && S().cards[c.attachedTo].zone === 'battlefield'))) {
+        if (tried.has(key + ':eq:' + eq.id)) continue;
+        tried.add(key + ':eq:' + eq.id);
+        const abs = C.abilities(eq); const i = abs.findIndex(x => x.equip);
+        if (i < 0) continue;
+        const best = creaturesOf(ME()).sort((x, y) => value(y) + (canAttack(y) ? 2 : 0) - value(x) - (canAttack(x) ? 2 : 0))[0];
+        if (!best) continue;
+        const pay = C.pay(abs[i].mana, sources(), 0);
+        if (!pay) continue;
+        if (pay.length) await G.tap(pay, true);
+        const r = await G.activate(eq.id, i, [[{ c: best.id }]]);
+        if (r.ok) { say(`I equip ${cn(eq)} to ${cn(best)}.`, [`${abs[i].cost}: equip only as a sorcery — it’s my main phase and the stack is empty (702.6a).`, `Paid by tapping ${R.listNames(pay.map(id => cn(S().cards[id])))}.`, `${cn(best)} is a creature I control.`]); return true; }
+      }
       // Planeswalkers: use a plus ability once per turn.
       for (const pw of mine('battlefield').filter(c => R.isType(c, 'planeswalker'))) {
         if (tried.has(key + ':pw:' + pw.id) || (T.loyal || {})[pw.id] === T.n) continue;
@@ -651,7 +673,12 @@
         if (tried.has(tk)) continue;
         tried.add(tk);
         const eff = C.effectsIn(tr.text);
-        if (!eff.understood || !eff.effects.length) { say(`${cn(c)} has a triggered ability I can’t carry out by myself (“${tr.text}”), so I’m skipping it.`); return true; }
+        if (!eff.understood || !eff.effects.length) {
+          const once = 'skip:' + S().gameId + ':' + cn(c) + ':' + i;
+          if (tried.has(once)) continue;
+          tried.add(once);
+          say(`${cn(c)} has a triggered ability I can’t carry out by myself (“${tr.text}”), so I’ll skip it this game. If it matters, its effect can be done by hand.`); return true;
+        }
         const reqs = C.targetsIn(tr.text);
         let tg = [], desc = [];
         if (reqs.length) {

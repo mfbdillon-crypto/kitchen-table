@@ -219,7 +219,7 @@
     savePriv();
     if (got.length) log(why || `drew ${plural(got.length, 'card')}`);
     // 704.5b: drawing from an empty library loses the game.
-    if (got.length < n) act({ type: 'log', alert: true, text: 'tried to draw from an empty library and loses the game (704.5b)' });
+    if (got.length < n) act({ type: 'lose', why: 'empty library' });
   };
 
   const UNTIL = {

@@ -639,8 +639,11 @@
     if (!P || !top || !G.seated()) return null;
     const what = `${top.ctrl === KEY ? 'You' : nameOf(top.ctrl)} ${top.ab ? 'activated ' + top.ab.name : 'cast ' + R.cardName(top)}${targetsTxt(top)}`;
     if (P.holder === KEY) {
+      const auto = G.LS.get('kt:autopass', false);
+      if (auto && !canRespond()) { if (G._autoFor !== P.top + ':' + P.since) { G._autoFor = P.top + ':' + P.since; setTimeout(() => { const q = S().prio; if (q && q.holder === KEY && q.top === P.top) G.pass(); }, 900); } }
       return h('div', { class: 'prio mine', role: 'alert' }, h('span', { class: 'pring' }),
-        h('div', { class: 'ptext' }, h('b', null, 'Respond? '), what + '. ', h('span', { class: 'muted' }, 'Cast an instant or use an ability now — or pass and let it resolve.')),
+        h('div', { class: 'ptext' }, h('b', null, 'Respond? '), what + '. ', h('span', { class: 'muted' }, auto && !canRespond() ? 'You have nothing to respond with — passing…' : 'Cast an instant or use an ability now — or pass and let it resolve.')),
+        h('label', { class: 'apass', title: 'Pass automatically when you have no instants, flash cards or abilities you could use' }, h('input', { type: 'checkbox', checked: auto, onchange: e => { G.LS.set('kt:autopass', e.target.checked); render(); } }), ' Auto-pass when I can’t respond'),
         h('button', { class: 'primary', onclick: () => G.pass() }, 'Pass'));
     }
     const waited = Date.now() - (P.since || 0);
@@ -650,6 +653,23 @@
       top.ctrl === KEY && (waited > 45000 || (hp && !hp.online)) ? h('button', { onclick: () => G.act({ type: 'resolveNow' }) }, 'Resolve it anyway') : null);
   }
   setInterval(() => { if (S() && S().prio && G.seated()) G.render(); }, 5000);
+  // Could I do anything at instant speed? (an instant/flash card in hand, or an untapped permanent with an ability)
+  function canRespond() {
+    if (G.P.hand.some(c => CD.instantSpeed(handCard(c)))) return true;
+    return Object.values(S().cards).some(c => c.zone === 'battlefield' && c.ctrl === KEY && !c.faceDown && CD.abilities(c).some(a => !a.equip && a.loyalty === undefined && !(a.tap && c.tapped)));
+  }
+
+  // ======================= game over =======================
+  function winBar() {
+    const s = S(), me = G.me();
+    const lost = me && me.lost;
+    if (!s.winner && !lost) return null;
+    if (s.winner) return h('div', { class: 'winbar', role: 'alert' }, h('div', null, h('b', null, s.winner === KEY ? '🏆 You win!' : `🏆 ${nameOf(s.winner)} wins the game!`), ' ', h('span', { class: 'muted' }, s.seats.filter(p => s.players[p].lost).map(p => `${nameOf(p)} ${s.players[p].lost.why}`).join(' · '))),
+      h('div', { class: 'row wrap' }, me ? h('button', { class: 'primary', onclick: () => G.act({ type: 'newGame', rematch: true }) }, 'Rematch') : null, me ? h('button', { onclick: () => G.act({ type: 'newGame' }) }, 'New game') : null,
+        lost && me.life > 0 ? h('button', { class: 'ghost', onclick: () => G.act({ type: 'unlose' }) }, 'That was a mistake — put me back in') : null));
+    return h('div', { class: 'winbar out' }, h('div', null, h('b', null, 'You’re out of this game'), ' — ', me.lost.why, '. You can keep watching.'),
+      me.life > 0 && me.poison < 10 ? h('button', { class: 'ghost', onclick: () => G.act({ type: 'unlose' }) }, 'That was a mistake — put me back in') : null);
+  }
 
   // ======================= combat: attackers and blockers =======================
   // G.combatPick = { kind: 'attack', sel: {id: def}, def } | { kind: 'block', pairs: {blockerId: attackerId}, cur }
@@ -877,6 +897,7 @@
       me ? { label: 'Change my name…', fn: nameModal } : { label: 'Take a seat', fn: nameModal },
       me ? { label: 'Untap everything I control', fn: untapAll } : null,
       { sep: true },
+      me && s.turn.active && !me.lost ? { label: 'Concede this game…', fn: () => choose('Concede', 'You’ll be out of this game (you can keep watching).', [{ label: 'Concede', primary: true, fn: () => G.act({ type: 'lose', why: 'concede' }) }, { label: 'Cancel', fn: () => {} }]) } : null,
       me ? { label: 'Leave my seat…', fn: () => choose('Leave seat', 'Your cards leave the table.', [{ label: 'Leave', primary: true, fn: () => G.act({ type: 'leave' }) }, { label: 'Cancel', fn: () => {} }]) } : null,
       ...s.seats.filter(p => !s.players[p].online && p !== KEY).map(p => ({ label: `Remove ${nameOf(p)} (offline)`, fn: () => G.act({ type: 'removeSeat', pid: p }) })),
       ...s.seats.filter(p => s.players[p].ai && aiOf(p)).map(p => ({ label: `${nameOf(p)} (AI) settings…`, fn: () => manageAIModal(p) })),
@@ -927,6 +948,8 @@
     if (s.table.initiative === pid) tags.push(h('span', { class: 'tag2' }, 'Initiative'));
     if (p.phone) tags.push(h('span', { class: 'tag2 dim' }, 'Hand on phone'));
     if (p.ai) tags.unshift(h('span', { class: 'tag2 ai', title: 'A computer player run by ' + nameOf(p.ai.by) }, 'AI · ' + p.ai.skill));
+    if (p.lost) tags.unshift(h('span', { class: 'tag2 lostt', title: p.lost.why }, 'Out'));
+    if (s.winner === pid) tags.unshift(h('span', { class: 'tag2 turn' }, '🏆 Winner'));
     const pickable = G.picking ? pickState({ p: pid }) : '';
     const bar = h('div', { class: 'pbar' + (pickable ? ' ' + pickable : ''), onclick: pickable ? () => pickTarget({ p: pid }) : null },
       h('div', { class: 'pname' }, h('span', { class: 'dot ' + (p.online ? 'on' : 'off'), title: p.online ? 'Online' : 'Offline' }), h('b', null, p.name), p.deckName && !compact ? h('span', { class: 'deck' }, p.deckName) : null, tags),
@@ -997,7 +1020,7 @@
     const s = S();
     if (!s.players[pid]) return h('div', { class: 'empty big' }, 'That player left the table.');
     const L = lookOf(pid);
-    return h('section', { class: 'board' + (compact ? ' compact' : '') + (s.turn.active === pid ? ' active' : '') + (L.mat ? ' hasmat' : ''), style: boardStyle(pid) },
+    return h('section', { class: 'board' + (compact ? ' compact' : '') + (s.turn.active === pid ? ' active' : '') + (L.mat ? ' hasmat' : '') + (s.players[pid].lost ? ' lost' : ''), style: boardStyle(pid) },
       playerBar(pid, compact), revealedStrip(pid),
       h('div', { class: 'field' }, cmdCol(pid), rowsEl(pid, compact), pileCol(pid)));
   }
@@ -1876,7 +1899,7 @@
     // keep scroll positions
     const scrolls = {};
     root.querySelectorAll('[data-scroll]').forEach(el => scrolls[el.dataset.scroll] = [el.scrollLeft, el.scrollTop]);
-    const bars = [pickBar(), prioBar(), G.picking ? null : combatBar()].filter(Boolean);
+    const bars = [winBar(), pickBar(), prioBar(), G.picking || S().winner ? null : combatBar()].filter(Boolean);
     const main = h('main', { id: 'main' }, bars.length ? h('div', { class: 'bars-top' }, bars) : null, stackStrip(), mainView());
     const view = h('div', { class: 'app' + (G.logOpen || G.aiOpen ? ' withlog' : '') + (COARSE ? ' touch' : '') },
       topBar(), tabsBar(),
