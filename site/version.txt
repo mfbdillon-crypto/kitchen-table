@@ -1,1 +1,1 @@
-v4.1 2026-10-21T11:24:59Z menu toggles, draw/loser timing, AI burn and pinger tweaks, chat polish
+v4.2 2026-10-21T15:11:55Z AI breaks long board stalls; ability text wording

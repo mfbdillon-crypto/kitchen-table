@@ -299,6 +299,7 @@
     const theirPower = targets.reduce((a, p) => a + creaturesOf(p).filter(c => !c.tapped || true).reduce((x, c) => x + ptOf(c)[0], 0), 0);
     const keepBack = sk === 'easy' ? 0 : life <= theirPower + 4 ? Math.ceil(mineC.length / 2) : 0;
     const sorted = mineC.slice().sort((a, b) => value(a) - value(b));
+    const stall = s.turn.n > 10 * s.seats.filter(p => R.alive(s, p)).length;
     const held = new Set(keepBack ? sorted.slice().reverse().filter(c => !kw(c).has('vigilance')).slice(0, keepBack).map(c => c.id) : []);
     for (const c of mineC) {
       if (held.has(c.id)) continue;
@@ -312,6 +313,8 @@
         const bad = bl.some(b => { const r = fightResult(c, b); return r.aDies && !r.bDies; });
         const trade = bl.some(b => { const r = fightResult(c, b); return r.aDies && r.bDies && value(b) < value(c); });
         if (!bad && !(trade && sk === 'hard')) { chosen = p; safe = true; break; }
+        // A long stalled board: accept even trades to move the game along.
+        if (stall && !bad) { chosen = p; safe = true; break; }
         if (!chosen) chosen = p;
       }
       if (sk === 'easy' ? roll(0.6) : safe || kw(c).has('vigilance') && !creaturesOf(chosen).length) list.push({ id: c.id, p: chosen, why: safe ? 'safe' : 'pressure' });
@@ -745,7 +748,7 @@
           tg = t.tg; desc = t.desc;
         }
         const r = await G.act({ type: 'trigger', id: c.id, i, tg });
-        if (r.ok) { say(`${cn(c)} triggers: “${noDot(tr.text.replace(/^this /i, cn(c) + ' '))}”${desc.length ? ' — targeting ' + R.listNames(desc) : ''}.`, [`Triggered ability (${tr.line}) — it goes on the stack the next time a player would get priority (603.3).`, reqs.length ? 'Its targets are chosen as it’s put on the stack (603.3d).' : 'It has no targets.']); return true; }
+        if (r.ok) { say(`${cn(c)} triggers: “${noDot(tr.text.replace(/^this (?:creature |permanent |artifact |land )?/i, cn(c) + ' '))}”${desc.length ? ' — targeting ' + R.listNames(desc) : ''}.`, [`Triggered ability (${tr.line}) — it goes on the stack the next time a player would get priority (603.3).`, reqs.length ? 'Its targets are chosen as it’s put on the stack (603.3d).' : 'It has no targets.']); return true; }
       }
     }
     return false;
@@ -778,7 +781,7 @@
         if (reqs.length) { const t = chooseTargetsFor(pseudo, reqs, eff); if (!t) continue; tg = t.tg; desc = t.desc; }
         tried.add(key + ':ab:' + c.id);
         const r = await G.activate(c.id, i, tg);
-        if (r.ok) { say(`I use ${cn(c)}: “${noDot(ab.text.replace(/^this /i, cn(c) + ' '))}”${desc.length ? ' targeting ' + R.listNames(desc) : ''}.`, ['It’s an activated ability with {T} in its cost: the creature is untapped and has been under my control since my turn began (602.5a, 302.6).', 'Abilities go on the stack like spells, so everyone may respond (602.2).']); return true; }
+        if (r.ok) { say(`I use ${cn(c)}: “${noDot(ab.text.replace(/^this (?:creature |permanent |artifact |land )?/i, cn(c) + ' '))}”${desc.length ? ' targeting ' + R.listNames(desc) : ''}.`, ['It’s an activated ability with {T} in its cost: the creature is untapped and has been under my control since my turn began (602.5a, 302.6).', 'Abilities go on the stack like spells, so everyone may respond (602.2).']); return true; }
       }
     }
     return false;
