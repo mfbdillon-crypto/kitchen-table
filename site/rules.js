@@ -911,7 +911,7 @@
     const left = s.seats.filter(p => alive(s, p));
     if (drawGame && !left.length && !s.winner) { s.winner = 'draw'; log(s, null, 'The game is a draw — everyone left lost at the same time (104.4a).', 'alert'); }
     if (s.seats.length >= 2 && left.length === 1 && !s.winner && !drawGame) { s.winner = left[0]; log(s, left[0], 'wins the game!', 'alert'); }
-    if (P.lost.pending && !s.winner) log(s, pid, 'is out — their cards leave the game in 20 seconds unless this was a mistake', 'auto');
+    if (P.lost.pending && !s.winner) log(s, pid, 'is out — their cards leave the game in 45 seconds unless this was a mistake', 'auto');
     if (s.combat && !s.combat.done) { delete s.combat.ok[pid]; s.combat.waiting = s.combat.waiting.filter(p => p !== pid); for (const [id, x] of Object.entries(s.combat.att)) if (x.def.p === pid) delete s.combat.att[id]; }
     // Their spells and abilities leave the stack (800.4a); priority that was waiting on them moves on.
     if (!s.winner) for (const c of Object.values(s.cards)) if (c.zone === 'stack' && c.ctrl === pid) { if (c.ab || c.token) delete s.cards[c.id]; else moveOne(s, c, 'graveyard', 'top', null, notes); }
@@ -1012,7 +1012,7 @@
   // Players who left or went offline can't hold up the stack or combat.
   function fixUp(s, notes) {
     // Players who lost in a game that goes on: after a short undo window their cards leave the game (800.4a).
-    for (const pid of s.seats) { const L = s.players[pid] && s.players[pid].lost; if (L && L.pending && Date.now() - L.t > 20000) removeLoser(s, pid, notes); }
+    for (const pid of s.seats) { const L = s.players[pid] && s.players[pid].lost; if (L && L.pending && Date.now() - L.t > 45000) removeLoser(s, pid, notes); }
     if (!s.prio && stackTop(s)) startPrio(s, null, notes);
     if (!s.prio && combatWaiting(s)) startStep(s, notes);
     const P = s.prio;

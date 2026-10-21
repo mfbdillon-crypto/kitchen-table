@@ -1,1 +1,1 @@
-v4 2026-10-21T11:05:19Z combat-trick window, draws, loser cleanup, top bar fits, deck importer, phone targets
+v4.1 2026-10-21T11:24:59Z menu toggles, draw/loser timing, AI burn and pinger tweaks, chat polish

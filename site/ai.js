@@ -23,6 +23,7 @@
   const tell = msg => { try { parent.postMessage(Object.assign({ kt: 'ai', id: G.AI_ID }, msg), location.origin); } catch (e) {} };
 
   // ---------------- talking ----------------
+  const noDot = t => String(t).replace(/[.\s]+$/, '');
   let lastWhy = null;
   function say(text, why) {
     lastWhy = { text, why: why || [], t: Date.now() };
@@ -182,6 +183,11 @@
     if (!pay) return null;
     const t = chooseTargets(card, mode, eff, { x });
     if (!t) return null;
+    if (!perm && skill() !== 'easy' && eff.effects.every(e => e.k === 'dmg') && t.tg.length && t.tg.every(l => !l[0] || l[0].p)) {
+      const dmg = eff.effects.reduce((a, e) => a + (e.n === 'X' ? x : +e.n || 0), 0);
+      const low = t.tg.some(l => l[0] && l[0].p && s.players[l[0].p].life <= Math.max(dmg, 6));
+      if (!low && G.P.hand.length < 7) return null;
+    }
     // Value of casting it now.
     let score = (card.d && +card.d.cmc) || 0;
     if (perm && isCreature(card)) score += 1.5;
@@ -272,6 +278,7 @@
     const bFirst = (bk.has('first strike') || bk.has('double strike')) && !(ak.has('first strike') || ak.has('double strike'));
     return { aDies: bKills && !(aFirst && aKills), bDies: aKills && !(bFirst && bKills) };
   }
+  const pinger = c => C.abilities(c).some(a => a.tap && !a.sac && C.costTotal(a.mana, 0) === 0 && C.effectsIn(a.text).effects.some(e => e.k === 'dmg'));
   function planAttack() {
     const s = S();
     const sk = skill();
@@ -297,6 +304,7 @@
       if (held.has(c.id)) continue;
       if (ptOf(c)[0] <= 0) continue;
       if (sk !== 'easy' && C.manaSource(c) && ptOf(c)[0] <= 1) continue;      // keep mana creatures home for mana
+      if (sk !== 'easy' && ptOf(c)[0] <= 2 && pinger(c)) continue;              // a "{T}: deal 1 damage" creature does more by staying home
       const defs = sk === 'easy' ? [targets[Math.floor(Math.random() * targets.length)]] : order;
       let chosen = null, safe = false;
       for (const p of defs) {
@@ -661,7 +669,7 @@
         let tg = [];
         if (reqs.length) { const t = chooseTargets({ d: { faces: [{ n: cn(pw), t: 'Instant', o: abs[i].text }] }, counters: {} }, null, eff); if (!t) continue; tg = t.tg; }
         const r = await G.activate(pw.id, i, tg);
-        if (r.ok) { say(`I activate ${cn(pw)}’s ${abs[i].cost} ability: “${abs[i].text}”.`, ['Loyalty abilities: once per turn, in my main phase, with an empty stack (606.3).']); return true; }
+        if (r.ok) { say(`I activate ${cn(pw)}’s ${abs[i].cost} ability: “${noDot(abs[i].text)}”.`, ['Loyalty abilities: once per turn, in my main phase, with an empty stack (606.3).']); return true; }
       }
       if (ph === 'Main 1') {
         await G.act({ type: 'phase', to: PI('Beginning of combat') }); return true;
@@ -737,7 +745,7 @@
           tg = t.tg; desc = t.desc;
         }
         const r = await G.act({ type: 'trigger', id: c.id, i, tg });
-        if (r.ok) { say(`${cn(c)} triggers: “${tr.text.replace(/^this /i, cn(c) + ' ')}”${desc.length ? ' — targeting ' + R.listNames(desc) : ''}.`, [`Triggered ability (${tr.line}) — it goes on the stack the next time a player would get priority (603.3).`, reqs.length ? 'Its targets are chosen as it’s put on the stack (603.3d).' : 'It has no targets.']); return true; }
+        if (r.ok) { say(`${cn(c)} triggers: “${noDot(tr.text.replace(/^this /i, cn(c) + ' '))}”${desc.length ? ' — targeting ' + R.listNames(desc) : ''}.`, [`Triggered ability (${tr.line}) — it goes on the stack the next time a player would get priority (603.3).`, reqs.length ? 'Its targets are chosen as it’s put on the stack (603.3d).' : 'It has no targets.']); return true; }
       }
     }
     return false;
@@ -770,7 +778,7 @@
         if (reqs.length) { const t = chooseTargetsFor(pseudo, reqs, eff); if (!t) continue; tg = t.tg; desc = t.desc; }
         tried.add(key + ':ab:' + c.id);
         const r = await G.activate(c.id, i, tg);
-        if (r.ok) { say(`I use ${cn(c)}: “${ab.text.replace(/^this /i, cn(c) + ' ')}”${desc.length ? ' targeting ' + R.listNames(desc) : ''}.`, ['It’s an activated ability with {T} in its cost: the creature is untapped and has been under my control since my turn began (602.5a, 302.6).', 'Abilities go on the stack like spells, so everyone may respond (602.2).']); return true; }
+        if (r.ok) { say(`I use ${cn(c)}: “${noDot(ab.text.replace(/^this /i, cn(c) + ' '))}”${desc.length ? ' targeting ' + R.listNames(desc) : ''}.`, ['It’s an activated ability with {T} in its cost: the creature is untapped and has been under my control since my turn began (602.5a, 302.6).', 'Abilities go on the stack like spells, so everyone may respond (602.2).']); return true; }
       }
     }
     return false;

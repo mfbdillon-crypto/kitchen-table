@@ -705,8 +705,9 @@
     if (s.winner) return h('div', { class: 'winbar', role: 'alert' }, h('div', null, h('b', null, s.winner === 'draw' ? '🤝 The game is a draw' : s.winner === KEY ? '🏆 You win!' : `🏆 ${nameOf(s.winner)} wins the game!`), ' ', h('span', { class: 'muted' }, s.seats.filter(p => s.players[p].lost).map(p => `${nameOf(p)} ${s.players[p].lost.why}`).join(' · '))),
       h('div', { class: 'row wrap' }, me ? h('button', { class: 'primary', onclick: () => G.act({ type: 'newGame', rematch: true }) }, 'Rematch') : null, me ? h('button', { onclick: () => G.act({ type: 'newGame' }) }, 'New game') : null,
         lost && me.life > 0 ? h('button', { class: 'ghost', onclick: () => G.act({ type: 'unlose' }) }, 'That was a mistake — put me back in') : null));
-    return h('div', { class: 'winbar out' }, h('div', null, h('b', null, 'You’re out of this game'), ' — ', me.lost.why, '. You can keep watching.'),
-      me.life > 0 && me.poison < 10 ? h('button', { class: 'ghost', onclick: () => G.act({ type: 'unlose' }) }, 'That was a mistake — put me back in') : null);
+    const left = me.lost.pending ? Math.max(0, Math.ceil((45000 - (Date.now() - me.lost.t)) / 1000)) : 0;
+    return h('div', { class: 'winbar out' }, h('div', null, h('b', null, 'You’re out of this game'), ' — ', me.lost.why, '. You can keep watching.', left ? h('span', { class: 'muted' }, ` Your cards leave the table in ${left}s.`) : null),
+      !me.lost.removed && me.life > 0 && me.poison < 10 ? h('button', { class: 'ghost', onclick: () => G.act({ type: 'unlose' }) }, 'That was a mistake — put me back in') : null);
   }
 
   // ======================= combat: attackers and blockers =======================
@@ -962,6 +963,8 @@
       me && !COARSE ? { label: 'Day / night ▸', sub: [{ label: 'Day', fn: () => G.act({ type: 'table', key: 'day', value: 'day' }) }, { label: 'Night', fn: () => G.act({ type: 'table', key: 'day', value: 'night' }) }, { label: 'Neither', fn: () => G.act({ type: 'table', key: 'day', value: null }) }] } : null,
       me ? { label: 'Change my name…', fn: nameModal } : { label: 'Take a seat', fn: nameModal },
       me ? { label: 'Untap everything I control', fn: untapAll } : null,
+      me ? { label: (G.LS.get('kt:autopass', false) ? '✓ ' : '') + 'Auto-pass when I can’t respond', fn: () => { G.LS.set('kt:autopass', !G.LS.get('kt:autopass', false)); G.toast(G.LS.get('kt:autopass', false) ? 'You’ll pass automatically when you have nothing to respond with.' : 'You’ll be asked every time.'); render(); } } : null,
+      me ? { label: (G.LS.get('kt:autopay', false) ? '✓ ' : '') + 'Tap my lands for me when I cast', fn: () => { G.LS.set('kt:autopay', !G.LS.get('kt:autopay', false)); G.toast(G.LS.get('kt:autopay', false) ? 'Casting taps your lands automatically.' : 'You’ll tap your own mana.'); render(); } } : null,
       { sep: true },
       me && s.turn.active && !me.lost ? { label: 'Concede this game…', fn: () => choose('Concede', 'You’ll be out of this game (you can keep watching).', [{ label: 'Concede', primary: true, fn: () => G.act({ type: 'lose', why: 'concede' }) }, { label: 'Cancel', fn: () => {} }]) } : null,
       me ? { label: 'Leave my seat…', fn: () => choose('Leave seat', 'Your cards leave the table.', [{ label: 'Leave', primary: true, fn: () => G.act({ type: 'leave' }) }, { label: 'Cancel', fn: () => {} }]) } : null,
@@ -2018,7 +2021,9 @@
     if (held) { owed = true; return; }
     if (rq) return;
     rq = true;
-    requestAnimationFrame(() => { rq = false; render(); });
+    // Animation frames pause while the page can't be seen; the timer keeps the table moving (joining, auto-pass…).
+    const go = () => { if (!rq) return; rq = false; render(); };
+    requestAnimationFrame(go); setTimeout(go, 160);
   };
   G.renderNow = render;
   G.ui = { h, cardEl, openMenu, closeMenu, openModal, closeModal, BACK, sleeveOf };
