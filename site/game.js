@@ -120,7 +120,7 @@
 
   // ---------------- decks (saved on this device) ----------------
   G.decks = () => LS.get('kt:decks', []);
-  G.saveDecks = list => { if (!LS.set('kt:decks', list)) G.toast('Your browser storage is full. Delete a deck or use smaller sleeve or playmat pictures.', 'err'); };
+  G.saveDecks = list => { const ok = LS.set('kt:decks', list); if (!ok) G.toast('Your browser storage is full. Delete a deck or use smaller sleeve or playmat pictures.', 'err'); return ok; };
 
   // What everyone sees for your seat: sleeve, playmat and color palette.
   G.lookOf = deck => deck ? { sleeve: deck.sleeve || null, mat: deck.mat || null, palette: deck.palette || 'felt' } : null;
@@ -270,7 +270,7 @@
     });
     savePriv();
     const land = cards.every(isLand);
-    const r = await act({ type: 'enter', zone, cards: send, tapped: !!opts.tapped, pos: opts.pos, row: opts.row, land: !!opts.playLand, tg: opts.tg, mode: opts.mode, x: opts.x, msg: msgFor(zone, Object.assign({ land }, opts), from) });
+    const r = await act({ type: 'enter', zone, cards: send, tapped: !!opts.tapped, pos: opts.pos, row: opts.row, land: !!opts.playLand, tg: opts.tg, mode: opts.mode, x: opts.x, wardPaid: !!opts.wardPaid, fromPool: opts.fromPool, msg: msgFor(zone, Object.assign({ land }, opts), from) });
     if (r.ok) lastAct = { zone, ids, t: Date.now() };
     if (!r.ok) {
       // Only put the cards back if the table really refused. If we just never heard back, look at the board:
@@ -298,7 +298,7 @@
   G.castFromHand = (id, opts) => toPublic(P.hand, [id], 'stack', Object.assign({}, opts || {}), 'hand');
   G.castPublic = (id, opts) => act(Object.assign({ type: 'move', ids: [id], to: 'stack' }, opts || {}));
   G.pass = () => G.S && G.S.prio ? act({ type: 'pass', top: G.S.prio.top }) : null;
-  G.activate = (id, i, tg, x) => act({ type: 'activate', id, i, tg, x });
+  G.activate = (id, i, tg, x, fromPool) => act({ type: 'activate', id, i, tg, x, fromPool });
   G.attack = list => act({ type: 'attack', list });
   G.block = list => act({ type: 'block', list });
   G.fromLibrary = (ids, zone, opts) => toPublic(P.library, ids, zone, opts, 'library');
@@ -426,7 +426,7 @@
 
   // ---------------- public cards ----------------
   G.move = (ids, to, pos, extra) => act(Object.assign({ type: 'move', ids, to, pos }, extra || {}));
-  G.tap = (ids, tapped) => act({ type: 'tap', ids, tapped });
+  G.tap = (ids, tapped, pay) => act({ type: 'tap', ids, tapped, pay: !!pay });
   G.counter = (id, kind, delta) => act({ type: 'counter', id, kind, delta });
   G.setMod = (id, p, t) => act({ type: 'mod', id, p, t });
   G.flip = id => act({ type: 'flip', id });
@@ -695,7 +695,7 @@
       tg.push(picked);
     }
     if (G.autoPay && !(await G.autoPay(card, x))) { phoneBanner('Not enough untapped mana to pay for it automatically.'); return; }
-    await G.castFromHand(id, { tg: reqs.length ? tg : undefined, mode: mode || undefined, x: x || undefined });
+    await G.castFromHand(id, { tg: reqs.length ? tg : undefined, mode: mode || undefined, x: x || undefined, fromPool: G.LS.get('kt:autopay', false) ? G.lastFromPool : undefined });
   }
   G.phoneSync = phoneSync;
 

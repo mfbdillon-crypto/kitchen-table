@@ -207,10 +207,13 @@
     const cost = costFor(card);
     let x = 0;
     if (cost.x) { x = Math.max(0, Math.floor((manaAvailable() - C.costTotal(cost, 0)) / cost.x)); if (x < 1) return null; }
-    const pay = C.pay(cost, sources(), x);
+    let pay = C.pay(cost, sources(), x);
     if (!pay) return null;
     const t = chooseTargets(card, mode, eff, { x });
     if (!t) return null;
+    // Ward on a target: pay it on top (702.21a).
+    const wardMana = t.tg.flat().reduce((a, q) => { const c = q.c && s.cards[q.c]; if (!c || c.ctrl === ME() || !kw(c).has('ward')) return a; const m = C.text(c).match(/ward\s*(?:—|-)?\s*((?:\{[^}]+\})+)/i); return a + (m ? C.costTotal(C.parseCost(m[1]), 0) : 0); }, 0);
+    if (wardMana) { pay = C.pay(Object.assign({}, cost, { g: cost.g + wardMana, hy: cost.hy.slice(), ph: cost.ph.slice() }), sources(), x); if (!pay) return null; }
     if (selfHarm(eff, x) >= s.players[ME()].life - (skill() === 'easy' ? 0 : 3)) return null;
     if (!perm && skill() !== 'easy' && eff.effects.every(e => e.k === 'dmg') && t.tg.length && t.tg.every(l => !l[0] || l[0].p)) {
       const dmg = eff.effects.reduce((a, e) => a + (e.n === 'X' ? x : +e.n || 0), 0);
@@ -224,7 +227,7 @@
     if (eff.effects.some(e => ['destroy', 'exile', 'dmg', 'bounce'].includes(e.k)) && t.tg.some(l => l[0] && l[0].c)) score += 2 + Math.max(0, ...t.tg.flat().map(threat));
     if (card.cmdr) score += 3;
     if (eff.effects.some(e => e.k === 'draw')) score += 1;
-    return { card, mode, eff, x, pay, tg: t.tg, reqs: t.reqs, desc: t.desc, score, cost };
+    return { card, mode, eff, x, pay, tg: t.tg, reqs: t.reqs, desc: t.desc, score, cost, wardPaid: t.tg.flat().some(q => q.c && s.cards[q.c] && s.cards[q.c].ctrl !== ME() && kw(s.cards[q.c]).has('ward')) };
   }
 
   // Life I'd lose myself: "deals 4 damage to each player", "you lose 2 life"…
@@ -257,8 +260,8 @@
   async function cast(p, when) {
     const s = S();
     const why = whyCast(p, when);          // before casting: commander tax goes up once it's cast
-    if (p.pay.length) { const r = await G.tap(p.pay, true); if (!r.ok) return false; }
-    const opts = { tg: p.tg, mode: p.mode, x: p.x };
+    if (p.pay.length) { const r = await G.tap([...new Set(p.pay)], true, true); if (!r.ok) return false; }
+    const opts = { tg: p.tg, mode: p.mode, x: p.x, wardPaid: p.wardPaid, fromPool: [] };
     let r;
     if (p.card.zone === 'hand') { await G.castFromHand(p.card.id, opts); r = { ok: !G.P.hand.some(c => c.id === p.card.id) }; }
     else r = await G.castPublic(p.card.id, opts);
@@ -754,7 +757,7 @@
         if (!best) continue;
         const pay = C.pay(abs[i].mana, sources(), 0);
         if (!pay) continue;
-        if (pay.length) await G.tap(pay, true);
+        if (pay.length) await G.tap([...new Set(pay)], true, true);
         const r = await G.activate(eq.id, i, [[{ c: best.id }]]);
         if (r.ok) { say(`I equip ${cn(eq)} to ${cn(best)}.`, [`${abs[i].cost}: equip only as a sorcery — it’s my main phase and the stack is empty (702.6a).`, `Paid by tapping ${R.listNames(pay.map(id => cn(S().cards[id])))}.`, `${cn(best)} is a creature I control.`]); return true; }
       }

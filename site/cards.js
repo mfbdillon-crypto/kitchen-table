@@ -528,9 +528,11 @@
         out.push({ k: 'fetch', n: toNum(m[2]), dest: /hand/.test(m[4]) ? 'hand' : 'battlefield', tapped: !!m[5], split: /the other into your hand/.test(s) }); hit = true;
       } else if ((m = s.match(/^scry (\d+|x)$/))) { out.push({ k: 'scry', n: toNum(m[1]) }); hit = true; }
       else if ((m = s.match(/^(target player|each opponent|each player) mills (\d+|a|two|three|four|five) cards?$/))) { out.push({ k: 'mill', n: toNum(m[2]), who: m[1], ti: m[1] === 'target player' ? t0 : null }); hit = true; }
-      else if ((m = s.match(/^(target player|target opponent|each opponent) discards (a|one|two|three|\d+) cards?$/))) { out.push({ k: 'discard', n: toNum(m[2]), who: m[1], ti: m[1].startsWith('target') ? t0 : null }); hit = true; }
+      else if ((m = s.match(/^(target player|target opponent|each opponent|each player) discards (a|one|two|three|\d+) cards?$/))) { out.push({ k: 'discard', n: toNum(m[2]), who: m[1], ti: m[1].startsWith('target') ? t0 : null }); hit = true; }
+      else if ((m = s.match(/^add ((?:\{[wubrgc]\})+)$/))) { out.push({ k: 'addMana', units: m[1].match(/[wubrgc]/g).map(x => x.toUpperCase()) }); hit = true; }
+      else if ((m = s.match(/^add (one|two|three) mana of any (?:one )?color$/))) { out.push({ k: 'addMana', units: Array(toNum(m[1])).fill('WUBRG') }); hit = true; }
       else if ((m = s.match(/^return (a|an|one|two) ([a-z ]+?) you control to (?:its|their) owner's hand$/))) { out.push({ k: 'returnOwn', n: toNum(m[1]), what: m[2] }); hit = true; }
-      else if ((m = s.match(/^(each opponent|target player|target opponent) sacrifices (a|an|one|two) ([a-z ]+?)$/))) { out.push({ k: 'sacrifice', n: toNum(m[2]), what: m[3], who: m[1], ti: m[1].startsWith('target') ? t0 : null }); hit = true; }
+      else if ((m = s.match(/^(each opponent|each player|each other player|target player|target opponent) sacrifices (a|an|one|two) ([a-z ]+?)(?: of (?:their|his or her) choice)?$/))) { out.push({ k: 'sacrifice', n: toNum(m[2]), what: m[3], who: m[1], ti: m[1].startsWith('target') ? t0 : null }); hit = true; }
       else if (/^(shuffle|then shuffle|it can't be regenerated|they can't be regenerated|this spell can't be countered|this spell costs)/.test(s)) { hit = true; }
       // "Destroy target artifact, target creature, target enchantment, and target land": one effect, several targets.
       if (nT > 1 && !out.some(e => e.ti === t0 + 1)) for (const e of out) if (e.ti === t0 && ['destroy', 'exile', 'bounce', 'tap', 'untap', 'dmg'].includes(e.k) && e.ti2 == null && !e.tis) e.tis = Array.from({ length: nT }, (_, k) => t0 + k);

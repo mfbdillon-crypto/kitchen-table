@@ -756,7 +756,7 @@ input.num { flex: none; width: 80px; }
 .stk .tgts { font-size: 11px; color: #9fd3ff; max-width: 120px; text-align: center; line-height: 1.2; }
 .tag2.ai { color: #9fd3ff; border-color: #2f5a7c; }
 /* AI panel */
-#log.aipanel { grid-template-rows: auto auto 1fr auto; }
+#log.aipanel { grid-template-rows: auto auto auto 1fr auto; }
 .aibar { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 14px; border-bottom: 1px solid var(--line); }
 button.small { padding: 3px 9px; font-size: 13px; }
 .aichat { gap: 9px; }
@@ -823,7 +823,6 @@ button.small { padding: 3px 9px; font-size: 13px; }
 #top.fit4 .tools .f4, #top.fit4 .turn .tn { display: none; }
 #top.fit4 .turn .phase { min-width: 0; }
 #top.fit5 .turn .who { overflow: hidden; text-overflow: ellipsis; max-width: 14vw; }
-#top .turn .who { min-width: 0; }
 #top:not(.compact) { flex-wrap: nowrap; }
 .decklist > * { min-width: 0; }
 .decklist .import { white-space: normal; }
@@ -852,3 +851,37 @@ button.small { padding: 3px 9px; font-size: 13px; }
 #hand.drawer .hbtns { grid-column: 1 / -1; flex-direction: row; flex-wrap: wrap; gap: 6px; }
 #hand.drawer .hbtns > * { flex: 1 1 auto; }
 .aidecks { flex-shrink: 0; min-height: 60px; }
+/* ready-made decks */
+.precons { display: grid; gap: 6px; }
+.prehead { font: 700 11px var(--display); letter-spacing: .06em; color: var(--muted); text-transform: uppercase; margin-top: 4px; }
+.prelist { display: grid; gap: 5px; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); }
+.precon { display: flex; gap: 8px; align-items: center; text-align: left; padding: 6px 8px; min-width: 0; }
+.precon span { display: grid; min-width: 0; }
+.precon b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.precon small { color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.precon.have small { color: var(--brass); }
+.pips { display: inline-flex; gap: 2px; flex: none; }
+.pip { width: 11px; height: 11px; border-radius: 50%; display: inline-block; border: 1px solid rgba(0,0,0,.5); }
+.pip.pW { background: #f6efd2; } .pip.pU { background: #3d7fd1; } .pip.pB { background: #2b2524; border-color: #888; } .pip.pR { background: #d9452f; } .pip.pG { background: #2f9a52; } .pip.pC { background: #b9b2a7; }
+.predetails summary { cursor: pointer; font-weight: 700; color: var(--brass); }
+.decklist .precons .prelist { grid-template-columns: 1fr; }
+.pbar .otheracts { display: flex; gap: 6px; align-items: center; margin-left: auto; }
+.pbar .otheracts button { padding: 3px 10px; font-size: 12.5px; }
+.pbar .otheracts .kick { font-weight: 800; color: #ffb4a6; border-color: #a5402f; background: #3a1712; letter-spacing: .02em; }
+.pbar .otheracts .kick:hover { background: #5a1f17; }
+.pbar .otheracts .demand { font-weight: 700; }
+.pip.pA { background: conic-gradient(#f6efd2 0 20%, #3d7fd1 0 40%, #2b2524 0 60%, #d9452f 0 80%, #2f9a52 0); }
+.stat.pool { display: inline-flex; align-items: center; gap: 4px; border-color: #6b8f62; }
+.stat.pool .x { padding: 0 5px; font-size: 11px; line-height: 1.2; }
+/* hand: a soft glow under each card — green when you have the untapped mana to cast it (or your land drop is free), red when you don't */
+#hand .handstrip .card.can { box-shadow: 0 9px 16px -4px rgba(70, 225, 110, .95), 0 3px 0 0 rgba(70, 225, 110, .9); }
+#hand .handstrip .card.cant { box-shadow: 0 9px 16px -4px rgba(235, 70, 60, .9), 0 3px 0 0 rgba(235, 70, 60, .85); }
+/* Netlify puts its own badge in the bottom-right corner: keep every control out of that corner */
+:root { --badge-w: 172px; --badge-h: 52px; }
+#hand:not(.drawer) { padding-right: calc(var(--badge-w) + 4px); }
+#hand.drawer { padding-bottom: calc(var(--badge-h) + env(safe-area-inset-bottom, 0px)); }
+#log .askrow { padding-bottom: calc(var(--badge-h) + env(safe-area-inset-bottom, 0px)); }
+#log .loglist { padding-bottom: var(--badge-h); }
+.phone { padding-bottom: var(--badge-h) !important; }
+.overlay { padding-bottom: max(var(--badge-h), env(safe-area-inset-bottom, 0px)) !important; }
+.aihelp { padding: 6px 12px; font-size: 12.5px; border-bottom: 1px solid var(--line); } .aihelp summary { cursor: pointer; color: var(--brass); font-weight: 700; } .aihelp p { margin: 5px 0; }

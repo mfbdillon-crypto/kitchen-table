@@ -1,1 +1,1 @@
-v4.5 2026-10-21T16:42:59Z opening hands dealt at start, AI waits for keeps, chat fixes, deck list fixes
+v5 2026-10-21T20:31:29Z ready-made decks by bracket, mana pool, hand glow, ward, Make them…, Remove button, badge corner kept clear

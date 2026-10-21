@@ -613,25 +613,60 @@
     const reqs = CD.targetReqs(card, mode);
     let tg;
     if (reqs.length) { tg = await pickTargets(`Casting ${R.cardName(card)}`, card, reqs, mode); if (!tg) return; }
-    const opts = { tg, mode: mode || undefined, x: x || undefined };
-    if (!(await autoPay(card, x))) return;
+    // Ward (702.21a): the spell is countered unless its controller also pays the ward cost.
+    const warded = [].concat(...(tg || [])).map(t => t.c && S().cards[t.c]).filter(w => w && w.ctrl !== KEY && CD.has(w, 'ward', S()));
+    let wardPaid = false, wardMana = 0;
+    if (warded.length) {
+      const costs = warded.map(w => { const m = CD.text(w).match(/ward\s*(?:—|-)?\s*((?:\{[^}]+\})+)/i); const l = CD.text(w).match(/ward\s*(?:—|-)\s*pay (\d+) life/i); return { w, mana: m ? CD.costTotal(CD.parseCost(m[1]), 0) : 0, text: m ? m[1] : l ? `pay ${l[1]} life` : 'its ward cost' }; });
+      wardMana = costs.reduce((a, c) => a + c.mana, 0);
+      const ans = await new Promise(res => choose('Ward', `${costs.map(c => `${R.cardName(c.w)} has ward — ${c.text}`).join('; ')}. If you don’t pay, ${R.cardName(card)} is countered.`, [
+        { label: `Pay ${costs.map(c => c.text).join(' + ')} and cast`, primary: true, fn: () => res(true) },
+        { label: 'Cast without paying', fn: () => res(false) }, { label: 'Cancel', fn: () => res(null) }]));
+      if (ans == null) return;
+      wardPaid = ans;
+    }
+    const opts = { tg, mode: mode || undefined, x: x || undefined, wardPaid: wardPaid || undefined };
+    if (wardPaid && wardMana) { const cst = CD.costOf(card); cst.g += wardMana; if (!(await autoPay(card, x, cst))) return; }
+    else if (!(await autoPay(card, x))) return;
+    opts.fromPool = G.lastFromPool;
     if (from === 'hand') await G.castFromHand(c.id, opts);
     else await G.castPublic(c.id, opts);
   }
   // Optional: tap my untapped lands and mana permanents to pay the cost (setting under the hand).
   async function autoPay(card, x, cost) {
+    G.lastFromPool = undefined;
     if (!G.LS.get('kt:autopay', false)) return true;
     cost = cost || CD.costOf(card);
     if (card.zone === 'command' && card.cmdr) cost.g += 2 * ((S().tax || {})[card.id] || 0);
     if (!CD.costTotal(cost, x)) return true;
     const srcs = Object.values(S().cards).filter(c => c.zone === 'battlefield' && c.ctrl === KEY && !c.tapped && !(R.isType(c, 'creature') && R.sick(S(), c) && !CD.keywords(c, S()).has('haste')))
       .map(c => { const m = CD.manaSource(c); return m && !m.sac ? { id: c.id, amount: m.amount, colors: m.colors, units: m.units } : null; }).filter(Boolean);
-    const ids = CD.pay(cost, srcs, x);
+    const pool = (G.me() && G.me().pool) || [];
+    const ids = CD.pay(cost, pool.map((u, i) => ({ id: 'pool:' + i, amount: 1, colors: u })).concat(srcs), x);
     if (!ids) { G.toast('Not enough untapped mana to pay for that automatically — tap your mana yourself, then cast it again.', 'err'); return false; }
-    if (ids.length) await G.tap(ids, true);
+    G.lastFromPool = ids.filter(id => /^pool:/.test(id)).map(id => +id.slice(5));
+    const real = ids.filter(id => !/^pool:/.test(id));
+    if (real.length) await G.tap([...new Set(real)], true, true);
     return true;
   }
   G.castFlow = castFlow;
+  // My untapped mana right now (plus floating mana), for the green/red glow under cards in hand.
+  function myMana() {
+    const s = S(); const out = ((G.me() && G.me().pool) || []).map((u, i) => ({ id: 'pool:' + i, amount: 1, colors: u }));
+    for (const c of Object.values(s.cards)) {
+      if (c.zone !== 'battlefield' || c.ctrl !== KEY || c.tapped) continue;
+      if ((c.faceDown || R.isType(c, 'creature')) && R.sick(s, c) && !CD.keywords(c, s).has('haste')) continue;
+      const m = CD.manaSource(c); if (m && !m.sac) out.push({ id: c.id, amount: m.amount, colors: m.colors, units: m.units });
+    }
+    return out;
+  }
+  function affordable(card) {
+    const s = S();
+    if (G.isLand(card)) { const T = s.turn; return !!(T.active === KEY && !((T.lands || {})[KEY] >= 1)); }
+    const cost = CD.costOf(card);
+    return !!CD.pay(cost, myMana(), 0);
+  }
+  G.affordable = affordable;
   G.autoPay = (card, x, cost) => autoPay(card, x, cost);
   async function triggerFlow(c, i) {
     const tr = CD.triggers(c)[i];
@@ -648,7 +683,7 @@
     let tg;
     if (reqs.length) { tg = await pickTargets(`${R.cardName(c)}: ${ab.cost}`, c, reqs, null, { d: { faces: [{ n: R.cardName(c), t: 'Instant', o: ab.text }] }, counters: {} }); if (!tg) return; }
     if (!(await autoPay(c, 0, Object.assign({}, ab.mana, { hy: ab.mana.hy.slice(), ph: ab.mana.ph.slice() })))) return;
-    G.activate(c.id, i, tg);
+    G.activate(c.id, i, tg, 0, G.lastFromPool);
   }
 
   // ======================= priority: "do you want to respond?" =======================
@@ -988,6 +1023,21 @@
       } },
       { label: 'Cancel', fn: () => {} }]);
   }
+  // "Make them…": a player missed something an effect told them to do.
+  function demandModal(pid) {
+    const p = S().players[pid]; if (!p) return;
+    let k = 'sacrifice', n = 1, what = 'creature';
+    const KINDS = [['sacrifice', 'Sacrifice'], ['discard', 'Discard'], ['draw', 'Draw'], ['mill', 'Mill'], ['life', 'Lose life'], ['returnOwn', 'Return to hand']];
+    const WHATS = ['creature', 'nontoken creature', 'artifact', 'enchantment', 'land', 'planeswalker', 'nonland permanent', 'permanent'];
+    openModal(`Make ${p.name}…`, b => {
+      b.append(h('p', { class: 'muted' }, `If ${p.name} missed something a card told them to do, pick it here. ${p.ai ? 'The AI does it right away.' : 'They’ll be asked to do it.'} Everyone sees it in the log.`));
+      b.append(h('div', { class: 'chips' }, KINDS.map(([v, l]) => h('button', { class: 'chip' + (k === v ? ' set' : ''), onclick: () => { k = v; refreshModal(); } }, l))));
+      const num = h('input', { type: 'number', class: 'num', id: 'demand-n', min: '1', max: '20', value: String(n), oninput: e => { n = Math.max(1, Math.min(20, +e.target.value || 1)); } });
+      b.append(h('div', { class: 'row' }, h('span', null, k === 'life' ? 'How much life' : 'How many'), num));
+      if (k === 'sacrifice' || k === 'returnOwn') b.append(h('div', { class: 'chips' }, WHATS.map(v => h('button', { class: 'chip' + (what === v ? ' set' : ''), onclick: () => { what = v; refreshModal(); } }, v))));
+      b.append(h('div', { class: 'row' }, h('button', { class: 'primary', onclick: async () => { const r = await G.act({ type: 'demand', pid, k, n, what }); if (r.ok) { closeModal(); G.toast(`${p.name} was told to follow the rule.`); } } }, 'Make them do it'), h('button', { onclick: () => closeModal() }, 'Cancel')));
+    }, { live: true, cls: 'small' });
+  }
   function copyText(text, msg) {
     try { navigator.clipboard.writeText(text).then(() => G.toast(msg), () => window.prompt('Copy this:', text)); }
     catch (e) { window.prompt('Copy this:', text); }
@@ -1037,10 +1087,14 @@
       h('div', { class: 'pname' }, h('span', { class: 'dot ' + (p.online ? 'on' : 'off'), title: p.online ? 'Online' : 'Offline' }), h('b', null, p.name), p.deckName && !compact ? h('span', { class: 'deck' }, p.deckName) : null, tags),
       life,
       h('div', { class: 'stats' },
+        p.pool && p.pool.length ? h('span', { class: 'stat pool', title: 'Unspent mana — it empties at the end of each step and phase (500.4)' }, 'Mana ', pips(p.pool.map(u => u.length > 1 ? 'A' : u).join('')), mine ? h('button', { class: 'x', title: 'Empty my mana pool', onclick: e => { e.stopPropagation(); G.act({ type: 'pool', clear: true }); } }, '✕') : null) : null,
         chip('Poison', p.poison, p.poison >= 10 ? 'bad' : 'warn'), chip('Energy', p.energy), chip('Exp', p.exp),
         cmdTotal.length ? h('button', { class: 'stat ' + (cmdTotal.some(([, v]) => v >= 21) ? 'bad' : 'warn'), onclick: () => trackerModal(pid) }, 'Cmdr dmg ' + cmdTotal.map(([, v]) => v).join('/')) : null,
         h('span', { class: 'stat dim', title: 'Cards in hand' }, 'Hand ' + p.handCount),
         h('span', { class: 'stat dim', title: 'Cards in library' }, 'Library ' + p.libCount)),
+      !mine && G.seated() && !compact ? h('div', { class: 'otheracts' },
+        p.lost ? null : h('button', { class: 'demand', title: `Make ${p.name} follow an effect they missed: sacrifice, discard, draw, mill, lose life…`, onclick: () => demandModal(pid) }, 'Make them…'),
+        canRemove(pid) ? h('button', { class: 'kick', title: `Remove ${p.name} from the table`, onclick: () => removePlayer(pid) }, p.ai ? 'Remove AI' : 'Remove') : null) : null,
       mine && !compact ? h('div', { class: 'mass' },
         h('button', { onclick: untapAll }, 'Untap all'),
         h('button', { onclick: () => { const ids = Object.values(s.cards).filter(c => c.zone === 'battlefield' && c.ctrl === KEY && c.row === 'lands' && !c.tapped).map(c => c.id); if (ids.length) G.tap(ids, true); } }, 'Tap all lands'),
@@ -1157,7 +1211,7 @@
     } else {
       for (const c of P.hand) {
         const pc = handCard(c);
-        const el = cardEl(pc, { menu: () => handMenu(c), cls: G.isRevealed(c.id) ? 'rev' : '', swipeUp: () => G.isLand(c) ? G.playLand(c.id) : castFlow(c, 'hand') });
+        const el = cardEl(pc, { menu: () => handMenu(c), cls: (G.isRevealed(c.id) ? 'rev ' : '') + (affordable(pc) ? 'can' : 'cant'), swipeUp: () => G.isLand(c) ? G.playLand(c.id) : castFlow(c, 'hand') });
         if (G.isRevealed(c.id)) el.append(h('div', { class: 'tag tok' }, 'Revealed'));
         strip.append(el);
       }
@@ -1253,6 +1307,7 @@
       b.append(h('h4', null, 'Deck'));
       if (!decks.length) b.append(h('p', { class: 'muted' }, 'You don’t have any decks yet. Import one below, or in Decks.'));
       else b.append(h('div', { class: 'aidecks' }, decks.map(d => h('button', { class: 'dk' + (d.id === deckId ? ' on' : ''), onclick: () => { deckId = d.id; refreshModal(); } }, h('img', { src: d.sleeve || BACK, alt: '' }), h('span', null, h('b', null, d.name), h('small', null, `${d.cards.reduce((a, c) => a + c.qty, 0)} cards${d.cards.some(c => c.cmdr) ? ' · ' + d.cards.filter(c => c.cmdr).map(c => c.d.n).join(' & ') : ''}`))))));
+      b.append(h('details', { class: 'predetails', open: !decks.length || undefined }, h('summary', null, 'Ready-made decks by bracket'), preconPicker(d => { deckId = d.id; refreshModal(); }, msg => { busy = msg; refreshModal(); })));
       b.append(deckImporter(imp, d => { deckId = d.id; busy = `Imported ${d.name}.`; refreshModal(); }, msg => { busy = msg; refreshModal(); }));
       if (busy) b.append(h('p', { class: 'muted small immsg' }, busy));
       b.append(h('div', { class: 'row wrap' },
@@ -1297,6 +1352,10 @@
       h('div', { class: 'aibar' },
         G.seated() && s.seats.length < R.MAX_SEATS ? h('button', { class: 'primary small', onclick: addAIModal }, '+ Add AI player') : null,
         mineAIs.map(p => h('button', { class: 'small', onclick: () => manageAIModal(p) }, `${nameOf(p)} ⚙`))),
+      h('details', { class: 'aihelp' }, h('summary', null, 'What the AI understands'),
+        h('p', null, h('b', null, 'When: '), 'it enters · it dies · it attacks · it deals combat damage to a player · beginning of upkeep, combat or end step · when it’s cast (targets) · when another player’s spell or ability tells it to do something.'),
+        h('p', null, h('b', null, 'What: '), 'sacrifice · discard · draw · mill · lose or gain life · damage · destroy · exile · return to hand · create tokens · +1/+1 counters · scry · search for lands · add mana · pay ward · fight.'),
+        h('p', { class: 'muted' }, 'If an AI misses something a card tells it to do, open its board and press “Make them…”.')),
       list,
       h('div', { class: 'askrow' }, ais.length > 1 ? h('select', { id: 'aito', onchange: e => { G.aiAskTo = e.target.value; } }, ais.map(p => h('option', { value: p, selected: p === to }, nameOf(p)))) : null, inp, h('button', { onclick: send, disabled: !ais.length || !G.seated() }, 'Ask')));
   }
@@ -1367,6 +1426,50 @@
     return d;
   }
   G.linesToDeck = linesToDeck; G.moxLines = moxLines;
+
+  // ---- Ready-made decks (precons.js): imported from Moxfield on first use, with the commander's art as sleeve and playmat ----
+  function artData(url, W, H) {
+    return new Promise((res, rej) => {
+      const img = new Image(); img.crossOrigin = 'anonymous';
+      img.onload = () => { try { const cv = document.createElement('canvas'); cv.width = W; cv.height = H; const s = Math.max(W / img.width, H / img.height); const w = img.width * s, hh = img.height * s; cv.getContext('2d').drawImage(img, (W - w) / 2, (H - hh) / 2.6, w, hh); res(cv.toDataURL('image/jpeg', 0.82)); } catch (e) { rej(e); } };
+      img.onerror = rej; img.src = url;
+    });
+  }
+  async function importPrecon(p, onMsg) {
+    const have = G.decks().find(d => d.src === p.id); if (have) return have;
+    onMsg(`Getting “${p.name}” from Moxfield…`);
+    const j = await fetchMoxfield(p.id);
+    // Moxfield busy or down: use the list saved with the site.
+    const lines = j ? moxLines(j) : p.list ? [{ name: p.cmdr, qty: 1, cmdr: true }].concat(p.list.split('|').map(x => { const m = x.match(/^(\d+) (.+)$/); return m ? { name: m[2], qty: +m[1], cmdr: false } : null; }).filter(Boolean)) : null;
+    if (!lines) throw new Error('Moxfield didn’t answer just now — try again in a moment.');
+    const d = await linesToDeck(lines, p.name, onMsg);
+    d.src = p.id; d.bracket = p.bracket;
+    const art = cmdArt(d);
+    if (art) { try { d.sleeve = await artData(art, 250, 350); d.mat = await artData(art, 800, 450); } catch (e) {} }
+    const all = G.decks(); const i = all.findIndex(x => x.id === d.id); if (i >= 0) all[i] = d; else all.unshift(d);
+    if (!G.saveDecks(all)) { d.mat = null; all[i >= 0 ? i : 0] = d; G.saveDecks(all); }
+    onMsg(`Added “${p.name}” — ${d.cards.reduce((a, c) => a + c.qty, 0)} cards, with ${d.cards.filter(c => c.cmdr).map(c => c.d.n).join(' & ') || 'its commander'}’s art as sleeve and playmat.`);
+    return d;
+  }
+  G.importPrecon = importPrecon;
+  const BRACKETS = { 1: 'Bracket 1 · Exhibition', 2: 'Bracket 2 · Core', 3: 'Bracket 3 · Upgraded', 4: 'Bracket 4 · Optimized' };
+  const pips = ci => h('span', { class: 'pips' }, [...(ci || 'C')].map(c => h('i', { class: 'pip p' + c, title: { W: 'White', U: 'Blue', B: 'Black', R: 'Red', G: 'Green', C: 'Colorless' }[c] })));
+  function preconPicker(onPick, onMsg) {
+    const list = window.KT_PRECONS || [];
+    const wrap = h('div', { class: 'precons' });
+    for (const b of [1, 2, 3, 4]) {
+      wrap.append(h('div', { class: 'prehead' }, BRACKETS[b]));
+      wrap.append(h('div', { class: 'prelist' }, list.filter(p => p.bracket === b).map(p => {
+        const have = G.decks().some(d => d.src === p.id);
+        return h('button', { class: 'precon' + (have ? ' have' : ''), title: p.blurb, onclick: async e => {
+          const btn = e.currentTarget; if (btn.disabled) return; btn.disabled = true;
+          try { const d = await importPrecon(p, onMsg); onPick(d); } catch (err) { onMsg(err.message || 'Couldn’t add that deck.'); }
+          btn.disabled = false;
+        } }, pips(p.ci), h('span', null, h('b', null, p.name), h('small', null, have ? 'In your decks ✓' : p.blurb)));
+      })));
+    }
+    return wrap;
+  }
   // A small "import a deck" block: Moxfield link, with a guided copy-and-paste fallback.
   // Moxfield link (or a pasted list). st keeps what was typed while the window redraws: { link, paste, open, fail }.
   function deckImporter(st, onDeck, onMsg) {
@@ -1667,7 +1770,7 @@
   function deckManager() {
     const decks = G.decks();
     if (!editing || !decks.some(d => d.id === editing)) editing = (G.P.deckId && decks.some(d => d.id === G.P.deckId)) ? G.P.deckId : (decks[0] && decks[0].id) || null;
-    let acQ = '', acList = [], acBusy = false, importMsg = '';
+    let acQ = '', acList = [], acBusy = false, importMsg = '', preOpen = !G.decks().length;
     const imp = {};
     let acT = null;
     const saveDeck = deck => { const all = G.decks(); const i = all.findIndex(d => d.id === deck.id); deck.updated = Date.now(); if (i >= 0) all[i] = deck; else all.unshift(deck); G.saveDecks(all); };
@@ -1678,6 +1781,8 @@
         h('button', { class: 'primary', onclick: () => { const d = { id: G.R.rid(8), name: 'New deck', cards: [], sleeve: null }; saveDeck(d); editing = d.id; refreshModal(); } }, '+ New deck'),
         h('label', { class: 'import' }, 'Import from ManaBox (.txt or .csv)',
           h('input', { type: 'file', accept: '.csv,.txt,text/csv,text/plain', id: 'importfile', onchange: e => importFile(e.target.files[0]) })),
+        h('button', { class: 'ghost small preconbtn', onclick: () => { preOpen = !preOpen; refreshModal(); } }, preOpen ? 'Hide ready-made decks ▴' : 'Ready-made decks (brackets 1–4) ▾'),
+        preOpen ? preconPicker(d => { editing = d.id; preOpen = false; refreshModal(); }, msg => { importMsg = msg; refreshModal(); }) : null,
         deckImporter(imp, d => { editing = d.id; importMsg = `Imported ${d.name}.`; refreshModal(); }, msg => { importMsg = msg; refreshModal(); }),
         importMsg ? h('p', { class: 'muted small immsg' }, importMsg) : null,
         all.map(d => h('button', { class: 'dk' + (d.id === editing ? ' on' : ''), onclick: () => { editing = d.id; refreshModal(); } },

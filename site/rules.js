@@ -204,6 +204,32 @@
 
   // ======================= apply an action =======================
   function apply(s, pid, a) {
+    const before = s.turn ? s.turn.n + ':' + s.turn.phase : '';
+    const r = apply0(s, pid, a);
+    if (r && r.ok && s.turn && before !== s.turn.n + ':' + s.turn.phase) emptyPools(s);
+    return r;
+  }
+  // ---- mana pool: tapping a mana source by hand adds its mana; casting spends it; it empties between steps (106.4, 500.4) ----
+  function emptyPools(s) { for (const p of Object.values(s.players || {})) if (p.pool && p.pool.length) p.pool = []; }
+  function addPool(s, pid, units) { const p = s.players[pid]; if (!p || !units.length) return; p.pool = (p.pool || []).concat(units).slice(0, 60); }
+  function unitsOf(c) {
+    const m = root.Cards && root.Cards.manaSource(c); if (!m || m.sac) return [];
+    return Array.from({ length: m.amount }, (_, i) => (m.units ? m.units[i] : null) || m.colors);
+  }
+  // Spend from the pool: chosen units if the client says which (fromPool), otherwise the best fit for the cost.
+  function spendPool(s, pid, cost, x, fromPool) {
+    const p = s.players[pid]; if (!p || !p.pool || !p.pool.length || !cost) return;
+    if (Array.isArray(fromPool)) { const drop = new Set(fromPool.map(n => n | 0)); p.pool = p.pool.filter((u, i) => !drop.has(i)); return; }
+    const pool = p.pool.slice(), used = new Array(pool.length).fill(false);
+    const take = ok => { let best = -1; for (let i = 0; i < pool.length; i++) if (!used[i] && ok(pool[i]) && (best < 0 || pool[i].length < pool[best].length)) best = i; if (best >= 0) used[best] = true; return best >= 0; };
+    for (const col of ['W', 'U', 'B', 'R', 'G', 'C']) for (let i = 0; i < (cost[col] || 0); i++) take(u => u.includes(col));
+    for (const col of cost.ph || []) take(u => u.includes(col));
+    for (const [a1, b1] of cost.hy || []) if (!take(u => u.includes(a1) || u.includes(b1)) && a1 === '2') { take(() => true); take(() => true); }
+    let g = (cost.g || 0) + (cost.x || 0) * (x || 0);
+    while (g-- > 0 && take(() => true)) {}
+    p.pool = pool.filter((u, i) => !used[i]);
+  }
+  function apply0(s, pid, a) {
     if (!a || typeof a !== 'object') return { ok: false, err: 'bad action' };
     const me = s.players[pid];
     const need = () => { if (!me) throw new Error('Take a seat first.'); };
@@ -358,7 +384,11 @@
             const c = s.cards[id];
             if (!c || c.zone !== 'battlefield') continue;
             if (c.ctrl !== pid) return { ok: false, err: `You don't control ${cardName(c)}.` };
-            if (c.tapped !== !!a.tapped) { c.tapped = !!a.tapped; changed++; }
+            if (c.tapped !== !!a.tapped) {
+              c.tapped = !!a.tapped; changed++;
+              // Tapped by hand for mana (not as part of paying for something): the mana goes into the pool.
+              if (a.tapped && !a.pay && !((c.faceDown || isType(c, 'creature')) && sick(s, c) && !(root.Cards && root.Cards.has(c, 'haste', s)))) addPool(s, pid, unitsOf(c));
+            }
           }
           if (!changed) return { ok: true };
           const one = ids.length === 1 ? cardName(s.cards[ids[0]]) : null;
@@ -699,6 +729,7 @@
           const tg = cleanTargets(a.tg, reqs.length);
           for (let i = 0; i < reqs.length; i++) for (const t of tg[i] || []) if (!C.legalTarget(s, reqs[i], t, pid)) return { ok: false, err: 'That isn’t a legal target for this ability.' };
           if (ab.tap) src.tapped = true;
+          spendPool(s, pid, ab.mana, num(a.x, 0, 99) || 0, a.fromPool);
           const id = 'ab' + (++s.seq) + '-' + src.id.slice(0, 12);
           s.cards[id] = { id, owner: pid, ctrl: pid, d: src.d, face: src.face || 0, faceDown: false, token: true, cmdr: false, tapped: false, counters: {}, mod: null,
             attachedTo: null, row: null, zone: 'stack', seq: ++s.seq, ab: { src: src.id, text: String(ab.text).slice(0, 400), name: cardName(src) }, tg, reqs, x: num(a.x, 0, 99) || 0 };
@@ -822,6 +853,39 @@
           if (!me.ai) return { ok: false, err: 'Only an AI player can do that.' };
           chat(s, { pid, kind: a.kind === 'a' ? 'a' : 'say', text: String(a.text || '').slice(0, 600), why: Array.isArray(a.why) ? a.why.slice(0, 12).map(x => String(x).slice(0, 200)) : undefined, re: typeof a.re === 'string' ? a.re.slice(0, 20) : undefined });
           s.rev++; return { ok: true };
+        }
+        case 'wardPay': {
+          // The caster paid the ward cost (mana tapped by hand, or life).
+          need();
+          const c = s.cards[a.id];
+          if (!c || c.zone !== 'stack' || c.ctrl !== pid || !c.wardDue) return { ok: false, err: 'Nothing to pay ward for.' };
+          let life = 0;
+          for (const t of [].concat(...(c.tg || []))) { const w = t.c && s.cards[t.c]; if (w && root.Cards.has(w, 'ward', s)) { const k = wardCost(w); if (k.life) life += k.life; } }
+          if (life) me.life -= life;
+          c.wardDue = null;
+          checkLoss(s, notes); for (const n of notes) log(s, null, n, 'auto');
+          return done(`paid the ward cost for ${cardName(c)}${life ? ` (${life} life)` : ''}`);
+        }
+        case 'pool': {
+          // Clear your own pool by hand, or add mana a card made ("Add {R}{R}{R}").
+          need();
+          if (a.clear) { me.pool = []; s.rev++; return { ok: true }; }
+          const units = (Array.isArray(a.add) ? a.add : []).map(u => String(u).toUpperCase().replace(/[^WUBRGC]/g, '')).filter(Boolean).slice(0, 20);
+          addPool(s, pid, units);
+          return done(units.length ? `added ${units.map(u => '{' + (u.length > 1 ? u.split('').join('/') : u) + '}').join('')} to their mana pool` : '');
+        }
+        case 'demand': {
+          // A player points out that someone (usually an AI) owes an effect: sacrifice, discard, draw, mill, lose life, return a permanent.
+          need();
+          const t = s.players[a.pid];
+          if (!t || !alive(s, a.pid)) return { ok: false, err: 'That player isn’t in the game.' };
+          const k = String(a.k || ''), n = num(a.n, 1, 20) || 1, what = String(a.what || 'creature').toLowerCase().replace(/[^a-z ]/g, '').slice(0, 40) || 'creature';
+          const src = `${me.name}’s reminder`;
+          if (k === 'life') { t.life -= n; log(s, pid, `reminded ${t.name} to lose ${n} life — ${t.name} is at ${t.life}`); checkLoss(s, notes); fixUp(s, notes); for (const x of notes) log(s, null, x, 'auto'); s.rev++; return { ok: true }; }
+          if (!['sacrifice', 'discard', 'draw', 'mill', 'returnOwn'].includes(k)) return { ok: false, err: 'Pick what they have to do.' };
+          todo(s, a.pid, { k, n, what: k === 'sacrifice' || k === 'returnOwn' ? what : undefined, src });
+          const verb = { sacrifice: `sacrifice ${n > 1 ? n + ' × ' : 'a '}${what}`, discard: `discard ${n} card${n > 1 ? 's' : ''}`, draw: `draw ${n} card${n > 1 ? 's' : ''}`, mill: `mill ${n} card${n > 1 ? 's' : ''}`, returnOwn: `return ${n > 1 ? n + ' × ' : 'a '}${what} they control to their hand` }[k];
+          return done(`reminded ${t.name} to ${verb}`);
         }
         case 'aiAsk': {
           need();
@@ -995,6 +1059,24 @@
     c.reqs = C && !c.faceDown ? C.targetReqs(c, c.mode) : [];
     c.tg = cleanTargets(a && a.tg, c.reqs.length);
     c.castBy = pid;
+    if (C && !c.faceDown) spendPool(s, pid, C.costOf(c), c.x, a && a.fromPool);
+    // Ward (702.21a): targeting an opponent's permanent with ward is countered unless the ward cost is paid.
+    c.wardDue = null;
+    if (C) for (const t of [].concat(...c.tg)) {
+      const w = t.c && s.cards[t.c];
+      if (!w || w.ctrl === pid || !C.has(w, 'ward', s)) continue;
+      const cost = wardCost(w);
+      if (a && a.wardPaid) { if (cost.life && s.players[pid]) s.players[pid].life -= cost.life; continue; }
+      (c.wardDue = c.wardDue || []).push(`${cardName(w)} (ward ${cost.text})`);
+    }
+  }
+  function wardCost(c) {
+    const t = root.Cards ? root.Cards.text(c) : '';
+    let m = t.match(/ward\s*(?:—|-)?\s*((?:\{[^}]+\})+)/i);
+    if (m) return { mana: m[1], text: m[1] };
+    m = t.match(/ward\s*(?:—|-)\s*pay (\d+) life/i);
+    if (m) return { life: +m[1], text: `pay ${m[1]} life` };
+    return { text: 'cost' };
   }
   function targetText(s, c) {
     if (!c || !c.tg || !c.tg.some(l => l.length)) return '';
@@ -1050,6 +1132,11 @@
     const c = stackTop(s);
     if (!c) return;
     const by = c.ctrl, nm = cardName(c);
+    if (c.wardDue && c.wardDue.length) {
+      log(s, null, `${nm} was countered — the ward cost of ${listNames(c.wardDue)} wasn’t paid (702.21a)`, 'auto');
+      if (c.ab || c.token) delete s.cards[c.id]; else moveOne(s, c, 'graveyard', 'top', null, notes);
+      return;
+    }
     const reqs = c.reqs || [];
     const tg = c.tg || [];
     const chose = tg.some(l => l && l.length);
@@ -1213,9 +1300,10 @@
         case 'fetch': todo(s, by, { k: 'fetch', n: e.n, dest: e.dest, tapped: e.tapped, split: e.split, src: srcName }); notes.push(`${nameOf(s, by)} searches for ${e.n === 1 ? 'a basic land' : e.n + ' basic lands'} (${srcName})`); break;
         case 'scry': todo(s, by, { k: 'scry', n: val(e.n), src: srcName }); break;
         case 'mill': { const who = e.who === 'target player' ? T.filter(t => t.p).map(t => t.p) : e.who === 'each opponent' ? s.seats.filter(p => p !== by) : s.seats.slice(); for (const p of who) todo(s, p, { k: 'mill', n: val(e.n), src: srcName }); break; }
-        case 'discard': { const who = e.who === 'each opponent' ? s.seats.filter(p => p !== by) : T.filter(t => t.p).map(t => t.p); for (const p of who) todo(s, p, { k: 'discard', n: val(e.n), src: srcName }); if (who.length) notes.push(`${who.map(p => nameOf(s, p)).join(', ')} must discard ${val(e.n)} (${srcName})`); break; }
+        case 'discard': { const who = e.who === 'each opponent' ? s.seats.filter(p => p !== by && alive(s, p)) : e.who === 'each player' ? s.seats.filter(p => alive(s, p)) : T.filter(t => t.p).map(t => t.p); for (const p of who) todo(s, p, { k: 'discard', n: val(e.n), src: srcName }); if (who.length) notes.push(`${who.map(p => nameOf(s, p)).join(', ')} must discard ${val(e.n)} (${srcName})`); break; }
+        case 'addMana': { addPool(s, by, e.units || []); notes.push(`${nameOf(s, by)} added ${(e.units || []).map(u => '{' + (u.length > 1 ? 'any' : u) + '}').join('')} to their mana pool (${srcName})`); break; }
         case 'returnOwn': { todo(s, by, { k: 'returnOwn', n: val(e.n), what: e.what, src: srcName }); notes.push(`${nameOf(s, by)} returns ${e.what === 'land' ? 'a land' : e.what} they control to their hand (${srcName})`); break; }
-        case 'sacrifice': { const who = e.who === 'each opponent' ? s.seats.filter(p => p !== by) : T.filter(t => t.p).map(t => t.p); for (const p of who) todo(s, p, { k: 'sacrifice', n: val(e.n), what: e.what, src: srcName }); if (who.length) notes.push(`${who.map(p => nameOf(s, p)).join(', ')} must sacrifice ${e.what} (${srcName})`); break; }
+        case 'sacrifice': { const who = e.who === 'each opponent' || e.who === 'each other player' ? s.seats.filter(p => p !== by && alive(s, p)) : e.who === 'each player' ? s.seats.filter(p => alive(s, p)) : T.filter(t => t.p).map(t => t.p); for (const p of who) todo(s, p, { k: 'sacrifice', n: val(e.n), what: e.what, src: srcName }); if (who.length) notes.push(`${who.map(p => nameOf(s, p)).join(', ')} must sacrifice ${e.what} (${srcName})`); break; }
       }
     }
     for (const p of s.seats) alertChecks(s, p);
