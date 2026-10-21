@@ -462,7 +462,7 @@
     } else if (c.zone === 'stack') {
       const P = S().prio;
       if (P && P.holder !== KEY) items.push({ note: `Waiting for ${nameOf(P.holder)} to respond. It resolves by itself when everyone has passed.` });
-      items.push({ label: 'Resolve it now (don’t wait for responses)', fn: () => G.act({ type: 'resolveNow' }) });
+      if (c.ctrl === KEY || !P || !P.holder) items.push({ label: 'Resolve it now (don’t wait for responses)', fn: () => G.act({ type: 'resolveNow' }) });
       if (!c.ab) items.push({ label: 'Counter it (to the graveyard)', fn: mv(c, 'graveyard') });
       if (two) items.push({ label: 'Flip to other face', fn: () => G.flip(c.id) });
       items.push({ label: 'Move to', sub: moveSub(c) });
@@ -671,7 +671,7 @@
     const passed = P.passed.filter(p => p !== top.ctrl && p !== P.holder).map(p => p === KEY ? 'You' : nameOf(p));
     const hp = s.players[P.holder];
     return h('div', { class: 'prio' }, h('div', { class: 'ptext' }, what + '. ', h('b', null, `Waiting for ${P.holder === KEY ? 'you' : nameOf(P.holder)}${hp && hp.ai ? ' (AI)' : ''} to respond…`), passed.length ? h('span', { class: 'muted' }, ` ${R.listNames(passed)} passed.`) : null),
-      top.ctrl === KEY && (waited > 45000 || (hp && !hp.online)) ? h('button', { onclick: () => G.act({ type: 'resolveNow' }) }, 'Resolve it anyway') : null);
+      top.ctrl === KEY ? h('button', { onclick: () => G.act({ type: 'resolveNow' }) }, waited > 45000 || (hp && !hp.online) ? 'Resolve it anyway' : 'Resolve now') : null);
   }
   // Blockers are declared: one round of priority before combat damage (510.1). Players with nothing to cast pass automatically.
   function stepBar(s, P) {
@@ -968,13 +968,27 @@
       { sep: true },
       me && s.turn.active && !me.lost ? { label: 'Concede this game…', fn: () => choose('Concede', 'You’ll be out of this game (you can keep watching).', [{ label: 'Concede', primary: true, fn: () => G.act({ type: 'lose', why: 'concede' }) }, { label: 'Cancel', fn: () => {} }]) } : null,
       me ? { label: 'Leave my seat…', fn: () => choose('Leave seat', 'Your cards leave the table.', [{ label: 'Leave', primary: true, fn: () => G.act({ type: 'leave' }) }, { label: 'Cancel', fn: () => {} }]) } : null,
-      ...s.seats.filter(p => !s.players[p].online && p !== KEY).map(p => ({ label: `Remove ${nameOf(p)} (offline)`, fn: () => G.act({ type: 'removeSeat', pid: p }) })),
+      ...s.seats.filter(p => p !== KEY && (canRemove(p) || !s.players[p].online)).map(p => ({ label: `Remove ${nameOf(p)}${s.players[p].ai ? ' (AI)' : ''}${s.players[p].online ? '' : ' (offline)'}…`, fn: () => removePlayer(p) })),
       ...s.seats.filter(p => s.players[p].ai && aiOf(p)).map(p => ({ label: `${nameOf(p)} (AI) settings…`, fn: () => manageAIModal(p) })),
       { sep: true },
       { label: 'Open a different table…', fn: tableModal }
     ];
   }
 
+  // The host (the first person to sit down) can remove anyone; you can always remove your own AI or an offline player.
+  const isHost = () => { const s = S(); const h = s.hostPid && s.players[s.hostPid] ? s.hostPid : s.seats.find(p => s.players[p] && !s.players[p].ai); return h === KEY; };
+  const canRemove = p => isHost() || !!aiOf(p);
+  function removePlayer(p) {
+    const s = S(), pl = s.players[p]; if (!pl) return;
+    choose(`Remove ${pl.name}?`, `${pl.name}${pl.ai ? ' (AI)' : ''} leaves the table, and their cards leave with them.${pl.ai ? '' : ' They can’t sit back down until a new game starts.'}`, [
+      { label: 'Remove', primary: true, fn: async () => {
+        const a = aiOf(p);
+        if (a) { aiPost(a.id, { t: 'remove' }); setTimeout(() => { if (S().players[p]) G.act({ type: 'removeSeat', pid: p }); }, 2500); }
+        else await G.act({ type: 'removeSeat', pid: p });
+        G.toast(`${pl.name} was removed from the table.`);
+      } },
+      { label: 'Cancel', fn: () => {} }]);
+  }
   function copyText(text, msg) {
     try { navigator.clipboard.writeText(text).then(() => G.toast(msg), () => window.prompt('Copy this:', text)); }
     catch (e) { window.prompt('Copy this:', text); }
@@ -1273,7 +1287,7 @@
     setTimeout(() => { if (G.aiStick !== false) list.scrollTop = list.scrollHeight; }, 0);
     let to = G.aiAskTo && ais.includes(G.aiAskTo) ? G.aiAskTo : ais[0];
     const inp = h('input', { type: 'text', id: 'aiask', value: G.aiDraft || '', placeholder: ais.length ? 'Ask the AI — “Is that legal?”, “Why attack me?”…' : 'Add an AI player first', disabled: !ais.length || !G.seated(), oninput: e => { G.aiDraft = e.target.value; } });
-    const send = () => { const t = inp.value.trim(); if (!t || !to) return; G.act({ type: 'aiAsk', to, text: t }); inp.value = ''; G.aiDraft = ''; G.aiStick = true; };
+    const send = () => { const t = inp.value.trim(); if (!t || !to) return; G.act({ type: 'aiAsk', to, text: t }); inp.value = ''; G.aiDraft = ''; G.aiStick = true; if (COARSE) inp.blur(); };
     inp.addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
     const mineAIs = ais.filter(p => aiOf(p));
     return h('aside', { id: 'log', class: 'aipanel' },
@@ -1435,9 +1449,12 @@
       if (toTop.length) { G.P.library.unshift(...toTop.splice(0)); G.savePriv(); G.act({ type: 'log', text: 'put a card on top of their library' }); }
     };
     openModal('Search your library', b => {
-      const inp = h('input', { type: 'search', id: 'libsearch', placeholder: 'Filter by name or type', value: q, oninput: e => { q = e.target.value; refreshModal(); const i = $('#libsearch'); i.focus(); i.setSelectionRange(q.length, q.length); } });
-      const cards = G.P.library.filter(c => !q || (c.d.n + ' ' + c.d.faces[0].t).toLowerCase().includes(q.toLowerCase()))
-        .slice().sort((a, b2) => a.d.n.localeCompare(b2.d.n));
+      const inp = h('input', { type: 'search', id: 'libsearch', placeholder: 'Filter by name or type', value: q, oninput: e => {
+        q = e.target.value; const ql = q.toLowerCase();
+        // Hide what doesn't match without rebuilding, so the phone keyboard stays up.
+        b.querySelectorAll('.gridcards .card').forEach(el => { const c = G.P.library.find(x => x.id === el.dataset.id); el.hidden = !!(c && ql && !(c.d.n + ' ' + c.d.faces[0].t).toLowerCase().includes(ql)); });
+      } });
+      const cards = G.P.library.slice().sort((a, b2) => a.d.n.localeCompare(b2.d.n));
       b.append(h('p', { class: 'muted' }, `${plural(G.P.library.length, 'card')}, sorted by name. Your library is shuffled when you close this, and everyone is told you searched.`), inp);
       b.append(h('div', { class: 'gridcards', 'data-scroll': 'search' }, cards.map(c => cardEl(Object.assign({ zone: 'library', owner: KEY, counters: {} }, c), {
         menu: () => [
@@ -1673,7 +1690,7 @@
         const search = h('input', { type: 'search', id: 'cardsearch', placeholder: 'Search Scryfall to add a card', value: acQ, autocomplete: 'off' });
         search.addEventListener('input', e => {
           acQ = e.target.value; clearTimeout(acT);
-          acT = setTimeout(async () => { acBusy = true; try { acList = await Scry.autocomplete(acQ); } catch (err) { acList = []; G.toast('Couldn’t reach Scryfall.', 'err'); } acBusy = false; refreshModal(); const i = $('#cardsearch'); if (i) { i.focus(); i.setSelectionRange(acQ.length, acQ.length); } }, 250);
+          acT = setTimeout(async () => { try { acList = await Scry.autocomplete(acQ); } catch (err) { acList = []; G.toast('Couldn’t reach Scryfall.', 'err'); } showAc(); }, 250);
         });
         const addName = async n => {
           try {
@@ -1685,7 +1702,9 @@
           } catch (e) { G.toast('Couldn’t find that card on Scryfall.', 'err'); }
         };
         search.addEventListener('keydown', e => { if (e.key === 'Enter' && acList[0]) addName(acList[0]); });
-        const ac = acList.length ? h('div', { class: 'ac' }, acList.slice(0, 12).map(n => h('button', { onclick: () => addName(n) }, n))) : null;
+        const acEl = () => acList.length ? h('div', { class: 'ac' }, acList.slice(0, 12).map(n => h('button', { onclick: () => addName(n) }, n))) : null;
+        const ac = acEl();
+        const showAc = () => { const w = search.parentElement; if (!w) return; const old = w.querySelector('.ac'); if (old) old.remove(); const n = acEl(); if (n) w.append(n); };
 
         const groups = [['Commander', c => c.cmdr], ['Creatures', c => /creature/i.test(c.d.faces[0].t)], ['Planeswalkers', c => /planeswalker/i.test(c.d.faces[0].t)],
           ['Instants & sorceries', c => /instant|sorcery/i.test(c.d.faces[0].t)], ['Artifacts', c => /artifact/i.test(c.d.faces[0].t)], ['Enchantments', c => /enchantment/i.test(c.d.faces[0].t)],
@@ -1717,7 +1736,7 @@
         ed.append(
           h('div', { class: 'row' }, name, h('button', { class: 'primary', disabled: !G.me() || !total, onclick: () => play(deck) }, G.P.deckId === deck.id ? 'Restart with this deck' : 'Play this deck')),
           h('p', { class: 'muted' }, `${total} cards · ${lands} lands · ${cmdN ? plural(cmdN, 'commander') : 'no commander picked — tap ☆ next to a card'}`),
-          h('div', { class: 'acwrap' }, search, acBusy ? h('span', { class: 'muted small' }, ' searching…') : null, ac),
+          h('div', { class: 'acwrap' }, search, ac),
           commanderPanel(deck, saveDeck),
           h('div', { class: 'looks' },
             h('div', { class: 'sleeve' }, h('img', { src: deck.sleeve || BACK, alt: 'Sleeve' }),
@@ -1976,7 +1995,7 @@
     if (G.wantSeat && !G.me() && (G.status === 'host' || G.status === 'connected') && !G.seatBusy) {
       if (S().seats.length < R.MAX_SEATS) {
         G.seatBusy = true;
-        G.act({ type: 'join', name: (G.myName() || 'Player') }).then(r => { G.seatBusy = false; if (r.ok) G.wantSeat = false; else setTimeout(render, 2000); });
+        G.act({ type: 'join', name: (G.myName() || 'Player') }).then(r => { G.seatBusy = false; if (r.ok || r.kicked) G.wantSeat = false; else setTimeout(render, 2000); });
       } else { G.wantSeat = false; G.toast('The table is full (6 players). You can watch.', 'err'); }
     }
     // keep scroll positions
@@ -2017,8 +2036,12 @@
   const release = () => { held = false; if (owed) { owed = false; G.render(); } };
   addEventListener('pointerup', () => setTimeout(release, 0), true);
   addEventListener('pointercancel', release, true);
+  // While someone is typing, redraws wait until they leave the box: rebuilding it would close a phone's keyboard.
+  // (On a computer, boxes on the table itself are redrawn with the cursor put back; boxes in a window always wait.)
+  const typingNow = () => { const a = document.activeElement; return !!a && document.body.contains(a) && (COARSE || !!a.closest('.overlay')) && (a.tagName === 'TEXTAREA' || a.isContentEditable || (a.tagName === 'INPUT' && /^(text|search|number|email|url|tel|password)$/i.test(a.type))); };
+  addEventListener('focusout', () => setTimeout(() => { if (owed && !held && !typingNow()) { owed = false; G.render(); } }, 0), true);
   G.render = () => {
-    if (held) { owed = true; return; }
+    if (held || typingNow()) { owed = true; return; }
     if (rq) return;
     rq = true;
     // Animation frames pause while the page can't be seen; the timer keeps the table moving (joining, auto-pass…).

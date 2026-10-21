@@ -563,7 +563,7 @@
       if (m.t === 'act') {
         const r = Rules.apply(this.state, c.pid, m.a);
         if (r.ok) { this.resQ.push([src, { t: 'res', rid: m.rid, ok: true }]); this.publish(); }
-        else this.send(src, { t: 'res', rid: m.rid, ok: false, err: r.err });
+        else this.send(src, { t: 'res', rid: m.rid, ok: false, err: r.err, kicked: !!r.kicked });
       } else if (m.t === 'look') {
         if (!this.limited(c, 'look', 1500)) this.setImg(c.pid, m.look);
       } else if (m.t === 'img') {
@@ -718,7 +718,7 @@
         const pid = String(m.pid || '');
         this.imgVer[pid] = m.ver; this.sleeves[pid] = cleanLook(m.look); this.onSleeve(pid, this.sleeves[pid]);
       }
-      else if (m.t === 'res') { const p = this.pending.get(m.rid); if (p) { this.pending.delete(m.rid); p.res({ ok: m.ok, err: m.err, rejected: !m.ok }); } }
+      else if (m.t === 'res') { const p = this.pending.get(m.rid); if (p) { this.pending.delete(m.rid); p.res({ ok: m.ok, err: m.err, rejected: !m.ok, kicked: !!m.kicked }); } }
     }
     // Keep the host's signed checkpoint if it matches our copy exactly — it's what lets a takeover resume safely.
     async keepCheckpoint(ck) {

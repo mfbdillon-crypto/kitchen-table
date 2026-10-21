@@ -419,7 +419,7 @@
     [/flash/, 'Flash: you can cast it any time you could cast an instant (702.8).'],
     [/infect|poison/, 'Infect: damage to players is dealt as poison counters (10 poison and you lose), and to creatures as −1/−1 counters (702.90).'],
     [/summoning sick|sickness|just came in|why can't .*attack/, 'Summoning sickness: a creature can’t attack or use {T} abilities unless its controller has controlled it continuously since their most recent turn began — unless it has haste (302.6).'],
-    [/land.*(turn|once|two|second|extra)|play.*land/, 'Lands: you may play one land per turn, during your main phase, when the stack is empty (305.2). Extra land drops only come from effects — use “Move to → Battlefield” for those.'],
+    [/land.*(turn|once|two|second|extra)|play.*land/, 'Lands: you may play one land per turn, during your main phase, when the stack is empty (305.2). Extra land drops only come from effects — use the Move to option for those.'],
     [/commander tax|tax/, 'Commander tax: each time you cast your commander from the command zone, it costs {2} more for each previous time (903.8).'],
     [/commander damage|21/, 'Commander damage: a player who has been dealt 21 or more combat damage by the same commander loses the game (903.10a).'],
     [/mulligan/, 'Mulligans here: your first mulligan in Commander is free, then each later one means putting one more card on the bottom (London mulligan, 103.5).'],
@@ -520,6 +520,7 @@
         G.joining = true;
         const r = await G.act({ type: 'join', name: cfg.name, ai: { skill: cfg.skill, by: cfg.owner } });
         G.joining = false;
+        if (r.kicked) { G.dead = true; tell({ t: 'removed' }); return false; }
         if (r.ok) say(`Hi! I’m ${cfg.name}, an AI player (${cfg.skill}). I follow the rules and explain my moves here — ask me anything.`);
         return r.ok;
       }

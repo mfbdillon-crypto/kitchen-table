@@ -217,7 +217,9 @@
       switch (a.type) {
         case 'join': {
           if (!me) {
+            if (s.kicked && s.kicked[pid]) return { ok: false, err: 'The host removed you from this table.', kicked: true };
             if (s.seats.length >= MAX_SEATS) return { ok: false, err: 'The table is full (6 players).' };
+            if (!s.hostPid || !s.players[s.hostPid]) s.hostPid = s.seats.find(p => s.players[p] && !s.players[p].ai) || (a.ai ? null : pid);
             s.players[pid] = newPlayer(a.name);
             if (a.ai && typeof a.ai === 'object') s.players[pid].ai = { skill: ['easy', 'normal', 'hard'].includes(a.ai.skill) ? a.ai.skill : 'normal', by: String(a.ai.by || '').slice(0, 40) };
             s.seats.push(pid);
@@ -234,8 +236,12 @@
             if (c.owner === pid) { if (c.zone === 'battlefield') leaveBattlefield(s, c, notes); delete s.cards[c.id]; }
             else if (c.ctrl === pid) c.ctrl = c.owner;
           }
-          delete s.players[pid]; delete s.inbox[pid];
+          // Their spells leave the stack, and nobody waits on them for priority or blocks any more.
+          if (s.prio) { s.prio.order = s.prio.order.filter(p => p !== pid); s.prio.passed = s.prio.passed.filter(p => p !== pid); if (s.prio.holder === pid) { s.prio.holder = null; nextHolder(s, notes); } }
+          if (s.combat) { s.combat.waiting = s.combat.waiting.filter(p => p !== pid); delete s.combat.ok[pid]; for (const [id, x] of Object.entries(s.combat.att)) if (x.def.p === pid || !s.cards[id]) delete s.combat.att[id]; }
+          delete s.players[pid]; delete s.inbox[pid]; if (s.todo) delete s.todo[pid];
           s.seats = s.seats.filter(x => x !== pid);
+          if (s.hostPid === pid) s.hostPid = s.seats.find(p => s.players[p] && !s.players[p].ai) || null;
           const wasActive = s.turn.active === pid;
           if (wasActive) { s.turn.active = nextSeat; s.turn.phase = 1; s.turn.n++; }
           // The monarch / initiative passes to the active player, or the next player if the leaver was active.
@@ -248,8 +254,14 @@
           need();
           const t = s.players[a.pid];
           if (!t) return { ok: false, err: 'No such player.' };
-          if (t.online && a.pid !== pid) return { ok: false, err: 'You can only remove a player who is offline.' };
-          return apply(s, a.pid, { type: 'leave' });
+          if (!s.hostPid || !s.players[s.hostPid]) s.hostPid = s.seats.find(p => s.players[p] && !s.players[p].ai) || null;
+          const byHost = pid === s.hostPid || (t.ai && t.ai.by === pid);
+          if (t.online && a.pid !== pid && !byHost) return { ok: false, err: 'Only the host can remove a player who is still here.' };
+          if (a.pid !== pid && byHost) { s.kicked = s.kicked || {}; s.kicked[a.pid] = Date.now(); }
+          const name = t.name;
+          const r = apply(s, a.pid, { type: 'leave' });
+          if (r.ok && a.pid !== pid) { log(s, pid, `removed ${name} from the table`); fixUp(s); s.rev++; }
+          return r;
         }
         case 'resetMine': {
           // Switching decks mid-game: take all of your cards off the table.
@@ -607,6 +619,8 @@
             ns.players[id] = Object.assign(newPlayer(old.name), { online: old.online, phone: old.phone, sleeveRev: old.sleeveRev, deckName: old.deckName }, old.ai ? { ai: old.ai } : {});
           }
           ns.rev = s.rev + 1;
+          ns.hostPid = s.hostPid;
+          ns.kicked = a.rematch ? s.kicked : undefined;   // a brand-new game lets removed players sit down again
           ns.rematch = !!a.rematch;
           if (ns.rematch && keep.length) {
             // Rematch: same decks, new random turn order (103.1).
@@ -647,7 +661,8 @@
           }
           if (!top) return { ok: true };
           const waited = P ? Date.now() - (P.since || 0) : 1e9;
-          if (P && live(s, P.holder) && waited < 45000) return { ok: false, err: `${nameOf(s, P.holder)} is still deciding. You can resolve it yourself after 45 seconds.` };
+          // The spell's own controller may skip the wait (a casual-table shortcut); anyone else waits 45 seconds.
+          if (P && live(s, P.holder) && waited < 45000 && top.ctrl !== pid) return { ok: false, err: `${nameOf(s, P.holder)} is still deciding. You can resolve it yourself after 45 seconds.` };
           log(s, pid, P && P.holder ? `resolved ${cardName(top)} without waiting for ${nameOf(s, P.holder)}` : `resolved ${cardName(top)}`);
           resolveTop(s, notes);
           if (stackCards(s).length) startPrio(s, null, notes); else s.prio = null;
@@ -950,7 +965,7 @@
       if (T.phase < PI('Main 1')) T.phase = PI('Main 1');     // playing a land in upkeep/draw just moves you to your main phase
       else return 'You can play a land only in one of your main phases.';
     }
-    if ((T.lands && T.lands[pid] || 0) >= 1) return 'You already played a land this turn. If an effect lets you put another land onto the battlefield, use “Move to → Battlefield” instead.';
+    if ((T.lands && T.lands[pid] || 0) >= 1) return 'You can only play one land per turn. If you need a second land, use the Move to option.';
     return null;
   }
   function cleanTargets(tg, n) {

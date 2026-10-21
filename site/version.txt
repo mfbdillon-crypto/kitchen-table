@@ -1,1 +1,1 @@
-v4.2 2026-10-21T15:11:55Z AI breaks long board stalls; ability text wording
+v4.3 2026-10-21T16:13:21Z resolve-now works, host can remove players, one-land message, phone keyboard stays up

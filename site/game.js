@@ -282,6 +282,12 @@
   // Play a land from your hand (counts as your one land for the turn).
   G.playLand = async function (id, tapped) {
     const c = P.hand.find(x => x.id === id); if (!c) return { ok: false };
+    const T = G.S && G.S.turn;
+    if (T && T.active === KEY && (T.lands && T.lands[KEY] || 0) >= 1) {
+      const err = 'You can only play one land per turn. If you need a second land, use the Move to option.';
+      G.toast(err, 'err'); if (G.phoneLinked) phoneBanner(err); G.render();
+      return { ok: false, err };
+    }
     await toPublic(P.hand, [id], 'battlefield', { playLand: true, tapped }, 'hand');
     return { ok: !P.hand.some(x => x.id === id) };
   };
@@ -617,7 +623,7 @@
       }
     });
   }
-  function phoneBanner(text) { if (G.phone && G.phone.linked) G.phone.send({ t: 'banner', text: String(text).replace(/use “Move to → Battlefield” instead/, 'tap the card and choose “Battlefield (no casting)” instead') }); }
+  function phoneBanner(text) { if (G.phone && G.phone.linked) G.phone.send({ t: 'banner', text: String(text).replace(/use the Move to option\./, 'tap the card and use the Move to option.') }); }
   function phonePrio() {
     const s = G.S; if (!s || !s.prio) return null;
     const top = R.stackTop(s);

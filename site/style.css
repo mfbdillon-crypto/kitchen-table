@@ -847,3 +847,4 @@ button.small { padding: 3px 9px; font-size: 13px; }
 .app.touch #log { z-index: 27; }
 .crow button.bignum { font: 700 22px var(--display); min-width: 54px; background: transparent; border-color: transparent; text-decoration: underline dotted #6b7d73; text-underline-offset: 4px; }
 .crow button.bignum:hover { border-color: #44554c; }
+.pacts .pmove { font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-top: 4px; }
