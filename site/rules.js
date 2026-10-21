@@ -47,7 +47,7 @@
     const f = face(c); return (f && f.n) || c.d.n || 'a card';
   }
   function typeLine(c) { const f = face(c); return (f && f.t) || ''; }
-  function isType(c, word) { return new RegExp('\\b' + word + '\\b', 'i').test(typeLine(c)); }
+  function isType(c, word) { return root.Cards ? root.Cards.isType(c, word) : new RegExp('\\b' + word + '\\b', 'i').test(typeLine(c)); }
   function rowFor(c) {
     if (c.faceDown) return 'creatures';          // face-down permanents are 2/2 creatures (708.2a)
     if (isType(c, 'creature')) return 'creatures';
@@ -204,6 +204,7 @@
 
   // ======================= apply an action =======================
   function apply(s, pid, a) {
+    if (root.Cards && root.Cards.setState) root.Cards.setState(s);
     const before = s.turn ? s.turn.n + ':' + s.turn.phase : '';
     const r = apply0(s, pid, a);
     if (r && r.ok && s.turn && before !== s.turn.n + ':' + s.turn.phase) emptyPools(s);
@@ -1302,6 +1303,9 @@
         case 'mill': { const who = e.who === 'target player' ? T.filter(t => t.p).map(t => t.p) : e.who === 'each opponent' ? s.seats.filter(p => p !== by) : s.seats.slice(); for (const p of who) todo(s, p, { k: 'mill', n: val(e.n), src: srcName }); break; }
         case 'discard': { const who = e.who === 'each opponent' ? s.seats.filter(p => p !== by && alive(s, p)) : e.who === 'each player' ? s.seats.filter(p => alive(s, p)) : T.filter(t => t.p).map(t => t.p); for (const p of who) todo(s, p, { k: 'discard', n: val(e.n), src: srcName }); if (who.length) notes.push(`${who.map(p => nameOf(s, p)).join(', ')} must discard ${val(e.n)} (${srcName})`); break; }
         case 'addMana': { addPool(s, by, e.units || []); notes.push(`${nameOf(s, by)} added ${(e.units || []).map(u => '{' + (u.length > 1 ? 'any' : u) + '}').join('')} to their mana pool (${srcName})`); break; }
+        case 'surveil': todo(s, by, { k: 'surveil', n: val(e.n), src: srcName }); break;
+        case 'exileGy': for (const t of T) if (t.p) { let n = 0; for (const c of Object.values(s.cards)) if (c.zone === 'graveyard' && c.owner === t.p) { moveOne(s, c, 'exile', 'top', null, notes); n++; } notes.push(`${srcName} exiled ${n} card${n === 1 ? '' : 's'} from ${nameOf(s, t.p)}’s graveyard`); } break;
+        case 'sacUnless': todo(s, by, { k: 'sacUnless', n: val(e.n), what: e.what, srcId: src.ab ? src.ab.src : src.id, src: srcName }); notes.push(`${nameOf(s, by)} sacrifices ${e.what === 'land' ? 'a land' : e.what} or ${srcName} (${srcName})`); break;
         case 'returnOwn': { todo(s, by, { k: 'returnOwn', n: val(e.n), what: e.what, src: srcName }); notes.push(`${nameOf(s, by)} returns ${e.what === 'land' ? 'a land' : e.what} they control to their hand (${srcName})`); break; }
         case 'sacrifice': { const who = e.who === 'each opponent' || e.who === 'each other player' ? s.seats.filter(p => p !== by && alive(s, p)) : e.who === 'each player' ? s.seats.filter(p => alive(s, p)) : T.filter(t => t.p).map(t => t.p); for (const p of who) todo(s, p, { k: 'sacrifice', n: val(e.n), what: e.what, src: srcName }); if (who.length) notes.push(`${who.map(p => nameOf(s, p)).join(', ')} must sacrifice ${e.what} (${srcName})`); break; }
       }

@@ -567,6 +567,16 @@
         for (const c of sorted) { if (pick.length >= (t.n || 1)) break; const col = ((C.manaSource(c) || {}).colors || ''); if (!seen.has(col) || sorted.length <= (t.n || 1)) { pick.push(c.id); seen.add(col); } }
         for (const c of sorted) { if (pick.length >= (t.n || 1)) break; if (!pick.includes(c.id)) pick.push(c.id); }
         await G.fetchLands(pick, t);
+      } else if (t.k === 'surveil') {
+        const top = G.P.library.slice(0, t.n || 1);
+        const lands = mine('battlefield').filter(c => R.isType(c, 'land')).length;
+        const decisions = top.map(c => ({ id: c.id, dest: (G.isLand(c) ? lands >= 6 : (+c.d.cmc || 0) > lands + 2) ? 'graveyard' : 'top' }));
+        await G.applyLook('surveil', top.length, decisions);
+      } else if (t.k === 'sacUnless') {
+        const pool = mine('battlefield').filter(c => C.matchesWhat(c, t.what)).sort((a, b) => (b.tapped - a.tapped) || value(a) - value(b));
+        const src = S().cards[t.srcId];
+        if (pool.length) { const names = pool.slice(0, t.n || 1).map(cn); await G.move(pool.slice(0, t.n || 1).map(c => c.id), 'graveyard', null, { msg: 'sacrificed' }); say(`I sacrifice ${R.listNames(names)} to keep ${t.src} (its upkeep cost).`); }
+        else if (src && src.zone === 'battlefield') { await G.move([src.id], 'graveyard', null, { msg: 'sacrificed' }); say(`I have no ${t.what} to sacrifice, so ${t.src} is sacrificed.`); }
       } else if (t.k === 'scry') {
         const top = G.P.library.slice(0, t.n || 1);
         const lands = mine('battlefield').filter(c => R.isType(c, 'land')).length;

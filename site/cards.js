@@ -12,7 +12,27 @@
   // ---------- basic card facts ----------
   function face(c) { return c && c.d && c.d.faces ? (c.d.faces[c.face || 0] || c.d.faces[0]) : null; }
   function typeLine(c) { const f = face(c); return (f && f.t) || ''; }
-  function isType(c, w) { return new RegExp('\\b' + w + '\\b', 'i').test(typeLine(c)); }
+  // The game state the rules are looking at (for things like a god's devotion check).
+  let CUR = null;
+  function setState(s) { CUR = s; }
+  function isType(c, w) {
+    if (!new RegExp('\\b' + w + '\\b', 'i').test(typeLine(c))) return false;
+    if (/^creatures?$/i.test(w) && CUR && c && c.zone === 'battlefield' && !c.faceDown && notCreatureNow(CUR, c)) return false;
+    return true;
+  }
+  // Theros gods: "As long as your devotion to black is less than five, this isn't a creature." (700.5)
+  function notCreatureNow(s, c) {
+    const f = face(c); const o = f && f.o; if (!o || !/isn't a creature/i.test(o)) return false;
+    const m = o.match(/as long as your devotion to (white|blue|black|red|green)(?: and (white|blue|black|red|green))? is less than (\w+)/i); if (!m) return false;
+    const want = [m[1], m[2]].filter(Boolean).map(x => ({ white: 'W', blue: 'U', black: 'B', red: 'R', green: 'G' })[x.toLowerCase()]);
+    let dev = 0;
+    for (const p of Object.values(s.cards || {})) {
+      if (p.zone !== 'battlefield' || p.ctrl !== c.ctrl || p.faceDown) continue;
+      const mc = (face(p) || {}).mc || '';
+      for (const sym of mc.match(/\{[^}]+\}/g) || []) if (want.some(col => sym.includes(col))) dev++;
+    }
+    return dev < (toNum(m[3]) || 5);
+  }
   function nameOf(c) { const f = face(c); return (f && f.n) || (c && c.d && c.d.n) || ''; }
   function rawText(c) { if (!c || c.faceDown) return ''; const f = face(c); return (f && f.o) || ''; }
   // Rules text with reminder text removed and the card's own name replaced by "this".
@@ -210,7 +230,7 @@
     const stop = /^(you|an|your|that|with|without|to|from|and|gets?|gains?|loses?|deals?|of|on|in|into|at|is|are|can't|has|have|attacking|blocking|tapped|untapped|it|its|their|this|each|until|for|then|unless|if|as|the|a|or)$/;
     let i = 0;
     while (i < words.length) {
-      let w = words[i].replace(/[.,;:]$/, '');
+      let w = words[i].replace(/[.,;:]$/, '').replace(/'s$/, '');
       const endsHere = /[.,;:]$/.test(words[i]);
       if (w === 'or' && i > 0) { i++; continue; }
       if (/^non-?/.test(w) && w.length > 4) { req.non.push(w.replace(/^non-?/, '').replace(/s$/, '')); i++; if (endsHere) break; continue; }
@@ -460,7 +480,9 @@
     let understood = true;
     const sentences = [];
     const VERB = /^(draws?|loses?|gains?|discards?|mills?|sacrifices?|creates?|scry|puts?|returns?|exiles?|destroys?|deals?|you (?:draw|lose|gain|create|scry|mill|discard|sacrifice|put|return))\b/i;
-    for (const sent of str.replace(/\.?\n/g, '. ').split(/\.\s+|\.$/).map(x => x.trim()).filter(Boolean)) {
+    // Abilities granted to a token in quotes ("It has “Sacrifice this creature: Add {C}.”") describe the token, not this effect.
+    const str2 = str.replace(/\.?\s*(?:it|they) (?:has|have) ["“][^"”]*["”]\.?/gi, '.').replace(/["“][^"”]*["”]/g, 'that ability');
+    for (const sent of str2.replace(/\.?\n/g, '. ').split(/\.\s+|\.$/).map(x => x.trim()).filter(Boolean)) {
       // "You draw two cards and you lose 2 life" / "Target player draws two cards and loses 2 life": one clause each.
       const parts = sent.split(/,? and (?=(?:you )?(?:draws?|loses? (?:\d|x|that|life)|gains? (?:\d|x|that|life)|discards?|mills?|sacrifices?|creates?|scry)\b)|, then (?=(?:you )?(?:draw|scry|lose|gain))/i);
       let subject = '';
@@ -527,6 +549,9 @@
       else if ((m = s.match(/^search your library for (up to )?(a|one|two|three|\d+) basic lands? cards?(?:[^,]*)?, (?:reveal (?:it|them|those cards), )?(?:and )?put (it|them|one|one of them|that card|those cards) (onto the battlefield|into your hand)( tapped)?(?: and the other into your hand)?(?:, then shuffle)?$/))) {
         out.push({ k: 'fetch', n: toNum(m[2]), dest: /hand/.test(m[4]) ? 'hand' : 'battlefield', tapped: !!m[5], split: /the other into your hand/.test(s) }); hit = true;
       } else if ((m = s.match(/^scry (\d+|x)$/))) { out.push({ k: 'scry', n: toNum(m[1]) }); hit = true; }
+      else if ((m = s.match(/^surveil (\d+|x|one|two|three)$/))) { out.push({ k: 'surveil', n: toNum(m[1]) }); hit = true; }
+      else if ((m = s.match(/^exile (?:all cards from )?target player's graveyard$/))) { out.push({ k: 'exileGy', ti: t0 }); hit = true; }
+      else if ((m = s.match(/^sacrifice this unless you sacrifice (a|an|one|two) ([a-z ]+)$/))) { out.push({ k: 'sacUnless', n: toNum(m[1]), what: m[2] }); hit = true; }
       else if ((m = s.match(/^(target player|each opponent|each player) mills (\d+|a|two|three|four|five) cards?$/))) { out.push({ k: 'mill', n: toNum(m[2]), who: m[1], ti: m[1] === 'target player' ? t0 : null }); hit = true; }
       else if ((m = s.match(/^(target player|target opponent|each opponent|each player) discards (a|one|two|three|\d+) cards?$/))) { out.push({ k: 'discard', n: toNum(m[2]), who: m[1], ti: m[1].startsWith('target') ? t0 : null }); hit = true; }
       else if ((m = s.match(/^add ((?:\{[wubrgc]\})+)$/))) { out.push({ k: 'addMana', units: m[1].match(/[wubrgc]/g).map(x => x.toUpperCase()) }); hit = true; }
@@ -598,5 +623,5 @@
   function instantSpeed(c) { return /\binstant\b/i.test(typeLine(c)) || has(c, 'flash'); }
 
   root.Cards = { KEYWORDS, colorsOf, face, typeLine, isType, nameOf, text, rawText, keywords, has, statics, pt, parseCost, costOf, manaValue, costTotal, manaSource, pay,
-    targetReqs, targetsIn, legalTarget, targetChoices, reqLabel, protections, protectedFrom, blockProblem, matchesWhat, helpfulTarget, orderChoices, modesOf, effectsIn, effectsOf, abilities, triggers, instantSpeed, isPermanentCard, toNum, spellText };
+    setState, notCreatureNow, targetReqs, targetsIn, legalTarget, targetChoices, reqLabel, protections, protectedFrom, blockProblem, matchesWhat, helpfulTarget, orderChoices, modesOf, effectsIn, effectsOf, abilities, triggers, instantSpeed, isPermanentCard, toNum, spellText };
 })(typeof window !== 'undefined' ? window : globalThis);

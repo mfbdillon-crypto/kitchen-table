@@ -1362,10 +1362,20 @@
 
   // ======================= effects that ask you something (search, scry, discard, sacrifice) =======================
   G.onTodo = (t, ack) => ask(() => {
-    if (t.k === 'scry') {
+    if (t.k === 'scry' || t.k === 'surveil') {
       const n = Math.min(t.n || 1, G.P.library.length);
       if (!n) { ack(); return pumpAsks(); }
-      lookModal('scry', n, () => { ack(); setTimeout(pumpAsks, 50); });
+      lookModal(t.k, n, () => { ack(); setTimeout(pumpAsks, 50); });
+      return;
+    }
+    if (t.k === 'sacUnless') {
+      const src = S().cards[t.srcId];
+      const pool = Object.values(S().cards).filter(c => c.zone === 'battlefield' && c.ctrl === KEY && CD.matchesWhat(c, t.what));
+      const sacSrc = async () => { if (src && src.zone === 'battlefield') await G.move([src.id], 'graveyard', null, { msg: 'sacrificed' }); ack(); setTimeout(pumpAsks, 50); };
+      if (!pool.length) { G.toast(`You have no ${t.what} to sacrifice, so ${t.src} is sacrificed.`, 'info'); sacSrc(); return; }
+      choose(t.src, `Sacrifice ${/^[aeiou]/.test(t.what) ? 'an' : 'a'} ${t.what}, or sacrifice ${t.src}.`, [
+        { label: `Sacrifice ${/^[aeiou]/.test(t.what) ? 'an' : 'a'} ${t.what}`, primary: true, fn: () => { G.onTodo(Object.assign({}, t, { k: 'sacrifice' }), ack); } },
+        { label: `Sacrifice ${t.src}`, fn: sacSrc }]);
       return;
     }
     if (t.k === 'fetch') {

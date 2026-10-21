@@ -587,7 +587,7 @@
 
   let snapT = null;
   function onState(s) {
-    G.S = s;
+    G.S = s; if (window.Cards && window.Cards.setState) window.Cards.setState(s);
     clearTimeout(snapT);
     snapT = setTimeout(() => LS.set('kt:pub:' + TABLE, s), 800);
     if (P.gameId !== s.gameId) {

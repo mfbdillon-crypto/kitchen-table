@@ -1,1 +1,1 @@
-v5 2026-10-21T20:31:29Z ready-made decks by bracket, mana pool, hand glow, ward, Make them…, Remove button, badge corner kept clear
+v5.1 2026-10-21T20:46:17Z surveil, graveyard exile, Gitrog-style upkeep costs, gods' devotion, token abilities, AI help
