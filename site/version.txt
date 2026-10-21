@@ -1,1 +1,1 @@
-v4.3 2026-10-21T16:13:21Z resolve-now works, host can remove players, one-land message, phone keyboard stays up
+v4.4 2026-10-21T16:33:52Z AI audit fixes: no self-kills, lethal cmdr/poison blocks, legal sacrifices, protection, more triggers, Karoo lands

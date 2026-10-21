@@ -135,7 +135,7 @@
       const what = m[2];
       let amount = 1, colors = '';
       const pips = [...what.matchAll(/\{([WUBRGC])\}/g)].map(x => x[1]);
-      if (/any color|any combination of colors|any type/i.test(what)) { colors = 'WUBRG'; const n = what.match(/^(one|two|three|\d+) mana/i); amount = n ? toNum(n[1]) : 1; }
+      if (/any (?:one )?color|any combination of colors|any type/i.test(what)) { colors = 'WUBRG'; const n = what.match(/^(one|two|three|\d+) mana/i); amount = n ? toNum(n[1]) : 1; }
       else if (/ or /.test(what) && pips.length) { colors = [...new Set(pips)].join(''); amount = 1; }
       else if (pips.length) { colors = [...new Set(pips)].join(''); amount = pips.length; }
       else continue;
@@ -157,19 +157,22 @@
     const need = [];
     for (const col of ['W', 'U', 'B', 'R', 'G', 'C']) for (let i = 0; i < cost[col]; i++) need.push(col);
     for (const col of cost.ph) need.push(col);
-    const hy = cost.hy.slice();
+    // Two-color hybrid pips ({U/W}) take part in the matching too, so a Plains and an Island can pay {U/W}{W/B}.
+    const hy = [];
+    for (const [a, b] of cost.hy) { if (a === '2') hy.push([a, b]); else need.push(a + b); }
     let generic = cost.g + cost.x * (x || 0);
     // Mana units: a 2-mana source gives two units of one of its colors.
     const units = [];
     for (const s of sources) for (let i = 0; i < s.amount; i++) units.push({ src: s.id, colors: s.units ? s.units[i] || s.colors : s.colors, i });
     const used = new Array(units.length).fill(false);
     // Colored pips: least flexible units first, by matching with backtracking.
-    const order = need.map((col, k) => ({ col, k })).sort((a, b) => units.filter(u => u.colors.includes(a.col)).length - units.filter(u => u.colors.includes(b.col)).length);
+    const fits = (u, col) => [...col].some(ch => u.colors.includes(ch));
+    const order = need.map((col, k) => ({ col, k })).sort((a, b) => units.filter(u => fits(u, a.col)).length - units.filter(u => fits(u, b.col)).length);
     const assign = new Array(order.length).fill(-1);
     function place(n) {
       if (n === order.length) return true;
       const col = order[n].col;
-      const cands = units.map((u, i) => i).filter(i => !used[i] && units[i].colors.includes(col)).sort((a, b) => units[a].colors.length - units[b].colors.length);
+      const cands = units.map((u, i) => i).filter(i => !used[i] && fits(units[i], col)).sort((a, b) => units[a].colors.length - units[b].colors.length);
       for (const i of cands) { used[i] = true; assign[n] = i; if (place(n + 1)) return true; used[i] = false; }
       return false;
     }
@@ -393,6 +396,53 @@
     const mineT = t => t.p ? t.p === by : !!(s.cards[t.c] && (s.cards[t.c].zone === 'graveyard' ? s.cards[t.c].owner === by : s.cards[t.c].ctrl === by));
     return choices.slice().sort((a, b) => (mineT(a) === mineT(b) ? 0 : (mineT(a) === helpful ? -1 : 1)) || ((a.p ? 0 : 1) - (b.p ? 0 : 1)));
   }
+  // "Protection from red", "protection from creatures", "protection from everything" (702.16).
+  function protections(c, s) {
+    const out = new Set(); if (!c || c.faceDown) return out;
+    for (const m of text(c).toLowerCase().matchAll(/protection from ([a-z ,]+?)(?:\.|$|\n|\()/g))
+      for (const q of m[1].split(/,\s*(?:and\s+)?(?:from\s+)?|\s+and\s+from\s+|\s+and\s+/)) if (q.trim()) out.add(q.trim().replace(/^from /, ''));
+    for (const k of Object.keys(c.counters || {})) if (/^protection from /.test(k)) out.add(k.slice(16));
+    return out;
+  }
+  const COLOR_WORD = { white: 'W', blue: 'U', black: 'B', red: 'R', green: 'G' };
+  function protectedFrom(target, source, s) {
+    const pr = protections(target, s); if (!pr.size || !source) return false;
+    if (pr.has('everything')) return true;
+    const cols = colorsOf(source);
+    for (const [w, k] of Object.entries(COLOR_WORD)) if (pr.has(w) && cols.includes(k)) return true;
+    if (pr.has('multicolored') && cols.length > 1) return true;
+    if (pr.has('monocolored') && cols.length === 1) return true;
+    for (const t of ['creatures', 'artifacts', 'enchantments', 'instants', 'sorceries', 'planeswalkers']) if (pr.has(t) && isType(source, t === 'sorceries' ? 'sorcery' : t.replace(/s$/, ''))) return true;
+    return false;
+  }
+  // Why this blocker can't block that attacker (509.1b), or null.
+  function blockProblem(s, b, a) {
+    const ak = keywords(a, s), bk = keywords(b, s);
+    const nm = x => nameOf(x);
+    if (bk.has("can't block")) return `${nm(b)} can’t block.`;
+    if (ak.has('unblockable')) return `${nm(a)} can’t be blocked.`;
+    if (ak.has('flying') && !bk.has('flying') && !bk.has('reach')) return `${nm(a)} has flying — only creatures with flying or reach can block it (702.9b).`;
+    if (protectedFrom(a, b, s)) return `${nm(a)} has protection from ${nm(b)}’s qualities, so ${nm(b)} can’t block it (702.16e).`;
+    const t = text(a).toLowerCase(), bp = (pt(s, b) || [0, 0])[0], ap = (pt(s, a) || [0, 0])[0];
+    if (/can't be blocked except by creatures with flying/.test(t) && !bk.has('flying')) return `${nm(a)} can be blocked only by creatures with flying.`;
+    let m = t.match(/can't be blocked by creatures with power (\d+) or (less|greater)/);
+    if (m && (m[2] === 'less' ? bp <= +m[1] : bp >= +m[1])) return `${nm(a)} can’t be blocked by creatures with power ${m[1]} or ${m[2]}.`;
+    if (ak.has('skulk') && bp > ap) return `${nm(a)} has skulk — creatures with greater power can’t block it (702.118b).`;
+    if (ak.has('shadow') && !bk.has('shadow')) return `${nm(a)} has shadow — only creatures with shadow can block it (702.28b).`;
+    if (ak.has('horsemanship') && !bk.has('horsemanship')) return `${nm(a)} has horsemanship — only creatures with horsemanship can block it.`;
+    return null;
+  }
+  // Does a permanent fit "nonland permanent", "nontoken creature", "creature or planeswalker"…?
+  function matchesWhat(c, what) {
+    const alts = String(what || 'permanent').toLowerCase().replace(/\b(a|an|one|two|other)\b/g, ' ').split(/\s+or\s+|,\s*/);
+    const is = k => k === 'permanent' ? true : k === 'token' ? !!c.token : (k === 'creature' && c.faceDown) || isType(c, k);
+    return alts.some(alt => alt.trim().split(/\s+/).filter(Boolean).every(w0 => {
+      const w = w0.replace(/ies$/, 'y').replace(/s$/, '');
+      const neg = /^non-?/.test(w) && w.length > 4; const k = neg ? w.replace(/^non-?/, '') : w;
+      if (!['permanent', 'token', 'creature', 'artifact', 'enchantment', 'land', 'planeswalker', 'battle', 'legendary', 'basic', 'snow'].includes(k)) return true;
+      return neg ? !is(k) : is(k);
+    }));
+  }
   // Every legal choice for a requirement, for menus and the AI.
   function targetChoices(s, req, by) {
     const out = [];
@@ -412,7 +462,7 @@
     const VERB = /^(draws?|loses?|gains?|discards?|mills?|sacrifices?|creates?|scry|puts?|returns?|exiles?|destroys?|deals?|you (?:draw|lose|gain|create|scry|mill|discard|sacrifice|put|return))\b/i;
     for (const sent of str.replace(/\.?\n/g, '. ').split(/\.\s+|\.$/).map(x => x.trim()).filter(Boolean)) {
       // "You draw two cards and you lose 2 life" / "Target player draws two cards and loses 2 life": one clause each.
-      const parts = sent.split(/,? and (?=(?:you )?(?:draws?|loses?|gains?|discards?|mills?|sacrifices?|creates?|scry)\b)|, then (?=(?:you )?(?:draw|scry|lose|gain))/i);
+      const parts = sent.split(/,? and (?=(?:you )?(?:draws?|loses? (?:\d|x|that|life)|gains? (?:\d|x|that|life)|discards?|mills?|sacrifices?|creates?|scry)\b)|, then (?=(?:you )?(?:draw|scry|lose|gain))/i);
       let subject = '';
       for (let i = 0; i < parts.length; i++) {
         let p = parts[i].trim();
@@ -479,6 +529,7 @@
       } else if ((m = s.match(/^scry (\d+|x)$/))) { out.push({ k: 'scry', n: toNum(m[1]) }); hit = true; }
       else if ((m = s.match(/^(target player|each opponent|each player) mills (\d+|a|two|three|four|five) cards?$/))) { out.push({ k: 'mill', n: toNum(m[2]), who: m[1], ti: m[1] === 'target player' ? t0 : null }); hit = true; }
       else if ((m = s.match(/^(target player|target opponent|each opponent) discards (a|one|two|three|\d+) cards?$/))) { out.push({ k: 'discard', n: toNum(m[2]), who: m[1], ti: m[1].startsWith('target') ? t0 : null }); hit = true; }
+      else if ((m = s.match(/^return (a|an|one|two) ([a-z ]+?) you control to (?:its|their) owner's hand$/))) { out.push({ k: 'returnOwn', n: toNum(m[1]), what: m[2] }); hit = true; }
       else if ((m = s.match(/^(each opponent|target player|target opponent) sacrifices (a|an|one|two) ([a-z ]+?)$/))) { out.push({ k: 'sacrifice', n: toNum(m[2]), what: m[3], who: m[1], ti: m[1].startsWith('target') ? t0 : null }); hit = true; }
       else if (/^(shuffle|then shuffle|it can't be regenerated|they can't be regenerated|this spell can't be countered|this spell costs)/.test(s)) { hit = true; }
       // "Destroy target artifact, target creature, target enchantment, and target land": one effect, several targets.
@@ -531,7 +582,7 @@
   function triggers(c) {
     const out = [];
     for (const line of lines(c)) {
-      let m = line.match(/^(when|whenever) this (?:creature |permanent |artifact |enchantment )?(enters(?: the battlefield)?|attacks|dies|blocks|deals combat damage to a player)(?: or (?:attacks|dies|blocks))?,\s*(.+)$/i);
+      let m = line.match(/^(when|whenever) this (?:creature |permanent |artifact |enchantment |land |aura |equipment |vehicle |saga |planeswalker )?(enters(?: the battlefield)?|attacks|dies|blocks|deals combat damage to a player)(?: or (?:attacks|dies|blocks))?,\s*(.+)$/i);
       if (m) { const ev = /enters/i.test(m[2]) ? 'etb' : /attacks/i.test(m[2]) ? 'attack' : /dies/i.test(m[2]) ? 'dies' : /blocks/i.test(m[2]) ? 'block' : 'combatDamage'; out.push({ ev, text: m[3].trim(), line }); if (/or attacks/i.test(line) && ev === 'etb') out.push({ ev: 'attack', text: m[3].trim(), line }); continue; }
       m = line.match(/^at the beginning of (your|each) (upkeep|end step|combat on your turn)(?:,|\s)\s*(.+)$/i);
       if (m) { out.push({ ev: /upkeep/i.test(m[2]) ? 'upkeep' : /end/i.test(m[2]) ? 'end' : 'combat', each: /each/i.test(m[1]), text: m[3].trim(), line }); continue; }
@@ -545,5 +596,5 @@
   function instantSpeed(c) { return /\binstant\b/i.test(typeLine(c)) || has(c, 'flash'); }
 
   root.Cards = { KEYWORDS, colorsOf, face, typeLine, isType, nameOf, text, rawText, keywords, has, statics, pt, parseCost, costOf, manaValue, costTotal, manaSource, pay,
-    targetReqs, targetsIn, legalTarget, targetChoices, reqLabel, helpfulTarget, orderChoices, modesOf, effectsIn, effectsOf, abilities, triggers, instantSpeed, isPermanentCard, toNum, spellText };
+    targetReqs, targetsIn, legalTarget, targetChoices, reqLabel, protections, protectedFrom, blockProblem, matchesWhat, helpfulTarget, orderChoices, modesOf, effectsIn, effectsOf, abilities, triggers, instantSpeed, isPermanentCard, toNum, spellText };
 })(typeof window !== 'undefined' ? window : globalThis);

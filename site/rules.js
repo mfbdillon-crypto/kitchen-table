@@ -779,10 +779,8 @@
             if (!x || !at) return { ok: false, err: 'That creature isn’t attacking.' };
             const target = x.def.p || (s.cards[x.def.c] && s.cards[x.def.c].ctrl);
             if (target !== pid) return { ok: false, err: `${cardName(at)} isn’t attacking you.` };
-            const bk = C.keywords(b, s), ak = C.keywords(at, s);
-            if (bk.has("can't block")) return { ok: false, err: `${cardName(b)} can’t block.` };
-            if (ak.has('unblockable')) return { ok: false, err: `${cardName(at)} can’t be blocked.` };
-            if (ak.has('flying') && !bk.has('flying') && !bk.has('reach')) return { ok: false, err: `${cardName(at)} has flying — only creatures with flying or reach can block it (702.9b).` };
+            const why = C.blockProblem(s, b, at);
+            if (why) return { ok: false, err: why };
             used.add(b.id); pairs.push([b, at]);
           }
           const count = {}; for (const [, at] of pairs) count[at.id] = (count[at.id] || 0) + 1;
@@ -983,7 +981,9 @@
     const tg = cleanTargets(a.tg, reqs.length);
     for (let i = 0; i < reqs.length; i++) {
       for (const t of tg[i]) if (!C.legalTarget(s, reqs[i], t, pid)) return `${t.p ? nameOf(s, t.p) : cardName(s.cards[t.c])} isn’t a legal target for ${cardName(c)} (${reqs[i].text}).`;
+      for (const t of tg[i]) if (t.c && C.protectedFrom(s.cards[t.c], c, s)) return `${cardName(s.cards[t.c])} has protection from ${cardName(c)}, so it can’t be targeted by it (702.16b).`;
       if (tg[i].length > reqs[i].n) return `${cardName(c)} can have only ${reqs[i].n} target${reqs[i].n > 1 ? 's' : ''} for “${reqs[i].text}”.`;
+      if (!reqs[i].upTo && tg[i].length && tg[i].length < reqs[i].n) return `${cardName(c)} needs exactly ${reqs[i].n} different targets for “${reqs[i].text}” (601.2c).`;
     }
     return null;
   }
@@ -1213,6 +1213,7 @@
         case 'scry': todo(s, by, { k: 'scry', n: val(e.n), src: srcName }); break;
         case 'mill': { const who = e.who === 'target player' ? T.filter(t => t.p).map(t => t.p) : e.who === 'each opponent' ? s.seats.filter(p => p !== by) : s.seats.slice(); for (const p of who) todo(s, p, { k: 'mill', n: val(e.n), src: srcName }); break; }
         case 'discard': { const who = e.who === 'each opponent' ? s.seats.filter(p => p !== by) : T.filter(t => t.p).map(t => t.p); for (const p of who) todo(s, p, { k: 'discard', n: val(e.n), src: srcName }); if (who.length) notes.push(`${who.map(p => nameOf(s, p)).join(', ')} must discard ${val(e.n)} (${srcName})`); break; }
+        case 'returnOwn': { todo(s, by, { k: 'returnOwn', n: val(e.n), what: e.what, src: srcName }); notes.push(`${nameOf(s, by)} returns ${e.what === 'land' ? 'a land' : e.what} they control to their hand (${srcName})`); break; }
         case 'sacrifice': { const who = e.who === 'each opponent' ? s.seats.filter(p => p !== by) : T.filter(t => t.p).map(t => t.p); for (const p of who) todo(s, p, { k: 'sacrifice', n: val(e.n), what: e.what, src: srcName }); if (who.length) notes.push(`${who.map(p => nameOf(s, p)).join(', ')} must sacrifice ${e.what} (${srcName})`); break; }
       }
     }

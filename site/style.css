@@ -529,7 +529,7 @@ input.num { flex: none; width: 80px; }
   .pilecol .pl, .cmdcol .pl { font-size: 0; }
   .pilecol .pl::after, .cmdcol .pl::after { content: attr(data-short); font-size: 9px; }
   .card .tag { font-size: 8px; }
-  #toasts { top: auto; bottom: 46px; }
+  #toasts { top: max(50px, env(safe-area-inset-top, 0px)); bottom: auto; }
   .board .pbar { gap: 6px; }
   .board .pbar .stats .stat.dim { display: none; }
   .crop { grid-template-columns: auto 1fr; align-items: start; }
@@ -848,3 +848,7 @@ button.small { padding: 3px 9px; font-size: 13px; }
 .crow button.bignum { font: 700 22px var(--display); min-width: 54px; background: transparent; border-color: transparent; text-decoration: underline dotted #6b7d73; text-underline-offset: 4px; }
 .crow button.bignum:hover { border-color: #44554c; }
 .pacts .pmove { font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-top: 4px; }
+.pilecol .plabel { overflow: hidden; white-space: nowrap; }
+#hand.drawer .hbtns { grid-column: 1 / -1; flex-direction: row; flex-wrap: wrap; gap: 6px; }
+#hand.drawer .hbtns > * { flex: 1 1 auto; }
+.app.touch ~ #toasts, body:has(.app.touch) #toasts { top: max(50px, env(safe-area-inset-top, 0px)); bottom: auto; }

@@ -188,7 +188,7 @@
     prev.style.transform = `translate(${Math.round(Math.max(8, left))}px, ${Math.round(top)}px)`;
   }
   function showPreview(c, e) {
-    if (COARSE || !e) return;
+    if (COARSE || !e || G.combatPick) return;     // while picking attackers/blockers the big card would cover the creature next to it
     prevSrc = e.currentTarget;
     const imgs = previewImgs(c);
     if (!imgs.length) return hidePreview();
@@ -1320,15 +1320,16 @@
       }, { live: true, cls: 'wide', sticky: true, noEsc: true });
       return;
     }
-    if (t.k === 'discard' || t.k === 'sacrifice') {
+    if (t.k === 'discard' || t.k === 'sacrifice' || t.k === 'returnOwn') {
       const n = t.n || 1, sel = [];
-      const pool = t.k === 'discard' ? G.P.hand.map(c => handCard(c)) : Object.values(S().cards).filter(c => c.zone === 'battlefield' && c.ctrl === KEY && (!/creature/.test(t.what || '') || c.faceDown || R.isType(c, 'creature')) && (!/artifact/.test(t.what || '') || R.isType(c, 'artifact')) && (!/land/.test(t.what || '') || R.isType(c, 'land')));
+      const pool = t.k === 'discard' ? G.P.hand.map(c => handCard(c)) : Object.values(S().cards).filter(c => c.zone === 'battlefield' && c.ctrl === KEY && CD.matchesWhat(c, t.what));
       const need = Math.min(n, pool.length);
       if (!need) { ack(); return pumpAsks(); }
       let done = false;
-      openModal(`${t.src}: ${t.k === 'discard' ? 'discard' : 'sacrifice'} ${need === 1 ? (t.k === 'discard' ? 'a card' : 'a ' + (t.what || 'permanent')) : need}`, b => {
+      const verb = t.k === 'discard' ? 'discard' : t.k === 'returnOwn' ? 'return to your hand' : 'sacrifice';
+      openModal(`${t.src}: ${verb} ${need === 1 ? (t.k === 'discard' ? 'a card' : (/^[aeiou]/.test(t.what || 'permanent') ? 'an ' : 'a ') + (t.what || 'permanent')) : need}`, b => {
         b.append(h('div', { class: 'strip pick' }, pool.map(c => cardEl(c, { noMenu: true, cls: sel.includes(c.id) ? 'sel' : '', onClick: () => { const i = sel.indexOf(c.id); if (i >= 0) sel.splice(i, 1); else if (sel.length < need) sel.push(c.id); refreshModal(); } }))));
-        b.append(h('div', { class: 'row' }, h('button', { class: 'primary', disabled: sel.length !== need, onclick: async () => { if (done) return; done = true; closeModal(true); if (t.k === 'discard') await G.fromHand(sel.slice(), 'graveyard', { msg: `discarded {cards} (${t.src})` }); else await G.move(sel.slice(), 'graveyard'); ack(); setTimeout(pumpAsks, 50); } }, `${t.k === 'discard' ? 'Discard' : 'Sacrifice'} (${sel.length}/${need})`)));
+        b.append(h('div', { class: 'row' }, h('button', { class: 'primary', disabled: sel.length !== need, onclick: async () => { if (done) return; done = true; closeModal(true); if (t.k === 'discard') await G.fromHand(sel.slice(), 'graveyard', { msg: `discarded {cards} (${t.src})` }); else if (t.k === 'returnOwn') await G.move(sel.slice(), 'hand'); else await G.move(sel.slice(), 'graveyard'); ack(); setTimeout(pumpAsks, 50); } }, `${t.k === 'discard' ? 'Discard' : t.k === 'returnOwn' ? 'Return' : 'Sacrifice'} (${sel.length}/${need})`)));
       }, { live: true, cls: 'wide', sticky: true, noEsc: true });
       return;
     }

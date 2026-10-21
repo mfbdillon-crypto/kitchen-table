@@ -73,6 +73,7 @@
   function intentFor(card, eff, i) {
     const es = eff.effects.filter(e => e.ti === i || e.ti2 === i || e.forTargetCtrl === i || (e.tis && e.tis.includes(i)));
     if (es.some(e => e.k === 'bite' || e.k === 'fight')) return es.some(e => e.ti === i) ? 'mine-fighter' : 'theirs';
+    if (es.some(e => e.k === 'draw') && es.some(e => e.k === 'life' && e.sign < 0) && !es.some(e => HARM.includes(e.k))) return S().players[ME()].life > 8 ? 'me' : 'theirs';
     if (es.some(e => e.k === 'life' && e.sign < 0) || es.some(e => HARM.includes(e.k))) return 'theirs';
     // "Target creature gets -4/-4": that's removal, not a pump.
     if (es.some(e => e.k === 'pump' && (/^-/.test(String(e.t)) || (/^-/.test(String(e.p)) && !/^\+/.test(String(e.t)))))) return 'theirs';
@@ -97,7 +98,14 @@
     const taken = new Set();
     for (let i = 0; i < reqs.length; i++) {
       const req = reqs[i];
-      let choices = C.targetChoices(s, req, ME()).filter(t => !taken.has(t.c || t.p));
+      let choices = C.targetChoices(s, req, ME()).filter(t => !taken.has(t.c || t.p))
+        .filter(t => t.p ? R.alive(s, t.p) : !(s.cards[t.c] && s.cards[t.c].zone === 'battlefield' && !R.alive(s, s.cards[t.c].ctrl)))
+        .filter(t => !t.c || !C.protectedFrom(s.cards[t.c], card, s))
+        .filter(t => { // Ward {N}: the spell is countered unless I can also pay the ward cost (702.21a).
+          const c = t.c && s.cards[t.c]; if (!c || c.ctrl === ME() || !kw(c).has('ward')) return true;
+          const m = C.text(c).match(/ward\s*(?:—|-)?\s*((?:\{[^}]+\})+)/i); if (!m) return skill() === 'easy';
+          return manaAvailable() >= C.costTotal(C.costOf(card), 0) + C.costTotal(C.parseCost(m[1]), 0);
+        });
       const intent = intentFor(card, eff, i);
       const e = eff.effects.find(x => x.ti === i);
       const dmg = e && e.k === 'dmg' ? (e.n === 'X' ? (extra && extra.x) || 0 : e.n) : 0;
@@ -111,7 +119,9 @@
           const pws = choices.filter(t => t.c && R.isType(s.cards[t.c], 'planeswalker') && ((s.cards[t.c].counters || {}).loyalty || 0) <= dmg);
           const players = choices.filter(t => t.p);
           const bestKill = killable.concat(pws).sort((a, b) => threat(b) - threat(a))[0];
-          if (bestKill && (threat(bestKill) >= 3 || !players.length)) pick = bestKill;
+          const lethal = skill() !== 'easy' && players.filter(t => s.players[t.p].life <= dmg).sort((a, b) => s.players[a.p].life - s.players[b.p].life)[0];
+          if (lethal) pick = lethal;
+          else if (bestKill && (threat(bestKill) >= 3 || !players.length)) pick = bestKill;
           else if (players.length) pick = players.sort((a, b) => s.players[a.p].life - s.players[b.p].life)[0];
           else pick = bestKill || null;
         } else {
@@ -120,6 +130,8 @@
         }
       } else if (intent === 'me') {
         pick = choices.find(t => t.p === ME()) || null;
+      } else if (e && e.k === 'reanimate') {
+        pick = choices.filter(t => t.c && isCreature(s.cards[t.c])).sort((a, b) => value(s.cards[b.c]) - value(s.cards[a.c]))[0] || null;
       } else {
         choices = choices.filter(t => t.p ? t.p === ME() : (s.cards[t.c].ctrl === ME() || (s.cards[t.c].zone === 'graveyard' && s.cards[t.c].owner === ME())));
         if (intent === 'mine-fighter') choices = choices.filter(t => t.c && isCreature(s.cards[t.c]));
@@ -128,7 +140,14 @@
       }
       if (!pick) { if (req.upTo) { tg.push([]); continue; } return null; }
       taken.add(pick.c || pick.p);
-      tg.push([pick]);
+      const group = [pick];
+      // "Destroy two target creatures": exactly that many different targets (601.2c).
+      if (req.n > 1 && req.n < 99) {
+        const more = choices.filter(t => !taken.has(t.c || t.p) && (intent === 'theirs' ? (t.p ? t.p !== ME() : s.cards[t.c].ctrl !== ME()) : true)).sort((a, b) => threat(b) - threat(a)).slice(0, req.n - 1);
+        if (more.length < req.n - 1 && !req.upTo) return null;
+        for (const m of more) { taken.add(m.c || m.p); group.push(m); }
+      }
+      tg.push(group);
       desc.push(pick.p ? (pick.p === ME() ? 'myself' : nameOf(pick.p)) : (s.cards[pick.c].ctrl !== ME() ? nameOf(s.cards[pick.c].ctrl) + '’s ' : 'my ') + cn(s.cards[pick.c]));
     }
     // Fight / bite: only worth it if my creature can kill theirs.
@@ -178,11 +197,12 @@
     if (perm && /aura/i.test(R.typeLine(card)) && C.targetReqs(card, mode).some(r => r.gy || /graveyard/.test(r.text || ''))) return null;
     const cost = costFor(card);
     let x = 0;
-    if (cost.x) { x = Math.max(0, manaAvailable() - C.costTotal(cost, 0)); if (x < 1) return null; }
+    if (cost.x) { x = Math.max(0, Math.floor((manaAvailable() - C.costTotal(cost, 0)) / cost.x)); if (x < 1) return null; }
     const pay = C.pay(cost, sources(), x);
     if (!pay) return null;
     const t = chooseTargets(card, mode, eff, { x });
     if (!t) return null;
+    if (selfHarm(eff, x) >= s.players[ME()].life - (skill() === 'easy' ? 0 : 3)) return null;
     if (!perm && skill() !== 'easy' && eff.effects.every(e => e.k === 'dmg') && t.tg.length && t.tg.every(l => !l[0] || l[0].p)) {
       const dmg = eff.effects.reduce((a, e) => a + (e.n === 'X' ? x : +e.n || 0), 0);
       const low = t.tg.some(l => l[0] && l[0].p && s.players[l[0].p].life <= Math.max(dmg, 6));
@@ -198,6 +218,16 @@
     return { card, mode, eff, x, pay, tg: t.tg, reqs: t.reqs, desc: t.desc, score, cost };
   }
 
+  // Life I'd lose myself: "deals 4 damage to each player", "you lose 2 life"…
+  function selfHarm(eff, x) {
+    let n = 0;
+    for (const e of eff.effects) {
+      const v = e.n === 'X' ? (x || 0) : (+e.n || 0);
+      if (e.k === 'dmg' && (e.to === 'eachPlayer' || e.to === 'you')) n += v;
+      if (e.k === 'life' && e.sign < 0 && (e.who === 'you' || e.who === 'each player')) n += v;
+    }
+    return n;
+  }
   function whyCast(p, when) {
     const s = S();
     const why = [];
@@ -264,19 +294,26 @@
     return true;
   }
   function blockersFor(att, defPid) {
-    const ak = kw(att);
-    if (ak.has('unblockable')) return [];
-    return creaturesOf(defPid).filter(b => !b.tapped && !kw(b).has("can't block") && (!ak.has('flying') || kw(b).has('flying') || kw(b).has('reach')));
+    return creaturesOf(defPid).filter(b => !b.tapped && !C.blockProblem(S(), b, att));
   }
   // Does blocker b kill attacker a / survive?
   function fightResult(a, b) {
     const [ap, at] = ptOf(a), [bp, bt] = ptOf(b);
     const ak = kw(a), bk = kw(b);
-    const aKills = (ap >= bt - (b.dmg || 0) || (ak.has('deathtouch') && ap > 0)) && !bk.has('indestructible');
-    const bKills = (bp >= at - (a.dmg || 0) || (bk.has('deathtouch') && bp > 0)) && !ak.has('indestructible');
-    const aFirst = (ak.has('first strike') || ak.has('double strike')) && !(bk.has('first strike') || bk.has('double strike'));
-    const bFirst = (bk.has('first strike') || bk.has('double strike')) && !(ak.has('first strike') || ak.has('double strike'));
-    return { aDies: bKills && !(aFirst && aKills), bDies: aKills && !(bFirst && bKills) };
+    const aFS = ak.has('first strike') || ak.has('double strike'), bFS = bk.has('first strike') || bk.has('double strike');
+    let aDmg = a.dmg || 0, bDmg = b.dmg || 0, aTouch = false, bTouch = false;
+    const dead = (dmg, t, touched, ind) => !ind && (dmg >= t || touched);
+    // First-strike step (510.4), then the regular step for creatures without first strike or with double strike.
+    if (aFS && ap > 0) { bDmg += ap; if (ak.has('deathtouch')) bTouch = true; }
+    if (bFS && bp > 0) { aDmg += bp; if (bk.has('deathtouch')) aTouch = true; }
+    let aDead = dead(aDmg, at, aTouch, ak.has('indestructible')), bDead = dead(bDmg, bt, bTouch, bk.has('indestructible'));
+    {
+      const aHits = !aDead && (!aFS || ak.has('double strike')) && ap > 0, bHits = !bDead && (!bFS || bk.has('double strike')) && bp > 0;
+      if (aHits) { bDmg += ap; if (ak.has('deathtouch')) bTouch = true; }
+      if (bHits) { aDmg += bp; if (bk.has('deathtouch')) aTouch = true; }
+      aDead = dead(aDmg, at, aTouch, ak.has('indestructible')); bDead = dead(bDmg, bt, bTouch, bk.has('indestructible'));
+    }
+    return { aDies: aDead, bDies: bDead };
   }
   const pinger = c => C.abilities(c).some(a => a.tap && !a.sac && C.costTotal(a.mana, 0) === 0 && C.effectsIn(a.text).effects.some(e => e.k === 'dmg'));
   function planAttack() {
@@ -312,7 +349,8 @@
         const bl = blockersFor(c, p);
         const bad = bl.some(b => { const r = fightResult(c, b); return r.aDies && !r.bDies; });
         const trade = bl.some(b => { const r = fightResult(c, b); return r.aDies && r.bDies && value(b) < value(c); });
-        if (!bad && !(trade && sk === 'hard')) { chosen = p; safe = true; break; }
+        const evenTrade = bl.some(b => { const r = fightResult(c, b); return r.aDies && r.bDies; });
+        if (!bad && !(trade && sk === 'hard') && !(evenTrade && sk !== 'easy')) { chosen = p; safe = true; break; }
         // A long stalled board: accept even trades to move the game along.
         if (stall && !bad) { chosen = p; safe = true; break; }
         if (!chosen) chosen = p;
@@ -332,7 +370,11 @@
     }
     const incoming = atts.reduce((x, a) => x + ptOf(a)[0], 0);
     let life = s.players[ME()].life;
-    const sorted = atts.slice().sort((a, b) => value(b) - value(a));
+    const meP = s.players[ME()];
+    const poisonIn = atts.filter(a => kw(a).has('infect')).reduce((x, a) => x + ptOf(a)[0], 0);
+    // An attacker whose hit alone would kill me: commander damage (903.10a) or poison (704.5c).
+    const deadly = a => (a.cmdr && ((meP.cmdDmg || {})[a.id] || 0) + ptOf(a)[0] >= 21) || (kw(a).has('infect') && (meP.poison || 0) + ptOf(a)[0] >= 10) || (!kw(a).has('infect') && ptOf(a)[0] >= life);
+    const sorted = atts.slice().sort((a, b) => (deadly(b) - deadly(a)) || value(b) - value(a));
     for (const a of sorted) {
       const menace = kw(a).has('menace');
       const cand = blockersFor(a, ME()).filter(b => free.has(b.id));
@@ -341,7 +383,7 @@
       let best = cand.filter(b => { const r = fightResult(a, b); return r.aDies && !r.bDies; }).sort((x, y) => value(x) - value(y))[0];
       if (!best) best = cand.filter(b => { const r = fightResult(a, b); return r.aDies && r.bDies && value(b) <= value(a) + (sk === 'hard' ? 0 : 1); }).sort((x, y) => value(x) - value(y))[0];
       if (!best) best = cand.filter(b => { const r = fightResult(a, b); return !r.bDies; }).sort((x, y) => value(x) - value(y))[0];   // it just bounces off
-      if (!best && incoming >= life - (sk === 'hard' ? 3 : 1)) best = cand.sort((x, y) => value(x) - value(y))[0];
+      if (!best && (deadly(a) || incoming - poisonIn >= life - (sk === 'hard' ? 3 : 1) || (meP.poison || 0) + poisonIn >= 10)) best = cand.sort((x, y) => value(x) - value(y))[0];
       if (!best) continue;
       blocks.push({ id: best.id, att: a.id }); free.delete(best.id);
       if (menace) { const second = cand.find(b => b.id !== best.id && free.has(b.id)); if (second) { blocks.push({ id: second.id, att: a.id }); free.delete(second.id); } else blocks.pop(); }
@@ -358,14 +400,21 @@
     const big = top.ab ? false : ((top.d && +top.d.cmc) || 0) >= (skill() === 'hard' ? 4 : 5) || top.cmdr;
     const cands = hand().map(c => plan(c, 'instant')).filter(Boolean);
     // Counterspells: stop spells aimed at me, or big threats.
-    const counter = cands.find(p => p.eff.effects.some(e => e.k === 'counter') && p.tg[0] && p.tg[0][0] && p.tg[0][0].c === top.id);
+    const counter = cands.map(p => { if (!p.eff.effects.some(e => e.k === 'counter') || !p.reqs[0] || !C.legalTarget(s, p.reqs[0], { c: top.id }, ME())) return null; return Object.assign(p, { tg: [[{ c: top.id }]].concat(p.tg.slice(1)), desc: [nameOf(top.ctrl) + '’s ' + cn(top)].concat(p.desc.slice(1)) }); }).find(Boolean);
     if (counter && (targetsMe || big) && roll(SKILL[skill()].think)) return counter;
     // Save my creature: pump it or give it protection in response to damage / removal.
     if (targetsMe) {
       const mineT = (top.tg || []).flat().filter(t => t.c && s.cards[t.c] && s.cards[t.c].ctrl === ME()).map(t => t.c);
       if (mineT.length) {
         const save = hand().map(c => { const p = plan(c, 'instant'); if (!p) return null; const t = chooseTargets(c, p.mode, p.eff, { protect: mineT, x: p.x }); return t && t.tg.flat().some(x => mineT.includes(x.c)) ? Object.assign(p, t) : null; })
-          .filter(Boolean).find(p => p.eff.effects.some(e => e.k === 'grant' && /hexproof|indestructible|protection/.test(e.kws)) || (p.eff.effects.some(e => e.k === 'pump') && top.d && /damage/i.test(C.text(top))));
+          .filter(Boolean).find(p => {
+            if (p.eff.effects.some(e => (e.k === 'grant' || e.k === 'pump') && /hexproof|indestructible|protection|shroud/.test(e.kws || ''))) return true;
+            // A pump only saves it from damage it can outgrow.
+            const pump = p.eff.effects.find(e => e.k === 'pump'); if (!pump || !top.d) return false;
+            const te = C.effectsOf(top, top.mode).effects.find(e => e.k === 'dmg'); if (!te || te.n === 'X') return false;
+            const tc = s.cards[mineT[0]]; const [, tt] = ptOf(tc);
+            return tt - (tc.dmg || 0) + (parseInt(pump.t, 10) || 0) > (+te.n || 0);
+          });
         if (save) return save;
       }
     }
@@ -428,10 +477,12 @@
     [/legend/, 'Legend rule: if you control two legendary permanents with the same name, you choose one and put the other into the graveyard (704.5j).'],
     [/block.*(two|more|multiple)|two blockers/, 'Each creature can block only one attacker, but several creatures can block the same attacker (509.1).'],
     [/damage.*(wear|go away|reset|heal)/, 'Damage on creatures wears off during the cleanup step at the end of each turn (514.2).'],
-    [/toughness.*0|zero toughness/, 'A creature with 0 or less toughness goes to its owner’s graveyard (704.5f).'],
+    [/toughness.*\b0\b|\b0 toughness|zero toughness/, 'A creature with 0 or less toughness goes to its owner’s graveyard (704.5f).'],
     [/monarch/, 'The monarch draws an extra card at their end step; dealing combat damage to the monarch steals it (724).'],
     [/mana value|cmc|converted/, 'Mana value is the total amount of mana in a card’s mana cost; X counts as 0 except on the stack (202.3).'],
     [/hand size|discard.*(seven|7)|maximum/, 'Hand size: at your cleanup step you discard down to seven cards (514.1).'],
+    [/\bward\b/, 'Ward: whenever it becomes the target of a spell or ability an opponent controls, that spell or ability is countered unless its controller pays the ward cost (702.21).'],
+    [/protection/, 'Protection from a quality (a color, creatures…): it can’t be blocked, targeted, dealt damage, or enchanted/equipped by anything with that quality (702.16).'],
     [/counterspell|counter a spell|countered/, 'A countered spell goes to its owner’s graveyard without doing anything (701.6).']
   ];
   const answered = new Set();
@@ -444,8 +495,13 @@
       const why = ref.why && ref.why.length ? ref.why : ['That was an ordinary game action with no special requirements.'];
       return { text: `Yes, “${ref.text}” is legal. Here’s what I checked:`, why };
     }
-    const aboutMe = /\b(you|your|that|this|it)\b/.test(t) && /(legal|allowed|cheat|why|how (did|can|could)|is that ok|wrong|illegal|not allowed|okay|ok\b|right)/.test(t);
-    const faq = FAQ.find(([re]) => re.test(t));
+    const faqs = FAQ.filter(([re]) => re.test(t));
+    const faq = faqs.length ? [null, faqs.slice(0, 2).map(f => f[1]).join(' ')] : null;
+    // "Why did you attack me?" — the combat explanation.
+    if (/\bwhy\b/.test(t) && /(attack|block)/.test(t) && lastCombat) return { text: lastCombat };
+    // A general rules question ("is it legal to block a flyer with reach?", "can a creature with haste attack?").
+    const general = /^(is it|can (a|an|i|you|my|creatures?)|does|do|what|how does|how do|when)\b/.test(t) && !/\b(you just|did you|that move|your last)\b/.test(t);
+    const aboutMe = !general && /\b(you|your|that|this)\b/.test(t) && /(legal|allowed|cheat|why|how (did|can|could)|is that ok|wrong|illegal|not allowed|okay|ok\b|right)/.test(t);
     if (aboutMe && lastWhy && !(faq && /^(what|how) (does|do|is|are)\b/.test(t))) {
       return { text: `My last move was: “${lastWhy.text}” I checked the rules before doing it:`, why: lastWhy.why.length ? lastWhy.why : ['It didn’t need any special permission.'] };
     }
@@ -455,12 +511,12 @@
       const src = sources();
       return { text: `I have ${src.reduce((a, x) => a + x.amount, 0)} mana available right now${src.length ? ': ' + src.map(x => `${x.name} ({${x.colors.split('').join('/')}})`).join(', ') : ''}.` };
     }
-    if (/(hand|cards in)/.test(t)) return { text: `I have ${G.P.hand.length} card${G.P.hand.length === 1 ? '' : 's'} in hand and ${G.P.library.length} in my library. I won’t say what they are!` };
-    if (/(life|health)/.test(t)) return { text: s.seats.map(p => `${nameOf(p)}: ${s.players[p].life}`).join(' · ') };
+    if (/(hand|cards in|how many cards|cards do you have)/.test(t)) return { text: `I have ${G.P.hand.length} card${G.P.hand.length === 1 ? '' : 's'} in hand and ${G.P.library.length} in my library. I won’t say what they are!` };
+    if (/(life|health|winning|ahead|losing|score)/.test(t)) return { text: s.seats.map(p => `${nameOf(p)}: ${s.players[p].life}`).join(' · ') };
     if (/(plan|doing|thinking|next|strategy|what are you)/.test(t)) return { text: planText() };
     if (/(attack|block)/.test(t) && lastCombat) return { text: lastCombat };
     if (/(skill|level|difficulty|how good)/.test(t)) return { text: `I’m playing on ${skill()} — ${skill() === 'easy' ? 'I play loosely and don’t respond to spells' : skill() === 'normal' ? 'I play on curve, make sensible attacks and blocks, and sometimes counter big spells' : 'I look for lethal, hold up answers, and make careful trades'}. The player who added me can change it.` };
-    if (/(hi|hello|hey|good game|gg)\b/.test(t)) return { text: 'Hello! Good luck — ask me anything about what I’m doing or about the rules.' };
+    if (/\b(hi|hello|hey|good game|gg)\b/.test(t)) return { text: 'Hello! Good luck — ask me anything about what I’m doing or about the rules.' };
     return { text: 'I’m the table’s built-in rules engine, so I can answer things like “Is that legal?”, “Why did you attack Alex?”, “How much mana do you have?” or “What does trample do?”.' };
   }
   let lastCombat = '';
@@ -493,11 +549,16 @@
         const n = Math.min(t.n || 1, G.P.hand.length);
         const pick = discardChoice(n);
         for (const id of pick) await G.fromHand([id], 'graveyard', { msg: `discarded {cards} (${t.src})` });
-      } else if (t.k === 'sacrifice') {
-        const what = (t.what || 'creature').toLowerCase();
-        const list = mine('battlefield').filter(c => /creature/.test(what) ? isCreature(c) : /artifact/.test(what) ? R.isType(c, 'artifact') : /land/.test(what) ? R.isType(c, 'land') : true).sort((a, b) => value(a) - value(b));
+      } else if (t.k === 'returnOwn') {
+        // Karoo lands and the like: send back a tapped basic land (never the land that just came in, if there's a choice).
+        const src = mine('battlefield').filter(c => cn(c) === t.src).sort((a, b) => b.seq - a.seq)[0];
+        const list = mine('battlefield').filter(c => C.matchesWhat(c, t.what)).sort((a, b) => (a === src) - (b === src) || (b.tapped - a.tapped) || ((/basic/i.test(R.typeLine(b)) ? 1 : 0) - (/basic/i.test(R.typeLine(a)) ? 1 : 0)) || value(a) - value(b));
         const ids = list.slice(0, t.n || 1).map(c => c.id);
-        if (ids.length) { await G.move(ids, 'graveyard', null, { msg: 'sacrificed' }); say(`I sacrifice ${R.listNames(ids.map(id => cn(S().cards[id] || { d: null })))} (${t.src}) — it was my least valuable choice.`); }
+        if (ids.length) { const names = ids.map(id => cn(S().cards[id])); await G.move(ids, 'hand'); say(`I return ${R.listNames(names)} to my hand (${t.src}).`); }
+      } else if (t.k === 'sacrifice') {
+        const list = mine('battlefield').filter(c => C.matchesWhat(c, t.what || 'creature')).sort((a, b) => value(a) - value(b));
+        const ids = list.slice(0, t.n || 1).map(c => c.id);
+        if (ids.length) { const names = ids.map(id => cn(S().cards[id])); await G.move(ids, 'graveyard', null, { msg: 'sacrificed' }); say(`I sacrifice ${R.listNames(names)} (${t.src}) — it was my least valuable choice.`); }
       }
     } catch (e) { console.error(e); }
     ack();
@@ -570,6 +631,12 @@
       const copies = mine('battlefield').filter(c => cn(c) === nm).sort((a, b) => a.seq - b.seq);
       if (copies.length > 1) { await G.move(copies.slice(0, -1).map(c => c.id), 'graveyard'); say(`I control two copies of ${nm}, so I keep the newest one and put the other into my graveyard (legend rule, 704.5j).`); return true; }
     }
+    // My attackers' "whenever this attacks" triggers go on the stack before anything else happens (508.3, 603.3).
+    if (pendingAttack && s.combat && s.combat.n === s.turn.n && s.turn.active === ME()) {
+      const pa = pendingAttack;
+      if (await fireTriggers('attack', pa.ids.map(id => S().cards[id]).filter(Boolean), pa.key)) return true;
+      pendingAttack = null;
+    } else pendingAttack = null;
     // Priority: someone cast something.
     if (s.prio && s.prio.holder === ME()) {
       const p = s.prio.step ? (skill() !== 'easy' && !R.stackTop(s) && !tried.has('trick:' + s.gameId + ':' + s.turn.n + ':' + s.prio.since) ? (tried.add('trick:' + s.gameId + ':' + s.turn.n + ':' + s.prio.since), combatTrick()) : null) : respond();
@@ -603,6 +670,7 @@
     return myTurn();
   }
   const tried = new Set();
+  let pendingAttack = null;
 
   let openWaitSince = 0;
   async function myTurn() {
@@ -617,6 +685,11 @@
     if (ph === 'Draw') {
       if (G.P.autoDrew !== key && G.P.phase === 'kept') { G.autoDraw(); return true; }
       await G.act({ type: 'phase', to: PI('Main 1') }); return true;
+    }
+    // "Whenever this deals combat damage to a player": my unblocked attackers that hit a player.
+    if (ph === 'Main 2' && s.combat && s.combat.done && s.combat.n === T.n) {
+      const hit = Object.entries(s.combat.att || {}).filter(([id, x]) => x.def && x.def.p && !(x.blk || []).length && s.cards[id] && s.cards[id].zone === 'battlefield' && ptOf(s.cards[id])[0] > 0).map(([id]) => s.cards[id]);
+      if (hit.length && await fireTriggers('combatDamage', hit, key)) return true;
     }
     if (ph === 'Main 1' || ph === 'Main 2') {
       // Land drop.
@@ -665,13 +738,18 @@
         if (tried.has(key + ':pw:' + pw.id) || (T.loyal || {})[pw.id] === T.n) continue;
         tried.add(key + ':pw:' + pw.id);
         const abs = C.abilities(pw);
-        const i = abs.findIndex(a => a.loyalty !== undefined && a.loyalty >= 0 && C.effectsIn(a.text).understood);
+        const loyal = (pw.counters || {}).loyalty || 0;
+        // Removal minus abilities first (if it survives), then plus, then zero.
+        const order = abs.map((a, i) => ({ a, i })).filter(x => x.a.loyalty !== undefined && C.effectsIn(x.a.text).understood && C.effectsIn(x.a.text).effects.length && (x.a.loyalty >= 0 || (loyal + x.a.loyalty > 0 && C.effectsIn(x.a.text).effects.some(e => ['destroy', 'exile', 'dmg'].includes(e.k)) && skill() !== 'easy')))
+          .sort((x, y) => (y.a.loyalty < 0) - (x.a.loyalty < 0) || y.a.loyalty - x.a.loyalty);
+        let i = -1, tg = [];
+        for (const o of order) {
+          const eff = C.effectsIn(o.a.text), reqs = C.targetsIn(o.a.text);
+          if (reqs.length) { const t = chooseTargets({ d: { faces: [{ n: cn(pw), t: 'Instant', o: o.a.text }] }, counters: {} }, null, eff); if (!t) continue; tg = t.tg; }
+          else tg = [];
+          i = o.i; break;
+        }
         if (i < 0) continue;
-        const fake = { id: pw.id, ab: { text: abs[i].text }, d: pw.d, zone: 'stack', counters: {} };
-        const eff = C.effectsIn(abs[i].text);
-        const reqs = C.targetsIn(abs[i].text);
-        let tg = [];
-        if (reqs.length) { const t = chooseTargets({ d: { faces: [{ n: cn(pw), t: 'Instant', o: abs[i].text }] }, counters: {} }, null, eff); if (!t) continue; tg = t.tg; }
         const r = await G.activate(pw.id, i, tg);
         if (r.ok) { say(`I activate ${cn(pw)}’s ${abs[i].cost} ability: “${noDot(abs[i].text)}”.`, ['Loyalty abilities: once per turn, in my main phase, with an empty stack (606.3).']); return true; }
       }
@@ -681,6 +759,7 @@
       if (await useTapAbility(key)) return true;
       await G.act({ type: 'phase', to: PI('End step') }); return true;
     }
+    if ((ph === 'Beginning of combat' || ph === 'Declare attackers') && !(s.combat && s.combat.n === T.n) && await fireTriggers('combat', mine('battlefield'), key)) return true;
     if (ph === 'Beginning of combat' || ph === 'Declare attackers') {
       if (s.combat && s.combat.n === T.n) { await G.act({ type: 'phase', to: PI('Main 2') }); return true; }
       const list = planAttack();
@@ -692,6 +771,7 @@
         lastCombat = `I attacked ${Object.entries(by).map(([p, v]) => `${nameOf(p)} with ${R.listNames(v)}`).join(' and ')}${list.some(x => x.why === 'lethal') ? ' — that should be lethal' : skill() === 'easy' ? '' : `, because ${list.every(x => x.why === 'safe') ? 'no blocker can kill them for free' : 'it keeps the pressure on'}`}.`;
         say(lastCombat, ['It’s my turn and the start of combat (508.1).', 'Every attacker is untapped and has been under my control since my turn began (or has haste), and none has defender.', 'Each attacks an opponent (or an opponent’s planeswalker).']);
       } else if (r.ok) say('No attacks this turn.');
+      if (r.ok && list.length) pendingAttack = { key, ids: list.map(x => x.id) };
       return true;
     }
     if (ph === 'Declare blockers') {
@@ -759,7 +839,10 @@
     if (!permInit) { bf.forEach(c => seenPerm.add(c.id)); permInit = true; return false; }
     const fresh = bf.filter(c => !seenPerm.has(c.id));
     fresh.forEach(c => seenPerm.add(c.id));
-    for (const id of [...seenPerm]) if (!S().cards[id] || S().cards[id].zone !== 'battlefield') seenPerm.delete(id);
+    // "When this creature dies": my creatures that went from the battlefield to a graveyard (700.4).
+    const died = [];
+    for (const id of [...seenPerm]) { const c = S().cards[id]; if (!c || c.zone !== 'battlefield') { seenPerm.delete(id); if (c && c.zone === 'graveyard' && c.owner === ME() && isCreature(c)) died.push(c); } }
+    if (died.length && await fireTriggers('dies', died, 'dies:' + S().gameId + ':' + S().turn.n)) return true;
     if (!fresh.length) return false;
     return fireTriggers('etb', fresh, 'etb:' + S().gameId + ':' + S().turn.n);
   }
@@ -796,7 +879,9 @@
       const theirs = ch.filter(t => t.p ? t.p !== ME() : s.cards[t.c] && s.cards[t.c].ctrl !== ME());
       const intent = intentFor({ d: null }, eff, i);
       const pool = intent === 'theirs' ? (theirs.length ? theirs : ch) : (ch.filter(t => !theirs.includes(t)).length ? ch.filter(t => !theirs.includes(t)) : ch);
-      const pick = pool.slice().sort((a, b) => (intent === 'theirs' && pool !== theirs ? threat(a) - threat(b) : threat(b) - threat(a)))[0];
+      const fromTheirs = t => t.p ? t.p !== ME() : s.cards[t.c] && s.cards[t.c].ctrl !== ME();
+      const good = t => (intent === 'theirs') === fromTheirs(t);           // hurting them / helping me: take the best
+      const pick = pool.slice().sort((a, b) => good(a) === good(b) ? (good(a) ? threat(b) - threat(a) : threat(a) - threat(b)) : (good(a) ? -1 : 1))[0];
       taken.add(pick.c || pick.p); tg.push([pick]);
       desc.push(pick.p ? (pick.p === ME() ? 'myself' : nameOf(pick.p)) : (s.cards[pick.c].ctrl !== ME() ? nameOf(s.cards[pick.c].ctrl) + '’s ' : 'my ') + cn(s.cards[pick.c]));
     }
