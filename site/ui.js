@@ -2,6 +2,8 @@
 (function () {
   'use strict';
   const G = window.KT, R = Rules;
+  if (G.MODE === 'ai') return;          // an AI player's hidden page has no screen
+  const CD = window.Cards;
   let KEY = G.KEY; // set after the identity loads (boot at the bottom)
   const S = () => G.S;
   const $ = (s, r) => (r || document).querySelector(s);
@@ -164,6 +166,8 @@
     if (e.key !== 'Escape') return;
     if (menu) { closeMenu(); return; }
     if (G.targeting) { G.targeting = null; render(); return; }
+    if (G.picking) { const p = G.picking; G.picking = null; p.cancel(); render(); return; }
+    if (G.combatPick) { G.combatPick = null; render(); return; }
     if (modal && !modal.opts.noEsc) closeModal();
   });
 
@@ -284,7 +288,15 @@
         el.append(h('button', { class: 'pt ' + cls, title: mine ? 'Change power/toughness until end of turn' : 'Power/toughness', onclick: e => { e.stopPropagation(); if (mine) ptModal(c.id); } }, `${pt[0]}/${pt[1]}`));
       }
     }
-    if (c.token) el.append(h('div', { class: 'tag tok' }, 'Token'));
+    if (c.token && !c.ab) el.append(h('div', { class: 'tag tok' }, 'Token'));
+    if (c.zone === 'battlefield' && c.dmg) el.append(h('div', { class: 'tag dmg', title: 'Damage marked this turn' }, c.dmg + ' dmg'));
+    if (c.zone === 'battlefield' && c.grant && c.grant.length) el.append(h('div', { class: 'tag grant', title: 'Until end of turn' }, c.grant.join(', ')));
+    const K = S() && S().combat;
+    if (c.zone === 'battlefield' && K && !K.done && K.att && K.att[c.id]) { const d = K.att[c.id].def; el.classList.add('attacking'); el.append(h('div', { class: 'tag atk' }, '⚔ ' + (d.p ? nameOf(d.p) : R.cardName(S().cards[d.c] || {})))); }
+    if (c.zone === 'battlefield' && K && !K.done && K.att && Object.values(K.att).some(a => (a.blk || []).includes(c.id))) { el.classList.add('blocking'); el.append(h('div', { class: 'tag blk' }, '🛡 blocking')); }
+    if (G.picking && c.zone !== 'hand' && c.zone !== 'library') { const st = pickState({ c: c.id }); if (st) el.classList.add(st); }
+    if (G.combatPick && c.zone === 'battlefield') { const st = combatState(c); if (st) el.classList.add(st); }
+    if (c.ab) el.append(h('div', { class: 'abtext' }, h('b', null, 'Ability'), ' ', c.ab.text));
     if (c.noUntap && c.zone === 'battlefield') el.append(h('div', { class: 'tag nou' }, 'Doesn’t untap'));
     if (c.zeroT && c.zone === 'battlefield') el.append(h('div', { class: 'tag zero' }, '0 toughness'));
     if (c.owner && c.ctrl && c.owner !== c.ctrl && c.zone === 'battlefield') el.append(h('div', { class: 'tag own', title: 'Owner' }, 'Owner: ' + nameOf(c.owner)));
@@ -299,6 +311,8 @@
     el.addEventListener('dblclick', e => { if (c.zone === 'battlefield' && c.ctrl === KEY && G.seated()) { e.stopPropagation(); closeMenu(); G.tap([c.id], !c.tapped); } });
     el.addEventListener('click', e => {
       if (G.targeting) { e.stopPropagation(); finishTarget(c); return; }
+      if (G.picking && c.zone !== 'hand' && c.zone !== 'library' && !opt.noMenu) { e.stopPropagation(); pickTarget({ c: c.id }); return; }
+      if (G.combatPick && c.zone === 'battlefield') { e.stopPropagation(); combatClick(c); return; }
       if (opt.onClick) return opt.onClick(c, e);
       if (COARSE) { enlarge(c, !opt.noMenu ? items : null); return; }
       if (opt.noMenu) return;
@@ -405,14 +419,14 @@
       if (c.zone === 'graveyard' || c.zone === 'exile') return [
         { note: `This card belongs to ${nameOf(c.owner)}.` },
         !c.faceDown ? { label: 'Put onto the battlefield under my control', fn: () => G.move([c.id], 'battlefield') } : null,
-        !c.faceDown ? { label: 'Cast it (I control the spell)', fn: () => G.move([c.id], 'stack') } : null
+        !c.faceDown ? { label: 'Cast it (I control the spell)', fn: () => castFlow(c, 'public') } : null
       ];
       return [{ note: c.zone === 'stack' ? `${nameOf(c.ctrl)} controls this spell.` : `This card belongs to ${nameOf(c.owner)}.` }];
     }
     if (c.zone === 'command') {
       const tax = 2 * ((S().tax || {})[c.id] || 0);
       return [
-        { label: `Cast (to the stack) — tax {${tax}}`, fn: () => G.move([c.id], 'stack') },
+        { label: `Cast — commander tax {${tax}}`, fn: () => castFlow(c, 'public') },
         { label: 'Put onto the battlefield (no tax)', fn: () => G.move([c.id], 'battlefield') },
         { sep: true },
         { label: 'Move to', sub: moveSub(c).filter(Boolean) }
@@ -422,6 +436,11 @@
     const items = [];
     if (c.zone === 'battlefield') {
       items.push({ label: c.tapped ? 'Untap' : 'Tap', fn: () => G.tap([c.id], !c.tapped) });
+      const trs = c.faceDown ? [] : CD.triggers(c);
+      if (trs.length) items.push({ label: 'Put a triggered ability on the stack', sub: trs.map((t, i) => ({ label: t.line.slice(0, 90), fn: () => triggerFlow(c, i) })) });
+      const abs = c.faceDown ? [] : CD.abilities(c);
+      if (abs.length) items.push(abs.length === 1 ? { label: `Activate: ${abs[0].cost}: ${abs[0].text.slice(0, 60)}`, fn: () => activateFlow(c, 0) }
+        : { label: 'Activate an ability', sub: abs.map((a, i) => ({ label: `${a.cost}: ${a.text.slice(0, 70)}`, fn: () => activateFlow(c, i) })) });
       items.push({ label: 'Counters…', fn: () => counterModal(c.id) });
       items.push({ label: c.noUntap ? 'Let it untap normally' : 'Doesn’t untap during untap step', fn: () => G.act({ type: 'noUntap', id: c.id, on: !c.noUntap }) });
       if (R.ptOf(c)) items.push({ label: 'Change P/T until end of turn…', fn: () => ptModal(c.id) });
@@ -437,9 +456,10 @@
       if (!c.faceDown) items.push({ label: 'Create a token copy', fn: () => G.copyToken(c) });
       if (c.token) items.push({ label: 'Remove token from the game', fn: () => G.removeToken([c.id]) });
     } else if (c.zone === 'stack') {
-      const perm = /\b(creature|artifact|enchantment|planeswalker|land|battle)\b/i.test(R.typeLine(c));
-      items.push({ label: perm ? 'Resolve (onto the battlefield)' : 'Resolve (to the graveyard)', fn: perm ? mv(c, 'battlefield') : mv(c, 'graveyard') });
-      items.push({ label: 'Counter it (to the graveyard)', fn: mv(c, 'graveyard') });
+      const P = S().prio;
+      if (P && P.holder !== KEY) items.push({ note: `Waiting for ${nameOf(P.holder)} to respond. It resolves by itself when everyone has passed.` });
+      items.push({ label: 'Resolve it now (don’t wait for responses)', fn: () => G.act({ type: 'resolveNow' }) });
+      if (!c.ab) items.push({ label: 'Counter it (to the graveyard)', fn: mv(c, 'graveyard') });
       if (two) items.push({ label: 'Flip to other face', fn: () => G.flip(c.id) });
       items.push({ label: 'Move to', sub: moveSub(c) });
       if (c.token) items.push({ label: 'Remove copy from the game', fn: () => G.removeToken([c.id]) });
@@ -460,15 +480,20 @@
   function handMenu(c) {
     const land = G.isLand(c);
     const two = c.d.faces && c.d.faces.length > 1;
+    const T = S().turn;
+    const landUsed = T.active && T.lands && T.lands[KEY] >= 1;
     return [
-      { label: land ? 'Play land' : 'Put onto the battlefield', fn: () => G.fromHand([c.id], 'battlefield') },
-      { label: 'Put onto the battlefield tapped', fn: () => G.fromHand([c.id], 'battlefield', { tapped: true }) },
-      !land ? { label: 'Cast (put on the stack)', fn: () => G.fromHand([c.id], 'stack') } : null,
-      two ? { label: `Play the back face (${c.d.faces[1].n})`, fn: () => G.fromHand([c.id], 'battlefield', { backFace: true }) } : null,
-      { label: 'Play face down (morph, manifest…)', fn: () => G.fromHand([c.id], 'battlefield', { faceDown: true }) },
+      land ? { label: landUsed ? 'Play land (you already played one this turn)' : 'Play land', fn: () => G.playLand(c.id), disabled: landUsed || (T.active && T.active !== KEY) }
+        : { label: S().prio && S().prio.holder === KEY ? 'Cast in response' : 'Cast', fn: () => castFlow(c, 'hand') },
+      two && land ? { label: `Play the back face (${c.d.faces[1].n})`, fn: () => G.fromHand([c.id], 'battlefield', { backFace: true, playLand: true }) } : null,
+      !land ? { label: 'Cast face down (morph, disguise…)', fn: () => G.fromHand([c.id], 'stack', { faceDown: true }) } : null,
       { label: G.isRevealed(c.id) ? 'Stop revealing' : 'Reveal to everyone', fn: () => G.toggleReveal(c.id) },
       { sep: true },
       { label: 'Move to', sub: [
+        { label: 'Battlefield (an effect puts it there)', fn: () => G.fromHand([c.id], 'battlefield') },
+        { label: 'Battlefield, tapped', fn: () => G.fromHand([c.id], 'battlefield', { tapped: true }) },
+        two ? { label: `Battlefield, back face (${c.d.faces[1].n})`, fn: () => G.fromHand([c.id], 'battlefield', { backFace: true }) } : null,
+        { label: 'Battlefield face down (manifest…)', fn: () => G.fromHand([c.id], 'battlefield', { faceDown: true }) },
         { label: 'Graveyard (discard)', fn: () => G.fromHand([c.id], 'graveyard') },
         { label: 'Exile', fn: () => G.fromHand([c.id], 'exile') },
         { label: 'Exile face down', fn: () => G.fromHand([c.id], 'exile', { faceDown: true }) },
@@ -476,8 +501,8 @@
         { label: 'Bottom of library', fn: () => G.handToLibrary([c.id], 'bottom') },
         { label: 'Shuffle into library', fn: () => G.handToLibrary([c.id], 'shuffle') },
         { label: 'Command zone', fn: () => G.fromHand([c.id], 'command') }
-      ] }
-    ];
+      ].filter(Boolean) }
+    ].filter(Boolean);
   }
 
   // Attach targeting
@@ -486,6 +511,213 @@
     const tg = G.targeting; G.targeting = null;
     if (t.zone !== 'battlefield') { G.toast('Pick a card on the battlefield.', 'err'); render(); return; }
     G.attach(tg.id, t.id); render();
+  }
+
+  // ======================= casting: modes, X and targets =======================
+  // G.picking = { title, reqs, i, picked: [[targets for req 0], …], resolve, cancel }
+  const sameT = (a, b) => (a.c && a.c === b.c) || (a.p && a.p === b.p);
+  function pickState(t) {
+    const p = G.picking; if (!p) return '';
+    if (p.picked.some(l => l.some(x => sameT(x, t)))) return 'tgt-sel';
+    const req = p.reqs[p.i];
+    return req && CD.legalTarget(S(), req, t, KEY) ? 'tgt-ok' : '';
+  }
+  function pickTarget(t) {
+    const p = G.picking; if (!p) return;
+    const req = p.reqs[p.i];
+    const list = p.picked[p.i];
+    const at = list.findIndex(x => sameT(x, t));
+    if (at >= 0) { list.splice(at, 1); render(); return; }
+    if (!CD.legalTarget(S(), req, t, KEY)) { G.toast(`That isn’t a legal target for “${req.text}”.`, 'err'); return; }
+    list.push(t);
+    if (list.length >= req.n) nextReq(); else render();
+  }
+  function nextReq() {
+    const p = G.picking; if (!p) return;
+    p.i++;
+    if (p.i >= p.reqs.length) { G.picking = null; if (p.prevTab && G.tab === 'all') G.tab = p.prevTab; p.resolve(p.picked); }
+    render();
+  }
+  function pickTargets(title, card, reqs) {
+    return new Promise(resolve => {
+      const prevTab = G.tab;
+      G.picking = { title, card, reqs, i: 0, picked: reqs.map(() => []), resolve, prevTab,
+        cancel: () => { if (G.tab === 'all') G.tab = prevTab; resolve(null); } };
+      if (S().seats.length > 1) G.tab = 'all';
+      closeMenu(); hidePreview(); render();
+    });
+  }
+  function tlabel(t) {
+    if (t.p) return t.p === KEY ? 'You' : nameOf(t.p);
+    const c = S().cards[t.c]; if (!c) return 'a card';
+    return (c.ctrl === KEY ? 'Your ' : nameOf(c.ctrl) + '’s ') + R.cardName(c) + (c.zone === 'stack' ? ' (spell)' : c.zone === 'graveyard' ? ' (graveyard)' : '');
+  }
+  function targetsTxt(c) {
+    const l = [].concat(...(c.tg || [])); if (!l.length) return '';
+    return ' → ' + R.listNames(l.map(tlabel));
+  }
+  function pickBar() {
+    const p = G.picking; if (!p) return null;
+    const req = p.reqs[p.i];
+    const choices = CD.targetChoices(S(), req, KEY);
+    const got = p.picked[p.i];
+    const what = req.text.replace(/^(up to \w+ |one |two |three |any number of |another )/i, '');
+    return h('div', { class: 'pickbar', role: 'dialog', 'aria-label': p.title },
+      h('div', { class: 'pkhead' }, h('b', null, p.title), h('span', null, ` — choose ${req.upTo ? 'up to ' : ''}${req.n > 1 && req.n < 99 ? req.n + ' × ' : ''}${what}${p.reqs.length > 1 ? `  (${p.i + 1} of ${p.reqs.length})` : ''}`)),
+      h('div', { class: 'pkchoices' }, choices.length ? choices.slice(0, 40).map(t => h('button', { class: 'chip' + (got.some(x => sameT(x, t)) ? ' set' : ''), onclick: () => pickTarget(t) }, tlabel(t)))
+        : h('span', { class: 'muted' }, 'Nothing can be chosen for this right now.')),
+      h('div', { class: 'pkbtns' },
+        (req.upTo || got.length) ? h('button', { class: 'primary', onclick: nextReq }, got.length ? 'Done' : 'No target') : null,
+        !choices.length && !req.upTo ? h('button', { onclick: () => { p.picked[p.i] = []; nextReq(); } }, 'Cast it without a target') : null,
+        h('button', { onclick: () => { const q = G.picking; G.picking = null; q.cancel(); render(); } }, 'Cancel'),
+        h('span', { class: 'muted small' }, COARSE ? 'Tap a highlighted card or a name above.' : 'Click a highlighted card or a name above. Esc cancels.')));
+  }
+  function chooseModes(card, md) {
+    return new Promise(resolve => {
+      const n = md.pick === 'many' ? md.modes.length : md.pick;
+      const sel = [];
+      let done = false;
+      const finish = v => { if (done) return; done = true; closeModal(true); resolve(v); };
+      openModal(`${R.cardName(card)} — choose ${md.pick === 'many' ? 'one or more' : n === 1 ? 'one' : n}`, b => {
+        b.append(h('div', { class: 'modes' }, md.modes.map((m, i) => h('button', { class: 'mode' + (sel.includes(i) ? ' on' : ''), onclick: () => {
+          if (sel.includes(i)) sel.splice(sel.indexOf(i), 1); else if (sel.length < n) sel.push(i);
+          if (n === 1 && sel.length === 1) return finish(sel.slice());
+          refreshModal();
+        } }, m))));
+        if (n > 1) b.append(h('div', { class: 'row' }, h('button', { class: 'primary', disabled: !sel.length || (md.pick !== 'many' && sel.length !== n), onclick: () => finish(sel.slice()) }, `Choose (${sel.length})`), h('button', { onclick: () => finish(null) }, 'Cancel')));
+      }, { live: true, onClose: () => finish(null) });
+    });
+  }
+  function askX(card) {
+    return new Promise(resolve => {
+      let done = false; const fin = v => { if (done) return; done = true; resolve(v); };
+      openModal(`${R.cardName(card)} — choose X`, b => {
+        const inp = h('input', { type: 'number', min: '0', max: '99', value: '1', class: 'num', id: 'x-in' });
+        const go = () => { const n = Math.max(0, Math.min(99, parseInt(inp.value, 10) || 0)); closeModal(true); fin(n); };
+        inp.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
+        b.append(h('div', { class: 'row' }, inp, h('button', { class: 'primary', onclick: go }, 'OK')));
+        setTimeout(() => { inp.focus(); inp.select(); }, 30);
+      }, { cls: 'small', onClose: () => fin(null) });
+    });
+  }
+  // Cast a card: choose its mode, X and targets if it needs them, then put it on the stack.
+  async function castFlow(c, from) {
+    const card = from === 'hand' ? handCard(c) : c;
+    let mode = null, x = 0;
+    const md = CD.modesOf(card);
+    if (md) { mode = await chooseModes(card, md); if (!mode) return; }
+    if (CD.costOf(card).x) { x = await askX(card); if (x == null) return; }
+    const reqs = CD.targetReqs(card, mode);
+    let tg;
+    if (reqs.length) { tg = await pickTargets(`Casting ${R.cardName(card)}`, card, reqs); if (!tg) return; }
+    const opts = { tg, mode: mode || undefined, x: x || undefined };
+    if (from === 'hand') await G.castFromHand(c.id, opts);
+    else await G.castPublic(c.id, opts);
+  }
+  G.castFlow = castFlow;
+  async function triggerFlow(c, i) {
+    const tr = CD.triggers(c)[i];
+    if (!tr) return;
+    const reqs = CD.targetsIn(tr.text);
+    let tg;
+    if (reqs.length) { tg = await pickTargets(`${R.cardName(c)}: trigger`, c, reqs); if (!tg) return; }
+    G.act({ type: 'trigger', id: c.id, i, tg });
+  }
+  async function activateFlow(c, i) {
+    const ab = CD.abilities(c)[i];
+    if (!ab) return;
+    const reqs = CD.targetsIn(ab.text);
+    let tg;
+    if (reqs.length) { tg = await pickTargets(`${R.cardName(c)}: ${ab.cost}`, c, reqs); if (!tg) return; }
+    G.activate(c.id, i, tg);
+  }
+
+  // ======================= priority: "do you want to respond?" =======================
+  function prioBar() {
+    const s = S(), P = s.prio;
+    const top = R.stackTop(s);
+    if (!P || !top || !G.seated()) return null;
+    const what = `${top.ctrl === KEY ? 'You' : nameOf(top.ctrl)} ${top.ab ? 'activated ' + top.ab.name : 'cast ' + R.cardName(top)}${targetsTxt(top)}`;
+    if (P.holder === KEY) {
+      return h('div', { class: 'prio mine', role: 'alert' }, h('span', { class: 'pring' }),
+        h('div', { class: 'ptext' }, h('b', null, 'Respond? '), what + '. ', h('span', { class: 'muted' }, 'Cast an instant or use an ability now — or pass and let it resolve.')),
+        h('button', { class: 'primary', onclick: () => G.pass() }, 'Pass'));
+    }
+    const waited = Date.now() - (P.since || 0);
+    const passed = P.passed.filter(p => p !== top.ctrl && p !== P.holder).map(p => p === KEY ? 'You' : nameOf(p));
+    const hp = s.players[P.holder];
+    return h('div', { class: 'prio' }, h('div', { class: 'ptext' }, what + '. ', h('b', null, `Waiting for ${P.holder === KEY ? 'you' : nameOf(P.holder)}${hp && hp.ai ? ' (AI)' : ''} to respond…`), passed.length ? h('span', { class: 'muted' }, ` ${R.listNames(passed)} passed.`) : null),
+      top.ctrl === KEY && (waited > 45000 || (hp && !hp.online)) ? h('button', { onclick: () => G.act({ type: 'resolveNow' }) }, 'Resolve it anyway') : null);
+  }
+  setInterval(() => { if (S() && S().prio && G.seated()) G.render(); }, 5000);
+
+  // ======================= combat: attackers and blockers =======================
+  // G.combatPick = { kind: 'attack', sel: {id: def}, def } | { kind: 'block', pairs: {blockerId: attackerId}, cur }
+  const canAttackUI = c => c.ctrl === KEY && !c.tapped && (c.faceDown || R.isType(c, 'creature')) && !(R.sick(S(), c) && !CD.keywords(c, S()).has('haste')) && !CD.keywords(c, S()).has('defender');
+  const canBlockUI = c => c.ctrl === KEY && !c.tapped && (c.faceDown || R.isType(c, 'creature')) && !CD.keywords(c, S()).has("can't block");
+  const attackingMe = c => { const K = S().combat; const x = K && K.att && K.att[c.id]; return !!x && (x.def.p === KEY || (x.def.c && S().cards[x.def.c] && S().cards[x.def.c].ctrl === KEY)); };
+  function combatState(c) {
+    const P = G.combatPick;
+    if (P.kind === 'attack') return P.sel[c.id] ? 'atk-sel' : canAttackUI(c) ? 'atk-ok' : '';
+    if (P.kind === 'block') {
+      if (P.cur === c.id) return 'blk-cur';
+      if (P.pairs[c.id]) return 'blk-sel';
+      if (canBlockUI(c)) return 'blk-ok';
+      if (attackingMe(c)) return P.cur ? 'atk-target' : 'atk-in';
+    }
+    return '';
+  }
+  function combatClick(c) {
+    const P = G.combatPick;
+    if (P.kind === 'attack') {
+      if (!canAttackUI(c) && !P.sel[c.id]) { G.toast(c.ctrl !== KEY ? 'Click your own creatures to attack with them.' : c.tapped ? `${R.cardName(c)} is tapped.` : R.sick(S(), c) ? `${R.cardName(c)} has summoning sickness (it hasn’t been yours since your turn began).` : `${R.cardName(c)} can’t attack.`, 'err'); return; }
+      if (P.sel[c.id]) delete P.sel[c.id]; else P.sel[c.id] = P.def;
+    } else {
+      if (c.ctrl === KEY && canBlockUI(c)) { if (P.pairs[c.id]) delete P.pairs[c.id]; else P.cur = P.cur === c.id ? null : c.id; }
+      else if (attackingMe(c)) {
+        if (!P.cur) { G.toast('First click one of your untapped creatures, then the attacker it should block.', 'err'); return; }
+        const ak = CD.keywords(c, S()), bk = CD.keywords(S().cards[P.cur], S());
+        if (ak.has('flying') && !bk.has('flying') && !bk.has('reach')) { G.toast(`${R.cardName(c)} has flying — only creatures with flying or reach can block it.`, 'err'); return; }
+        P.pairs[P.cur] = c.id; P.cur = null;
+      }
+    }
+    render();
+  }
+  function defLabel(d) { return d.p ? nameOf(d.p) : R.cardName(S().cards[d.c] || {}); }
+  function combatBar() {
+    const s = S(), T = s.turn, K = s.combat;
+    if (!G.seated() || !T.active || s.prio) return null;
+    const P = G.combatPick;
+    // Defending: something is attacking me.
+    if (K && !K.done && K.n === T.n && K.waiting.includes(KEY) && !K.ok[KEY]) {
+      const atts = Object.keys(K.att).map(id => s.cards[id]).filter(c => c && attackingMe(c));
+      if (!P || P.kind !== 'block') { G.combatPick = { kind: 'block', pairs: {}, cur: null, prevTab: G.tab }; if (s.seats.length > 1) G.tab = 'all'; return combatBar(); }
+      const n = Object.keys(P.pairs).length;
+      return h('div', { class: 'combatbar def', role: 'alert' },
+        h('div', null, h('b', null, `${nameOf(T.active)} is attacking you`), ` with ${R.listNames(atts.map(c => { const pt = CD.pt(s, c); return R.cardName(c) + (pt ? ` (${pt.join('/')})` : ''); }))}.`),
+        h('div', { class: 'muted small' }, P.cur ? `Now click the attacker that ${R.cardName(s.cards[P.cur])} should block.` : 'Click one of your untapped creatures, then the attacker it blocks. Repeat for more blockers.'),
+        Object.keys(P.pairs).length ? h('div', { class: 'chips' }, Object.entries(P.pairs).map(([b, a]) => h('button', { class: 'chip set', title: 'Remove this block', onclick: () => { delete P.pairs[b]; render(); } }, `${R.cardName(s.cards[b])} blocks ${R.cardName(s.cards[a])} ✕`))) : null,
+        h('div', { class: 'row wrap' },
+          h('button', { class: 'primary', onclick: async () => { const list = Object.entries(P.pairs).map(([id, att]) => ({ id, att })); const r = await G.block(list); if (r.ok) { G.tab = P.prevTab || G.tab; G.combatPick = null; render(); } } }, n ? `Block (${n})` : 'No blocks')));
+    }
+    if (P && P.kind === 'block') { G.combatPick = null; if (P.prevTab) G.tab = P.prevTab; }
+    // Attacking: my turn, start of combat, haven't attacked yet.
+    const step = R.PHASES[T.phase];
+    if (T.active !== KEY || !['Beginning of combat', 'Declare attackers'].includes(step) || (K && K.n === T.n)) { if (G.combatPick && G.combatPick.kind === 'attack') G.combatPick = null; return null; }
+    const foes = s.seats.filter(p => p !== KEY);
+    const walkers = Object.values(s.cards).filter(c => c.zone === 'battlefield' && c.ctrl !== KEY && (R.isType(c, 'planeswalker') || R.isType(c, 'battle')));
+    if (!P || P.kind !== 'attack') G.combatPick = { kind: 'attack', sel: {}, def: { p: foes[0] } };
+    const Q = G.combatPick;
+    const ready = Object.values(s.cards).filter(c => c.zone === 'battlefield' && canAttackUI(c));
+    const n = Object.keys(Q.sel).length;
+    return h('div', { class: 'combatbar' },
+      h('div', null, h('b', null, 'Combat — choose your attackers. '), ready.length ? h('span', { class: 'muted' }, `Click your creatures (${ready.length} can attack). `) : h('span', { class: 'muted' }, 'None of your creatures can attack right now. ')),
+      foes.length + walkers.length > 1 ? h('div', { class: 'chips' }, h('span', { class: 'muted small' }, 'Attack:'), foes.map(p => ({ p })).concat(walkers.map(c => ({ c: c.id }))).map(d => h('button', { class: 'chip' + (sameT(Q.def, d) ? ' set' : ''), onclick: () => { Q.def = d; render(); } }, defLabel(d)))) : null,
+      n ? h('div', { class: 'chips' }, Object.entries(Q.sel).map(([id, d]) => h('button', { class: 'chip set', title: 'Remove', onclick: () => { delete Q.sel[id]; render(); } }, `${R.cardName(s.cards[id])} → ${defLabel(d)} ✕`))) : null,
+      h('div', { class: 'row wrap' },
+        h('button', { class: 'primary', disabled: !n, onclick: async () => { const list = Object.entries(Q.sel).map(([id, d]) => Object.assign({ id }, d)); const r = await G.attack(list); if (r.ok) { G.combatPick = null; render(); } } }, n ? `Attack (${n})` : 'Attack'),
+        ready.length ? h('button', { onclick: () => { for (const c of ready) Q.sel[c.id] = Q.def; render(); } }, 'Select all') : null,
+        h('button', { onclick: async () => { G.combatPick = null; await G.attack([]); } }, 'No attack — skip combat')));
   }
 
   // ======================= library menu =======================
@@ -544,12 +776,14 @@
     );
 
     const unread = Math.max(0, s.log.length - (G.logSeen || 0));
+    const aiUnread = Math.max(0, (s.aichat || []).length - (G.aiSeen || 0));
     const tools = h('div', { class: 'tools' },
       me ? h('button', { onclick: e => openMenu(e.currentTarget, newGameMenu(), 'Start over') }, 'New game ▾') : null,
       h('button', { onclick: () => deckManager() }, 'Decks'),
       me ? h('button', { onclick: () => tokenModal() }, 'Tokens') : null,
       me ? h('button', { onclick: e => openMenu(e.currentTarget, [2, 4, 6, 8, 10, 12, 20].map(n => ({ label: n === 2 ? 'Flip a coin' : 'Roll a d' + n, fn: () => G.act({ type: 'dice', sides: n }) })).concat([{ label: 'Roll any die…', fn: () => askNumber('How many sides?', 100, n => G.act({ type: 'dice', sides: n }), 1000) }]), 'Dice & coin') }, 'Dice') : null,
-      h('button', { class: G.logOpen ? 'on' : '', onclick: () => { G.logOpen = !G.logOpen; render(); } }, 'Log', unread && !G.logOpen ? h('span', { class: 'badge' }, String(Math.min(unread, 99))) : null),
+      h('button', { class: G.logOpen ? 'on' : '', onclick: () => { G.logOpen = !G.logOpen; G.aiOpen = false; render(); } }, 'Log', unread && !G.logOpen ? h('span', { class: 'badge' }, String(Math.min(unread, 99))) : null),
+      h('button', { class: G.aiOpen ? 'on' : '', title: 'AI players: add one, read what they’re doing, ask them questions', onclick: () => { G.aiOpen = !G.aiOpen; if (G.aiOpen) G.logOpen = false; render(); } }, 'AI', aiUnread && !G.aiOpen ? h('span', { class: 'badge' }, String(Math.min(aiUnread, 99))) : null),
       h('button', { class: 'invite', onclick: inviteModal, title: 'Invite players to this table' }, 'Invite'),
       me ? h('button', { class: G.phoneLinked ? 'on' : '', onclick: phoneModal, title: 'Use your phone as your hand' }, G.phoneLinked ? 'Phone ✓' : 'Phone') : null,
       h('button', { title: 'More', onclick: e => openMenu(e.currentTarget, moreMenu(), 'Table') }, '⋯')
@@ -561,7 +795,8 @@
         { label: 'Decks', fn: () => deckManager() },
         me ? { label: 'Tokens', fn: () => tokenModal() } : null,
         me ? { label: 'Dice & coin ▸', sub: [2, 6, 20].map(n => ({ label: n === 2 ? 'Flip a coin' : 'Roll a d' + n, fn: () => G.act({ type: 'dice', sides: n }) })) } : null,
-        { label: `Log${unread ? ' (' + Math.min(unread, 99) + ' new)' : ''}`, fn: () => { G.logOpen = !G.logOpen; render(); } },
+        { label: `Log${unread ? ' (' + Math.min(unread, 99) + ' new)' : ''}`, fn: () => { G.logOpen = !G.logOpen; G.aiOpen = false; render(); } },
+        { label: `AI players & chat${aiUnread ? ' (' + Math.min(aiUnread, 99) + ' new)' : ''}`, fn: () => { G.aiOpen = !G.aiOpen; if (G.aiOpen) G.logOpen = false; render(); } },
         me ? { label: 'Monarch ▸', sub: S().seats.map(p => ({ label: nameOf(p), fn: () => G.act({ type: 'table', key: 'monarch', value: p }) })).concat([{ label: 'Nobody', fn: () => G.act({ type: 'table', key: 'monarch', value: null }) }]) } : null,
         me ? { label: 'Initiative ▸', sub: S().seats.map(p => ({ label: nameOf(p), fn: () => G.act({ type: 'table', key: 'initiative', value: p }) })).concat([{ label: 'Nobody', fn: () => G.act({ type: 'table', key: 'initiative', value: null }) }]) } : null,
         me ? { label: 'Day / night ▸', sub: [{ label: 'Day', fn: () => G.act({ type: 'table', key: 'day', value: 'day' }) }, { label: 'Night', fn: () => G.act({ type: 'table', key: 'day', value: 'night' }) }, { label: 'Neither', fn: () => G.act({ type: 'table', key: 'day', value: null }) }] } : null,
@@ -635,11 +870,16 @@
     const s = S();
     return [
       { label: 'Invite players…', fn: inviteModal },
+      me && s.seats.length < R.MAX_SEATS ? { label: 'Add an AI player…', fn: addAIModal } : null,
+      me && !COARSE ? { label: 'Monarch ▸', sub: s.seats.map(p => ({ label: nameOf(p), fn: () => G.act({ type: 'table', key: 'monarch', value: p }) })).concat([{ label: 'Nobody', fn: () => G.act({ type: 'table', key: 'monarch', value: null }) }]) } : null,
+      me && !COARSE ? { label: 'Initiative ▸', sub: s.seats.map(p => ({ label: nameOf(p), fn: () => G.act({ type: 'table', key: 'initiative', value: p }) })).concat([{ label: 'Nobody', fn: () => G.act({ type: 'table', key: 'initiative', value: null }) }]) } : null,
+      me && !COARSE ? { label: 'Day / night ▸', sub: [{ label: 'Day', fn: () => G.act({ type: 'table', key: 'day', value: 'day' }) }, { label: 'Night', fn: () => G.act({ type: 'table', key: 'day', value: 'night' }) }, { label: 'Neither', fn: () => G.act({ type: 'table', key: 'day', value: null }) }] } : null,
       me ? { label: 'Change my name…', fn: nameModal } : { label: 'Take a seat', fn: nameModal },
       me ? { label: 'Untap everything I control', fn: untapAll } : null,
       { sep: true },
       me ? { label: 'Leave my seat…', fn: () => choose('Leave seat', 'Your cards leave the table.', [{ label: 'Leave', primary: true, fn: () => G.act({ type: 'leave' }) }, { label: 'Cancel', fn: () => {} }]) } : null,
       ...s.seats.filter(p => !s.players[p].online && p !== KEY).map(p => ({ label: `Remove ${nameOf(p)} (offline)`, fn: () => G.act({ type: 'removeSeat', pid: p }) })),
+      ...s.seats.filter(p => s.players[p].ai && aiOf(p)).map(p => ({ label: `${nameOf(p)} (AI) settings…`, fn: () => manageAIModal(p) })),
       { sep: true },
       { label: 'Open a different table…', fn: tableModal }
     ];
@@ -686,7 +926,9 @@
     if (s.table.monarch === pid) tags.push(h('span', { class: 'tag2' }, '♛ Monarch'));
     if (s.table.initiative === pid) tags.push(h('span', { class: 'tag2' }, 'Initiative'));
     if (p.phone) tags.push(h('span', { class: 'tag2 dim' }, 'Hand on phone'));
-    const bar = h('div', { class: 'pbar' },
+    if (p.ai) tags.unshift(h('span', { class: 'tag2 ai', title: 'A computer player run by ' + nameOf(p.ai.by) }, 'AI · ' + p.ai.skill));
+    const pickable = G.picking ? pickState({ p: pid }) : '';
+    const bar = h('div', { class: 'pbar' + (pickable ? ' ' + pickable : ''), onclick: pickable ? () => pickTarget({ p: pid }) : null },
       h('div', { class: 'pname' }, h('span', { class: 'dot ' + (p.online ? 'on' : 'off'), title: p.online ? 'Online' : 'Offline' }), h('b', null, p.name), p.deckName && !compact ? h('span', { class: 'deck' }, p.deckName) : null, tags),
       life,
       h('div', { class: 'stats' },
@@ -764,7 +1006,8 @@
     const st = Object.values(S().cards).filter(c => c.zone === 'stack').sort((a, b) => a.seq - b.seq);
     if (!st.length) return null;
     return h('div', { id: 'stack' }, h('div', { class: 'rlabel' }, 'Stack', h('span', null, 'top →')),
-      h('div', { class: 'strip', 'data-scroll': 'stack' }, st.map(c => h('div', { class: 'stk' }, cardEl(c), h('div', { class: 'by' }, nameOf(c.ctrl))))));
+      h('div', { class: 'strip', 'data-scroll': 'stack' }, st.map(c => h('div', { class: 'stk' + (c === st[st.length - 1] ? ' top' : '') }, cardEl(c), h('div', { class: 'by' }, nameOf(c.ctrl)),
+        c.tg && c.tg.some(l => l.length) ? h('div', { class: 'tgts' }, targetsTxt(c).replace(/^ → /, '→ ')) : null))));
   }
 
   function mainView() {
@@ -807,7 +1050,7 @@
     } else {
       for (const c of P.hand) {
         const pc = handCard(c);
-        const el = cardEl(pc, { menu: () => handMenu(c), cls: G.isRevealed(c.id) ? 'rev' : '', swipeUp: () => G.fromHand([c.id], 'battlefield') });
+        const el = cardEl(pc, { menu: () => handMenu(c), cls: G.isRevealed(c.id) ? 'rev' : '', swipeUp: () => G.isLand(c) ? G.playLand(c.id) : castFlow(c, 'hand') });
         if (G.isRevealed(c.id)) el.append(h('div', { class: 'tag tok' }, 'Revealed'));
         strip.append(el);
       }
@@ -853,6 +1096,190 @@
     return h('aside', { id: 'log' }, h('header', null, h('h2', null, 'Game log'), h('button', { class: 'x', onclick: () => { G.logOpen = false; render(); } }, '✕')), list);
   }
 
+  // ======================= AI players =======================
+  // An AI runs as a hidden copy of the site inside the page of the player who added it.
+  const myAIs = () => (G.LS.get('kt:myais', []) || []).filter(a => a.table === G.TABLE);
+  const saveMyAIs = list => G.LS.set('kt:myais', (G.LS.get('kt:myais', []) || []).filter(a => a.table !== G.TABLE).concat(list));
+  const aiFrames = {};
+  function spawnAI(a) {
+    if (aiFrames[a.id] || G.dead) return;
+    const f = document.createElement('iframe');
+    f.src = location.pathname + '?t=' + encodeURIComponent(G.TABLE) + '&m=ai&ai=' + encodeURIComponent(a.id);
+    f.title = 'AI player'; f.setAttribute('aria-hidden', 'true'); f.tabIndex = -1;
+    f.style.cssText = 'position:fixed;width:2px;height:2px;border:0;opacity:0;pointer-events:none;left:-20px;top:-20px';
+    document.body.append(f);
+    aiFrames[a.id] = f;
+  }
+  const aiPost = (id, msg) => { const f = aiFrames[id]; if (f && f.contentWindow) f.contentWindow.postMessage(Object.assign({ kt: 'owner' }, msg), location.origin); };
+  function clearAIStore(id) { const pre = 'ai:' + id + ':'; try { for (let i = localStorage.length - 1; i >= 0; i--) { const k = localStorage.key(i); if (k && k.startsWith(pre)) localStorage.removeItem(k); } } catch (e) {} }
+  addEventListener('message', e => {
+    if (e.origin !== location.origin || !e.data || e.data.kt !== 'ai') return;
+    const m = e.data;
+    if (m.t === 'started') { const list = myAIs(); const a = list.find(x => x.id === m.id); if (a && a.pid !== m.pid) { a.pid = m.pid; saveMyAIs(list); render(); } }
+    if (m.t === 'removed' || m.t === 'noconfig') { const f = aiFrames[m.id]; if (f) f.remove(); delete aiFrames[m.id]; saveMyAIs(myAIs().filter(x => x.id !== m.id)); clearAIStore(m.id); render(); }
+  });
+  const AI_NAMES = ['Ajani', 'Chandra', 'Teferi', 'Liliana', 'Nissa', 'Jace', 'Gideon', 'Sorin', 'Kaya', 'Vraska', 'Nahiri', 'Saheeli', 'Kiora', 'Ob Nixilis'];
+  G.addAI = function (name, deck, skill) {
+    const id = G.R.rid(10);
+    G.LS.raw.set('ai:' + id + ':kt:aicfg', { name, skill, owner: KEY, deckId: deck.id });
+    if (!G.LS.raw.set('ai:' + id + ':kt:decks', [Object.assign({}, deck, { mat: null })])) { G.toast('Your browser storage is full — delete a deck or a playmat picture first.', 'err'); return; }
+    saveMyAIs(myAIs().concat([{ id, table: G.TABLE, name }]));
+    spawnAI({ id });
+    G.toast(`${name} is sitting down…`, 'info');
+  };
+  const aiOf = pid => myAIs().find(a => a.pid === pid);
+  const SKILLS = [['easy', 'Easy', 'Plays loosely, never responds to your spells, blocks at random.'], ['normal', 'Normal', 'Plays on curve, sensible attacks and blocks, sometimes counters big spells.'], ['hard', 'Hard', 'Looks for lethal, holds up answers, careful trades and blocks.']];
+  function addAIModal() {
+    if (!G.seated()) return G.toast('Take a seat first.', 'err');
+    const used = new Set(S().seats.map(p => S().players[p].name));
+    let name = AI_NAMES.find(n => !used.has(n)) || 'AI player';
+    let skill = 'normal', deckId = (G.decks()[0] || {}).id || null, busy = '';
+    openModal('Add an AI player', b => {
+      const decks = G.decks();
+      if (deckId && !decks.some(d => d.id === deckId)) deckId = decks[0] && decks[0].id;
+      const full = S().seats.length >= R.MAX_SEATS;
+      b.append(h('p', { class: 'muted' }, 'The AI sits at the table like a player: it plays whole turns by itself, follows the rules, responds when it has priority, blocks — and explains what it’s doing in the AI chat, where anyone can ask it questions.'));
+      const nm = h('input', { type: 'text', id: 'ainame', maxlength: '20', value: name, oninput: e => name = e.target.value });
+      b.append(h('div', { class: 'row' }, h('b', null, 'Name'), nm));
+      b.append(h('h4', null, 'Skill'), h('div', { class: 'skills' }, SKILLS.map(([k, l, d]) => h('button', { class: 'skill' + (skill === k ? ' on' : ''), onclick: () => { skill = k; refreshModal(); } }, h('b', null, l), h('span', null, d)))));
+      b.append(h('h4', null, 'Deck'));
+      if (!decks.length) b.append(h('p', { class: 'muted' }, 'You don’t have any decks yet. Import one below, or in Decks.'));
+      else b.append(h('div', { class: 'aidecks' }, decks.map(d => h('button', { class: 'dk' + (d.id === deckId ? ' on' : ''), onclick: () => { deckId = d.id; refreshModal(); } }, h('img', { src: d.sleeve || BACK, alt: '' }), h('span', null, h('b', null, d.name), h('small', null, `${d.cards.reduce((a, c) => a + c.qty, 0)} cards${d.cards.some(c => c.cmdr) ? ' · ' + d.cards.filter(c => c.cmdr).map(c => c.d.n).join(' & ') : ''}`))))));
+      b.append(deckImporter(d => { deckId = d.id; refreshModal(); }, msg => { busy = msg; refreshModal(); }));
+      if (busy) b.append(h('p', { class: 'muted small' }, busy));
+      b.append(h('div', { class: 'row wrap' },
+        h('button', { class: 'primary', disabled: !deckId || full || !name.trim(), onclick: () => { const d = G.decks().find(x => x.id === deckId); if (!d) return; closeModal(); G.addAI(name.trim().slice(0, 20), d, skill); G.aiOpen = true; render(); } }, full ? 'The table is full' : 'Add AI player'),
+        h('span', { class: 'muted small' }, 'It runs in this browser tab, so keep this tab open while you play.')));
+    }, { live: true, cls: 'wide' });
+  }
+  function manageAIModal(pid) {
+    const a = aiOf(pid); if (!a) return;
+    openModal(`${nameOf(pid)} — AI settings`, b => {
+      const p = S().players[pid]; if (!p) { b.append(h('p', null, 'That AI left the table.')); return; }
+      b.append(h('h4', null, 'Skill'), h('div', { class: 'skills' }, SKILLS.map(([k, l, d]) => h('button', { class: 'skill' + (p.ai && p.ai.skill === k ? ' on' : ''), onclick: () => { aiPost(a.id, { t: 'skill', v: k }); G.toast(`${p.name} will play on ${l}.`); setTimeout(refreshModal, 1500); } }, h('b', null, l), h('span', null, d)))));
+      b.append(h('h4', null, 'Deck'), h('p', { class: 'muted small' }, `Playing ${p.deckName || '—'}. Choosing another deck restarts its side of the game.`),
+        h('div', { class: 'aidecks' }, G.decks().map(d => h('button', { class: 'dk', onclick: () => { aiPost(a.id, { t: 'deck', deck: Object.assign({}, d, { mat: null }) }); G.toast(`${p.name} switches to ${d.name}.`); closeModal(); } }, h('img', { src: d.sleeve || BACK, alt: '' }), h('span', null, h('b', null, d.name))))));
+      b.append(h('div', { class: 'row' }, h('button', { class: 'ghost danger', onclick: () => { aiPost(a.id, { t: 'remove' }); closeModal(); G.toast(`${p.name} is leaving the table.`); } }, 'Remove this AI')));
+    }, { live: true });
+  }
+  function aiPanel() {
+    const s = S();
+    const ais = s.seats.filter(p => s.players[p].ai);
+    G.aiSeen = (s.aichat || []).length;
+    const time = t => new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    const list = h('div', { class: 'loglist aichat', 'data-scroll': 'aichat' }, (s.aichat || []).length ? (s.aichat || []).map(m => h('div', { class: 'cm ' + m.kind + (m.pid === KEY ? ' mine' : '') },
+      h('div', { class: 'cmh' }, h('b', null, m.pid === KEY ? 'You' : nameOf(m.pid)), m.kind === 'q' && m.to ? h('span', { class: 'muted' }, ' → ' + nameOf(m.to)) : null, h('time', null, time(m.t))),
+      h('div', { class: 'cmt' }, m.text),
+      m.kind === 'a' && m.why && m.why.length ? h('ul', { class: 'why' }, m.why.map(w => h('li', null, w))) : null,
+      m.kind === 'say' && m.why && m.why.length && s.players[m.pid] && s.players[m.pid].ai && G.seated() ? h('button', { class: 'ghost small legal', onclick: () => G.act({ type: 'aiAsk', to: m.pid, text: 'Is this legal?', re: m.id }) }, 'Is this legal?') : null))
+      : h('p', { class: 'muted' }, ais.length ? 'The AI explains its moves here.' : 'No AI players yet.'));
+    setTimeout(() => { list.scrollTop = list.scrollHeight; }, 0);
+    let to = G.aiAskTo && ais.includes(G.aiAskTo) ? G.aiAskTo : ais[0];
+    const inp = h('input', { type: 'text', id: 'aiask', placeholder: ais.length ? 'Ask the AI — “Is that legal?”, “Why attack me?”…' : 'Add an AI player first', disabled: !ais.length || !G.seated() });
+    const send = () => { const t = inp.value.trim(); if (!t || !to) return; G.act({ type: 'aiAsk', to, text: t }); inp.value = ''; };
+    inp.addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
+    const mineAIs = ais.filter(p => aiOf(p));
+    return h('aside', { id: 'log', class: 'aipanel' },
+      h('header', null, h('h2', null, 'AI table talk'), h('button', { class: 'ghost small', onclick: () => { G.aiOpen = false; G.logOpen = true; render(); } }, 'Game log'), h('button', { class: 'x', onclick: () => { G.aiOpen = false; render(); } }, '✕')),
+      h('div', { class: 'aibar' },
+        G.seated() && s.seats.length < R.MAX_SEATS ? h('button', { class: 'primary small', onclick: addAIModal }, '+ Add AI player') : null,
+        mineAIs.map(p => h('button', { class: 'small', onclick: () => manageAIModal(p) }, `${nameOf(p)} ⚙`))),
+      list,
+      h('div', { class: 'askrow' }, ais.length > 1 ? h('select', { id: 'aito', onchange: e => { G.aiAskTo = e.target.value; } }, ais.map(p => h('option', { value: p, selected: p === to }, nameOf(p)))) : null, inp, h('button', { onclick: send, disabled: !ais.length || !G.seated() }, 'Ask')));
+  }
+
+  // ======================= effects that ask you something (search, scry, discard, sacrifice) =======================
+  G.onTodo = (t, ack) => ask(() => {
+    if (t.k === 'scry') {
+      const n = Math.min(t.n || 1, G.P.library.length);
+      if (!n) { ack(); return pumpAsks(); }
+      lookModal('scry', n, () => { ack(); setTimeout(pumpAsks, 50); });
+      return;
+    }
+    if (t.k === 'fetch') {
+      const sel = [];
+      let done = false;
+      const finish = async ids => { if (done) return; done = true; closeModal(true); await G.fetchLands(ids, t); ack(); setTimeout(pumpAsks, 50); };
+      openModal(`${t.src}: search for ${t.n > 1 ? 'up to ' + t.n + ' basic lands' : 'a basic land'}`, b => {
+        const lands = G.basicLands();
+        b.append(h('p', { class: 'muted' }, t.split ? 'The first one you pick goes onto the battlefield tapped, the second into your hand.' : t.dest === 'hand' ? 'They go into your hand.' : `They go onto the battlefield${t.tapped ? ' tapped' : ''}.`));
+        const uniq = []; const seen = new Set(); for (const c of lands) if (!seen.has(c.d.n) || sel.includes(c.id)) { seen.add(c.d.n); uniq.push(c); }
+        b.append(h('div', { class: 'strip pick' }, uniq.length ? uniq.map(c => cardEl(Object.assign({ zone: 'library', owner: KEY, counters: {} }, c), { noMenu: true, cls: sel.includes(c.id) ? 'sel' : '', badge: sel.includes(c.id) ? '#' + (sel.indexOf(c.id) + 1) : null, onClick: () => { const i = sel.indexOf(c.id); if (i >= 0) sel.splice(i, 1); else if (sel.length < (t.n || 1)) { const other = lands.find(x => x.d.n === c.d.n && !sel.includes(x.id)); sel.push(other ? other.id : c.id); } refreshModal(); } })) : h('p', { class: 'muted' }, 'There are no basic lands left in your library.')));
+        b.append(h('div', { class: 'row' }, h('button', { class: 'primary', onclick: () => finish(sel.slice()) }, sel.length ? `Take ${sel.length}` : 'Find nothing'), h('span', { class: 'muted small' }, 'Your library is shuffled afterwards.')));
+      }, { live: true, cls: 'wide', sticky: true, noEsc: true });
+      return;
+    }
+    if (t.k === 'discard' || t.k === 'sacrifice') {
+      const n = t.n || 1, sel = [];
+      const pool = t.k === 'discard' ? G.P.hand.map(c => handCard(c)) : Object.values(S().cards).filter(c => c.zone === 'battlefield' && c.ctrl === KEY && (!/creature/.test(t.what || '') || c.faceDown || R.isType(c, 'creature')) && (!/artifact/.test(t.what || '') || R.isType(c, 'artifact')) && (!/land/.test(t.what || '') || R.isType(c, 'land')));
+      const need = Math.min(n, pool.length);
+      if (!need) { ack(); return pumpAsks(); }
+      let done = false;
+      openModal(`${t.src}: ${t.k === 'discard' ? 'discard' : 'sacrifice'} ${need === 1 ? (t.k === 'discard' ? 'a card' : 'a ' + (t.what || 'permanent')) : need}`, b => {
+        b.append(h('div', { class: 'strip pick' }, pool.map(c => cardEl(c, { noMenu: true, cls: sel.includes(c.id) ? 'sel' : '', onClick: () => { const i = sel.indexOf(c.id); if (i >= 0) sel.splice(i, 1); else if (sel.length < need) sel.push(c.id); refreshModal(); } }))));
+        b.append(h('div', { class: 'row' }, h('button', { class: 'primary', disabled: sel.length !== need, onclick: async () => { if (done) return; done = true; closeModal(true); if (t.k === 'discard') await G.fromHand(sel.slice(), 'graveyard', { msg: `discarded {cards} (${t.src})` }); else await G.move(sel.slice(), 'graveyard'); ack(); setTimeout(pumpAsks, 50); } }, `${t.k === 'discard' ? 'Discard' : 'Sacrifice'} (${sel.length}/${need})`)));
+      }, { live: true, cls: 'wide', sticky: true, noEsc: true });
+      return;
+    }
+    ack(); pumpAsks();
+  });
+
+  // ======================= deck import: Moxfield links, ManaBox files, pasted lists =======================
+  async function fetchMoxfield(id) {
+    const tries = ['/.netlify/functions/moxfield?id=' + encodeURIComponent(id), 'https://api2.moxfield.com/v3/decks/all/' + encodeURIComponent(id)];
+    for (const u of tries) {
+      try { const r = await fetch(u, { headers: { Accept: 'application/json' } }); if (!r.ok) continue; const j = await r.json(); if (j && (j.boards || j.mainboard)) return j; } catch (e) {}
+    }
+    return null;
+  }
+  function moxLines(j) {
+    const out = [];
+    const add = (obj, cmdr) => { for (const v of Object.values(obj || {})) { const c = v.card || {}; if (!c.name) continue; out.push({ name: c.name, qty: v.quantity || 1, id: c.scryfall_id || '', set: (c.set || '').toLowerCase(), num: c.cn || '', cmdr }); } };
+    const B = j.boards || {};
+    add(B.commanders ? B.commanders.cards : j.commanders, true);
+    add(B.mainboard ? B.mainboard.cards : j.mainboard, false);
+    return out;
+  }
+  async function linesToDeck(lines, deckName, onMsg) {
+    if (!lines.length) throw new Error('No cards found in that list.');
+    onMsg(`Looking up ${lines.length} cards on Scryfall…`);
+    const res = await Scry.resolveLines(lines, (a, b2) => onMsg(`Looking up cards… ${a}/${b2}`));
+    const merged = [];
+    for (const c of res.cards) { const ex = merged.find(m => m.d.n === c.d.n && !m.cmdr && !c.cmdr); if (ex) ex.qty += c.qty; else merged.push(c); }
+    let nC = 0; for (const c of merged) if (c.cmdr) { if (++nC > 2) c.cmdr = false; else c.qty = 1; }
+    const d = { id: G.R.rid(8), name: deckName || 'Imported deck', cards: merged, sleeve: null };
+    const all = G.decks(); all.unshift(d); G.saveDecks(all);
+    onMsg(`Imported ${merged.reduce((a, c) => a + c.qty, 0)} cards${res.notFound.length ? ` (not found: ${res.notFound.slice(0, 5).join(', ')}${res.notFound.length > 5 ? '…' : ''})` : ''}.${merged.some(c => c.cmdr) ? '' : ' Star (☆) the commander in Decks.'}`);
+    return d;
+  }
+  G.linesToDeck = linesToDeck; G.moxLines = moxLines;
+  // A small "import a deck" block: Moxfield link, with a guided copy-and-paste fallback.
+  function deckImporter(onDeck, onMsg) {
+    const wrap = h('div', { class: 'importer' });
+    const link = h('input', { type: 'text', id: 'moxlink', placeholder: 'Paste a Moxfield deck link — moxfield.com/decks/…' });
+    const area = h('textarea', { id: 'moxpaste', rows: '5', placeholder: 'Or paste a deck list (Moxfield “Copy as plain text”, ManaBox, Arena…)', hidden: true });
+    const go = async () => {
+      const v = link.value.trim();
+      const m = v.match(/moxfield\.com\/decks\/([A-Za-z0-9_\-]+)/i) || v.match(/^([A-Za-z0-9_\-]{12,})$/);
+      if (!m) { onMsg('That doesn’t look like a Moxfield deck link. It should look like moxfield.com/decks/AbC123…'); return; }
+      onMsg('Reading the deck from Moxfield…');
+      const j = await fetchMoxfield(m[1]);
+      if (j) { try { const d = await linesToDeck(moxLines(j), j.name || 'Moxfield deck', onMsg); onDeck(d); } catch (e) { onMsg(e.message || 'Couldn’t import that deck.'); } return; }
+      area.hidden = false;
+      onMsg('Moxfield doesn’t let other websites read decks directly, so do this once: open the deck (button below) → click “Export” → “Copy as plain text”, then paste it into the box here — it imports as soon as you paste.');
+      setTimeout(() => { const a = $('#moxpaste'); if (a) { a.hidden = false; a.focus(); } }, 50);
+    };
+    link.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
+    const fromText = async t => { if (!t.trim()) return; try { const d = await linesToDeck(Scry.parseDeckFile(t), 'Moxfield deck', onMsg); onDeck(d); } catch (e) { onMsg(e.message || 'Couldn’t import that list.'); } };
+    area.addEventListener('paste', () => setTimeout(() => fromText(area.value), 30));
+    wrap.append(h('div', { class: 'row' }, link, h('button', { onclick: go }, 'Import')),
+      h('div', { class: 'row wrap' }, h('button', { class: 'ghost small', onclick: () => { const v = link.value.trim(); if (/moxfield\.com\/decks\//i.test(v)) window.open(v.startsWith('http') ? v : 'https://' + v, '_blank', 'noopener'); else G.toast('Paste the Moxfield link first.', 'err'); } }, 'Open the deck on Moxfield ↗'),
+        h('button', { class: 'ghost small', onclick: () => { area.hidden = !area.hidden; } }, 'Paste a list instead')),
+      area, h('div', { class: 'row', hidden: true }, h('button', { onclick: () => fromText(area.value) }, 'Import pasted list')));
+    area.addEventListener('input', () => { const btn = area.nextSibling; if (btn) btn.hidden = !area.value.trim(); });
+    return wrap;
+  }
+
   // ======================= modals =======================
   function zoneModal(pid, zone) {
     openModal(`${nameOf(pid)} — ${ZLABEL[zone]}`, b => {
@@ -871,14 +1298,14 @@
     }, { live: true, cls: 'wide' });
   }
 
-  function lookModal(mode, x) {
+  function lookModal(mode, x, onDone) {
     const top = G.P.library.slice(0, x);
     const order = top.map(c => ({ id: c.id, dest: 'top' }));
     const dests = mode === 'scry' ? ['top', 'bottom'] : mode === 'surveil' ? ['top', 'graveyard'] : ['top', 'bottom', 'hand', 'graveyard', 'exile', 'battlefield'];
     const DL = { top: 'Top', bottom: 'Bottom', hand: 'Hand', graveyard: 'Graveyard', exile: 'Exile', battlefield: 'Battlefield' };
     const title = mode === 'scry' ? `Scry ${x}` : mode === 'surveil' ? `Surveil ${x}` : `Top ${plural(x, 'card')} of your library`;
     let applied = false;
-    const apply = () => { if (applied) return; applied = true; closeModal(true); G.applyLook(mode, x, order); };
+    const apply = () => { if (applied) return; applied = true; closeModal(true); G.applyLook(mode, x, order).then(() => { if (onDone) onDone(); }); };
     openModal(title, b => {
       b.append(h('p', { class: 'muted' }, 'Left is the top of your library. Use the arrows to change the order of cards you keep on top.'));
       const strip = h('div', { class: 'strip look', 'data-scroll': 'look' });
@@ -1121,6 +1548,7 @@
         h('button', { class: 'primary', onclick: () => { const d = { id: G.R.rid(8), name: 'New deck', cards: [], sleeve: null }; saveDeck(d); editing = d.id; refreshModal(); } }, '+ New deck'),
         h('label', { class: 'import' }, 'Import from ManaBox (.txt or .csv)',
           h('input', { type: 'file', accept: '.csv,.txt,text/csv,text/plain', id: 'importfile', onchange: e => importFile(e.target.files[0]) })),
+        deckImporter(d => { editing = d.id; importMsg = ''; refreshModal(); }, msg => { importMsg = msg; refreshModal(); }),
         h('button', { class: 'ghost small', onclick: () => { pasteOpen = !pasteOpen; refreshModal(); } }, pasteOpen ? 'Close paste box' : 'Or paste a deck list'),
         pasteOpen ? h('div', { class: 'paste' },
           h('textarea', { id: 'pastebox', rows: '8', placeholder: '// COMMANDER\n1 Alesha, Who Smiles at Death (FRF) 90\n\n1 Sol Ring (C21) 263\n30 Plains' }),
@@ -1189,11 +1617,13 @@
             h('div', { class: 'sleeve' }, h('img', { src: deck.sleeve || BACK, alt: 'Sleeve' }),
               h('div', null, h('b', null, 'Sleeve'), h('p', { class: 'muted small' }, 'On your library and face-down cards.'),
                 h('label', { class: 'btnlike' }, deck.sleeve ? 'Change' : 'Upload', h('input', { type: 'file', accept: 'image/*', id: 'sleevefile', onchange: e => imageCrop(e.target.files[0], 'sleeve', deck, saveDeck) })),
+                cmdArt(deck) ? h('button', { class: 'cmdartbtn', title: 'Use only the artwork of your commander (no card frame)', onclick: () => imageCrop(cmdArt(deck), 'sleeve', deck, saveDeck) }, 'Use commander art') : null,
                 deck.sleeve ? h('button', { class: 'ghost', onclick: () => { deck.sleeve = null; saveDeck(deck); G.pushLook(deck); refreshModal(); } }, 'Remove') : null)),
             h('div', { class: 'sleeve matrow' },
               h('div', { class: 'matprev', style: boardStyle0(deck) }),
               h('div', null, h('b', null, 'Playmat'), h('p', { class: 'muted small' }, 'Shows behind your side of the table for everyone.'),
                 h('label', { class: 'btnlike' }, deck.mat ? 'Change' : 'Upload', h('input', { type: 'file', accept: 'image/*', id: 'matfile', onchange: e => imageCrop(e.target.files[0], 'mat', deck, saveDeck) })),
+                cmdArt(deck) ? h('button', { class: 'cmdartbtn', title: 'Use only the artwork of your commander (no card frame)', onclick: () => imageCrop(cmdArt(deck), 'mat', deck, saveDeck) }, 'Use commander art') : null,
                 deck.mat ? h('button', { class: 'ghost', onclick: () => { deck.mat = null; saveDeck(deck); G.pushLook(deck); refreshModal(); } }, 'Remove') : null)),
             h('div', { class: 'palwrap' }, h('b', null, 'Colors'),
               h('div', { class: 'pals' }, Object.entries(PALETTES).map(([k, p]) => h('button', {
@@ -1338,12 +1768,20 @@
     load();
   }
 
+  // The commander's artwork only (Scryfall's "art crop" of the chosen print), for sleeves and playmats.
+  function cmdArt(deck) {
+    const c = deck.cards.find(x => x.cmdr);
+    const img = c && c.d.faces && c.d.faces[0] && c.d.faces[0].img;
+    return img && /cards\.scryfall\.io\/(normal|large|small|png)\//.test(img) ? img.replace(/\/(normal|large|small|png)\//, '/art_crop/').replace(/\.png(\?|$)/, '.jpg$1') : null;
+  }
   function imageCrop(file, kind, deck, saveDeck) {
     const isMat = kind === 'mat';
     if (!file) return;
-    const fr = new FileReader();
+    const fromUrl = typeof file === 'string';
+    const fr = fromUrl ? { readAsDataURL() { this.result = file; this.onload(); } } : new FileReader();
     fr.onload = () => {
       const img = new Image();
+      if (fromUrl) img.crossOrigin = 'anonymous';
       img.onload = () => {
         const FW = isMat ? 800 : 250, FH = isMat ? 450 : 350; // card-shaped sleeve, wide playmat
         const base = Math.max(FW / img.width, FH / img.height);
@@ -1377,7 +1815,7 @@
           draw();
         }, { cls: isMat ? 'wide' : 'small', sticky: true });
       };
-      img.onerror = () => G.toast('That picture couldn’t be opened. Try a JPG or PNG.', 'err');
+      img.onerror = () => G.toast(fromUrl ? 'Couldn’t load the commander’s art from Scryfall. Check your internet and try again.' : 'That picture couldn’t be opened. Try a JPG or PNG.', 'err');
       img.src = fr.result;
     };
     fr.readAsDataURL(file);
@@ -1438,11 +1876,12 @@
     // keep scroll positions
     const scrolls = {};
     root.querySelectorAll('[data-scroll]').forEach(el => scrolls[el.dataset.scroll] = [el.scrollLeft, el.scrollTop]);
-    const main = h('main', { id: 'main' }, stackStrip(), mainView());
-    const view = h('div', { class: 'app' + (G.logOpen ? ' withlog' : '') + (COARSE ? ' touch' : '') },
+    const bars = [pickBar(), prioBar(), G.picking ? null : combatBar()].filter(Boolean);
+    const main = h('main', { id: 'main' }, bars.length ? h('div', { class: 'bars-top' }, bars) : null, stackStrip(), mainView());
+    const view = h('div', { class: 'app' + (G.logOpen || G.aiOpen ? ' withlog' : '') + (COARSE ? ' touch' : '') },
       topBar(), tabsBar(),
       G.targeting ? h('div', { class: 'target' }, `Click the card to attach ${G.targeting.name} to — Esc to cancel `, h('button', { onclick: () => { G.targeting = null; render(); } }, 'Cancel')) : null,
-      main, logPanel(), handBar(), mulliganPanel());
+      main, G.aiOpen ? aiPanel() : logPanel(), handBar(), mulliganPanel());
     root.replaceChildren(view);
     root.querySelectorAll('[data-scroll]').forEach(el => { const s = scrolls[el.dataset.scroll]; if (s) { el.scrollLeft = s[0]; el.scrollTop = s[1]; } });
     refreshModal();
@@ -1468,6 +1907,7 @@
   G.ready.then(() => {
     KEY = G.KEY;
     if (G.MODE === 'table' && G.myName()) { G.wantSeat = true; G.start(G.myName()); }
+    if (G.MODE === 'table') setTimeout(() => myAIs().forEach(spawnAI), 1500);   // AI players I added come back with me
     render();
   }).catch(err => {
     root.replaceChildren(h('div', { class: 'welcome' }, h('div', { class: 'wcard' }, h('h1', null, 'Kitchen Table'),

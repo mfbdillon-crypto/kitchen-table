@@ -5,18 +5,24 @@
   'use strict';
   const R = Rules;
 
+  const params = new URLSearchParams(location.search);
+  // An AI player runs as a hidden copy of the site inside the page of whoever added it (?m=ai&ai=<id>),
+  // with its own storage space so it never touches that person's decks, hand or identity.
+  const AI_ID = params.get('m') === 'ai' ? (params.get('ai') || '').replace(/[^\w]/g, '').slice(0, 20) : '';
+  const NS = AI_ID ? 'ai:' + AI_ID + ':' : '';
   const LS = {
-    get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } },
-    set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch (e) { return false; } }
+    get(k, d) { try { const v = localStorage.getItem(NS + k); return v ? JSON.parse(v) : d; } catch (e) { return d; } },
+    set(k, v) { try { localStorage.setItem(NS + k, JSON.stringify(v)); return true; } catch (e) { return false; } },
+    del(k) { try { localStorage.removeItem(NS + k); } catch (e) {} },
+    raw: { get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch (e) { return false; } }, del(k) { try { localStorage.removeItem(k); } catch (e) {} } }
   };
 
-  const params = new URLSearchParams(location.search);
   const TABLE = (params.get('t') || 'main').replace(/[^\w-]/g, '').slice(0, 40) || 'main';
-  const MODE = params.get('m') === 'hand' ? 'hand' : 'table';
+  const MODE = AI_ID ? 'ai' : params.get('m') === 'hand' ? 'hand' : 'table';
   let KEY = null; // your public seat id — set once your signing key is loaded (see G.ready below)
 
   const G = window.KT = {
-    R, LS, TABLE, MODE, KEY, S: null, table: null, phone: null, phoneLinked: false,
+    R, LS, TABLE, MODE, KEY, AI_ID, S: null, table: null, phone: null, phoneLinked: false,
     render() {}, toast() {}, status: 'connecting', statusMsg: ''
   };
 
@@ -41,7 +47,7 @@
       return;
     }
     // A tab can have its own player (to play a second seat from the same browser); otherwise the browser's.
-    let tabIdent = null; try { tabIdent = JSON.parse(sessionStorage.getItem('kt:ident:tab')); } catch (e) {}
+    let tabIdent = null; if (!AI_ID) try { tabIdent = JSON.parse(sessionStorage.getItem('kt:ident:tab')); } catch (e) {}
     const ident = await Net.makeIdentity(tabIdent || LS.get('kt:ident', null));
     if (!tabIdent) LS.set('kt:ident', ident.jwk);
     G.tabPlayer = !!tabIdent;
@@ -85,7 +91,7 @@
   async function act(a) {
     if (!G.table) return { ok: false, err: 'Not connected.' };
     const r = await G.table.act(a);
-    if (!r.ok && r.err) G.toast(r.err, 'err');
+    if (!r.ok && r.err) { G.toast(r.err, 'err'); if (G.phoneLinked) phoneBanner(r.err); }
     return r;
   }
   G.act = act;
@@ -122,6 +128,12 @@
 
   G.useDeck = async function (deck, rematch) {
     if (!me()) { G.toast('Take a seat first.', 'err'); return; }
+    // Decks saved before the table could read rules text get it filled in once.
+    if (deck.cards.some(e => e.d && e.d.faces && e.d.faces[0] && e.d.faces[0].o === undefined)) {
+      G.toast('Reading your cards’ rules text from Scryfall…', 'quiet');
+      const n = await Scry.enrich(deck.cards.map(e => e.d));
+      if (n > 0) { const all = G.decks(); const i = all.findIndex(d => d.id === deck.id); if (i >= 0) { all[i] = deck; G.saveDecks(all); } }
+    }
     const hadCards = P.deckId || Object.values(G.S.cards).some(c => c.owner === KEY);
     const n0 = P.n;
     setP(freshPriv(G.S.gameId));
@@ -244,6 +256,7 @@
     return 'moved {cards}';
   }
 
+  let lastAct = null;
   async function toPublic(list, ids, zone, opts, from) {
     opts = opts || {};
     const cards = take(list, ids);
@@ -254,7 +267,8 @@
     });
     savePriv();
     const land = cards.every(isLand);
-    const r = await act({ type: 'enter', zone, cards: send, tapped: !!opts.tapped, pos: opts.pos, row: opts.row, msg: msgFor(zone, Object.assign({ land }, opts), from) });
+    const r = await act({ type: 'enter', zone, cards: send, tapped: !!opts.tapped, pos: opts.pos, row: opts.row, land: !!opts.playLand, tg: opts.tg, mode: opts.mode, x: opts.x, msg: msgFor(zone, Object.assign({ land }, opts), from) });
+    if (r.ok) lastAct = { zone, ids, t: Date.now() };
     if (!r.ok) {
       // Only put the cards back if the table really refused. If we just never heard back, look at the board:
       // cards that made it onto the table stay there, so nothing is ever in two places at once.
@@ -265,6 +279,19 @@
   }
 
   G.fromHand = (ids, zone, opts) => toPublic(P.hand, ids, zone, opts, 'hand');
+  // Play a land from your hand (counts as your one land for the turn).
+  G.playLand = async function (id, tapped) {
+    const c = P.hand.find(x => x.id === id); if (!c) return { ok: false };
+    await toPublic(P.hand, [id], 'battlefield', { playLand: true, tapped }, 'hand');
+    return { ok: !P.hand.some(x => x.id === id) };
+  };
+  // Cast a card from your hand onto the stack, with targets/mode/X already chosen.
+  G.castFromHand = (id, opts) => toPublic(P.hand, [id], 'stack', Object.assign({}, opts || {}), 'hand');
+  G.castPublic = (id, opts) => act(Object.assign({ type: 'move', ids: [id], to: 'stack' }, opts || {}));
+  G.pass = () => G.S && G.S.prio ? act({ type: 'pass', top: G.S.prio.top }) : null;
+  G.activate = (id, i, tg, x) => act({ type: 'activate', id, i, tg, x });
+  G.attack = list => act({ type: 'attack', list });
+  G.block = list => act({ type: 'block', list });
   G.fromLibrary = (ids, zone, opts) => toPublic(P.library, ids, zone, opts, 'library');
 
   G.handToLibrary = function (ids, pos) {
@@ -438,6 +465,31 @@
     if (ack.length) act({ type: 'inboxAck', ids: ack }).then(() => ack.forEach(id => inboxBusy.delete(id)));
   }
 
+  // Effects from spells that need your library or hand (draw, search for a land, scry, discard…).
+  const todoBusy = new Set();
+  function processTodo() {
+    const list = ((G.S.todo || {})[KEY] || []).filter(t => !todoBusy.has(t.id));
+    for (const t of list) {
+      todoBusy.add(t.id);
+      const ack = () => act({ type: 'todoAck', ids: [t.id] });
+      if (t.k === 'draw') { G.draw(t.n || 1, `drew ${plural(t.n || 1, 'card')} (${t.src})`); ack(); continue; }
+      if (t.k === 'mill') { G.mill(t.n || 1).then(ack); continue; }
+      if (G.onTodo) { G.onTodo(t, ack); continue; }
+      ack();
+    }
+  }
+  // Search your library for basic lands (Rampant Growth, Cultivate…): returns the chosen cards.
+  G.basicLands = () => P.library.filter(c => /\bbasic\b/i.test(frontType(c)) && isLand(c));
+  G.fetchLands = async function (ids, t) {
+    const chosen = ids.slice(0, t.n || 1);
+    const toBf = t.split ? chosen.slice(0, 1) : t.dest === 'battlefield' ? chosen : [];
+    const toHand = t.split ? chosen.slice(1) : t.dest === 'hand' ? chosen : [];
+    if (toHand.length) { const cards = take(P.library, toHand); P.hand.push(...cards); }
+    shuffle(P.library); savePriv();
+    if (toBf.length) await G.fromLibrary(toBf, 'battlefield', { tapped: t.tapped, msg: `put {cards} onto the battlefield${t.tapped ? ' tapped' : ''} (${t.src})` });
+    log(`searched their library${toHand.length ? `, put ${plural(toHand.length, 'land')} into their hand` : ''} and shuffled (${t.src})`);
+  };
+
   const cmdrAsked = new Set();
   function commanderCheck() {
     for (const c of Object.values(G.S.cards)) {
@@ -537,13 +589,14 @@
       }
     }
     if (me()) {
-      if (!G.phone) G.startPhoneLink(true); // always ready for your phone once you're seated
-      processInbox(); identify(); autoDraw(); scheduleCounts(); commanderCheck(); zeroCheck();
+      if (!G.phone && MODE === 'table') G.startPhoneLink(true); // always ready for your phone once you're seated
+      processInbox(); processTodo(); identify(); autoDraw(); scheduleCounts(); commanderCheck(); zeroCheck();
       if (!me().deckName && P.deckId) act({ type: 'deck', name: P.deckName, sleeveRev: Date.now() });
     }
     notify(s);
     stepReminders(s);
     phoneSync();
+    if (G.onStateHook) G.onStateHook(s);
     G.render();
   }
 
@@ -555,6 +608,7 @@
       t: 'hand',
       cards: P.hand.map(c => ({ id: c.id, d: c.d, land: isLand(c), rev: G.isRevealed(c.id) })),
       info: {
+        prio: phonePrio(),
         name: m ? m.name : '', life: m ? m.life : 0, lib: P.library.length,
         turn: T && T.active ? `Turn ${T.n} · ${R.nameOf(G.S, T.active)} · ${R.PHASES[T.phase]}` : 'Game not started',
         myTurn: !!(T && T.active === KEY), phase: P.phase, bottomN: P.bottomN, mull: P.mull
@@ -562,15 +616,74 @@
     });
   }
   function phoneBanner(text) { if (G.phone && G.phone.linked) G.phone.send({ t: 'banner', text }); }
+  function phonePrio() {
+    const s = G.S; if (!s || !s.prio) return null;
+    const top = R.stackTop(s); if (!top) return null;
+    const tg = [].concat(...(top.tg || [])).map(t => t.p ? (t.p === KEY ? 'you' : R.nameOf(s, t.p)) : s.cards[t.c] ? (s.cards[t.c].ctrl === KEY ? 'your ' : R.nameOf(s, s.cards[t.c].ctrl) + '’s ') + R.cardName(s.cards[t.c]) : 'a card');
+    return { mine: s.prio.holder === KEY, text: `${top.ctrl === KEY ? 'You' : R.nameOf(s, top.ctrl)} ${top.ab ? 'activated ' + top.ab.name : 'cast ' + R.cardName(top)}${tg.length ? ' → ' + R.listNames(tg) : ''}`, waiting: s.prio.holder !== KEY ? R.nameOf(s, s.prio.holder) : '' };
+  }
+  // Ask the phone to pick from a list (targets, modes, X). Resolves with the chosen value, or null.
+  const phoneAsks = new Map();
+  function phoneAsk(title, options, extra) {
+    return new Promise(resolve => {
+      if (!G.phone || !G.phone.linked) return resolve(null);
+      const rid = Net.rid(8);
+      phoneAsks.set(rid, resolve);
+      G.phone.send(Object.assign({ t: 'choose', rid, title, options }, extra || {}));
+      setTimeout(() => { if (phoneAsks.has(rid)) { phoneAsks.delete(rid); resolve(null); } }, 180000);
+    });
+  }
+  // Casting from the phone: mode, X and targets are chosen on the phone.
+  async function castFromPhone(id) {
+    const c = P.hand.find(x => x.id === id); if (!c) return;
+    const card = { id: c.id, owner: KEY, ctrl: KEY, d: c.d, zone: 'hand', counters: {}, face: 0 };
+    const CD = window.Cards;
+    let mode = null, x = 0;
+    const md = CD.modesOf(card);
+    if (md) {
+      const n = md.pick === 'many' ? 1 : md.pick || 1;
+      const picks = [];
+      for (let i = 0; i < n; i++) {
+        const v = await phoneAsk(`${c.d.n}: choose a mode${n > 1 ? ` (${i + 1} of ${n})` : ''}`, md.modes.map((m, k) => ({ label: m, value: k })).filter(o => !picks.includes(o.value)));
+        if (v == null) return; picks.push(v);
+      }
+      mode = picks;
+    }
+    if (CD.costOf(card).x) { const v = await phoneAsk(`${c.d.n}: choose X`, Array.from({ length: 13 }, (_, k) => ({ label: String(k), value: k }))); if (v == null) return; x = v; }
+    const reqs = CD.targetReqs(card, mode);
+    const tg = [];
+    for (const req of reqs) {
+      const choices = CD.targetChoices(G.S, req, KEY);
+      const lab = t => t.p ? (t.p === KEY ? 'You' : R.nameOf(G.S, t.p)) : (G.S.cards[t.c].ctrl === KEY ? 'Your ' : R.nameOf(G.S, G.S.cards[t.c].ctrl) + '’s ') + R.cardName(G.S.cards[t.c]);
+      const picked = [];
+      const max = Math.min(req.n, 10);
+      for (let i = 0; i < max; i++) {
+        const opts = choices.filter(t => !picked.some(p => (p.c && p.c === t.c) || (p.p && p.p === t.p))).map(t => ({ label: lab(t), value: t }));
+        if (!opts.length) break;
+        if (req.upTo || i > 0) opts.push({ label: i > 0 ? 'Done' : 'No target', value: '__none' });
+        const v = await phoneAsk(`${c.d.n}: choose ${req.text}${max > 1 ? ` (${i + 1})` : ''}`, opts);
+        if (v == null) return;
+        if (v === '__none') break;
+        picked.push(v);
+      }
+      tg.push(picked);
+    }
+    await G.castFromHand(id, { tg: reqs.length ? tg : undefined, mode: mode || undefined, x: x || undefined });
+  }
   G.phoneSync = phoneSync;
 
   function onPhoneMsg(m) {
     if (!m || typeof m !== 'object') return;
     if (m.t === 'hi') return phoneSync();
+    if (m.t === 'chosen') { const f = phoneAsks.get(m.rid); if (f) { phoneAsks.delete(m.rid); f(m.value === undefined ? null : m.value); } return; }
+    if (m.t === 'pass') { G.pass(); return; }
     if (m.t === 'play') {
       const id = m.id, h = m.how;
       if (!P.hand.some(c => c.id === id)) return;
-      if (h === 'battlefield') G.fromHand([id], 'battlefield');
+      if (h === 'auto') { const c = P.hand.find(x => x.id === id); if (isLand(c)) G.playLand(id); else castFromPhone(id); }
+      else if (h === 'land') G.playLand(id);
+      else if (h === 'cast') castFromPhone(id);
+      else if (h === 'battlefield') G.fromHand([id], 'battlefield');
       else if (h === 'tapped') G.fromHand([id], 'battlefield', { tapped: true });
       else if (h === 'facedown') G.fromHand([id], 'battlefield', { faceDown: true });
       else if (h === 'stack') G.fromHand([id], 'stack');

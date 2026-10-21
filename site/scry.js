@@ -16,6 +16,7 @@
     return body;
   }
 
+  const oracleOf = c => c.card_faces && !c.oracle_text ? c.card_faces.map(f => f.oracle_text || '').join('\n') : (c.oracle_text || '');
   function img(o) { return o && o.image_uris ? (o.image_uris.normal || o.image_uris.large || o.image_uris.small || '') : ''; }
 
   // Turn a Scryfall card into the small record the game uses.
@@ -23,16 +24,40 @@
     const faces = [];
     if (c.card_faces && c.card_faces.length >= 2 && !c.image_uris) {
       // Transforming / modal double-faced cards: two pictures.
-      for (const f of c.card_faces.slice(0, 2)) faces.push({ n: f.name, t: f.type_line || '', img: img(f), p: f.power || '', tg: f.toughness || '', loy: f.loyalty || '', def: f.defense || '', mc: f.mana_cost || '' });
+      for (const f of c.card_faces.slice(0, 2)) faces.push({ n: f.name, t: f.type_line || '', img: img(f), p: f.power || '', tg: f.toughness || '', loy: f.loyalty || '', def: f.defense || '', mc: f.mana_cost || '', o: f.oracle_text || '' });
     } else {
       const f0 = (c.card_faces && c.card_faces[0]) || {};
       faces.push({
         n: c.name, t: c.type_line || f0.type_line || '', img: img(c) || img(f0),
         p: c.power || f0.power || '', tg: c.toughness || f0.toughness || '', loy: c.loyalty || f0.loyalty || '', def: c.defense || f0.defense || '',
-        mc: c.mana_cost || f0.mana_cost || ''
+        mc: c.mana_cost || f0.mana_cost || '', o: oracleOf(c)
       });
     }
-    return { n: c.name, sid: c.id, oid: c.oracle_id || (c.card_faces && c.card_faces[0] && c.card_faces[0].oracle_id) || '', cmc: c.cmc || 0, faces };
+    return { n: c.name, sid: c.id, oid: c.oracle_id || (c.card_faces && c.card_faces[0] && c.card_faces[0].oracle_id) || '', cmc: c.cmc || 0, faces,
+      kw: c.keywords || [], pm: c.produced_mana || [], ci: c.color_identity || [] };
+  }
+  // Older saved decks don't have rules text: look it up once (by printing id, then name) and fill it in.
+  async function enrich(ds, onProgress) {
+    const need = ds.filter(d => d && d.faces && d.faces[0] && d.faces[0].o === undefined);
+    if (!need.length) return 0;
+    const ids = [...new Set(need.map(d => d.sid).filter(Boolean))];
+    const byId = new Map(), byName = new Map();
+    try {
+      const r = await collection(ids.map(id => ({ id })), onProgress);
+      for (const c of r.cards) { byId.set(c.id, c); byName.set(c.name.toLowerCase(), c); }
+      const left = need.filter(d => !byId.has(d.sid) && !byName.has(d.n.toLowerCase()));
+      if (left.length) { const r2 = await collection([...new Set(left.map(d => d.n.split(' // ')[0]))].map(name => ({ name }))); for (const c of r2.cards) byName.set(c.name.toLowerCase(), c), byName.set(c.name.split(' // ')[0].toLowerCase(), c); }
+    } catch (e) { return -1; }
+    let n = 0;
+    for (const d of need) {
+      const c = byId.get(d.sid) || byName.get(d.n.toLowerCase()) || byName.get(d.n.split(' // ')[0].toLowerCase());
+      if (!c) { d.faces.forEach(f => { if (f.o === undefined) f.o = ''; }); continue; }
+      const fresh = toD(c);
+      d.faces.forEach((f, i) => { const g = fresh.faces[i] || fresh.faces[0]; f.o = g.o || ''; if (!f.mc) f.mc = g.mc; });
+      d.kw = fresh.kw; d.pm = fresh.pm; d.ci = fresh.ci;
+      n++;
+    }
+    return n;
   }
 
   // ---------- printings ----------
@@ -80,7 +105,6 @@
     for (const n of names) if (n) t = t.split(n.toLowerCase()).join('~');
     return t.replace(/\s+/g, ' ').trim();
   };
-  const oracleOf = c => c.card_faces && !c.oracle_text ? c.card_faces.map(f => f.oracle_text || '').join(' // ') : (c.oracle_text || '');
   const shortName = n => n.split(' // ')[0].split(',')[0];
   // Every printing of a card (same rules text, any name — includes "Universes Beyond" reskins that were
   // given new names), newest first, ignoring online-only versions.
@@ -252,5 +276,5 @@
     return { cards: out, notFound };
   }
 
-  root.Scry = { autocomplete, named, search, tokens, parseDeckFile, resolveLines, toD, prints };
+  root.Scry = { autocomplete, named, search, tokens, parseDeckFile, resolveLines, toD, prints, enrich, collection };
 })(window);

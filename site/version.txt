@@ -1,1 +1,1 @@
-v1 2026-10-21T05:08:54Z
+v2 2026-10-21T05:37:05Z AI players, stack & priority, combat

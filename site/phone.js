@@ -15,13 +15,14 @@ window.KTPhone = (function () {
     return e;
   }
 
-  let cards = [], info = {}, status = 'connecting', banner = null, bannerT = null, sel = null, client = null;
+  let cards = [], info = {}, status = 'connecting', banner = null, bannerT = null, sel = null, client = null, choose = null;
   const bottomSel = new Set();
   const send = m => client && client.send(m);
 
   function onMsg(m) {
     if (!m || typeof m !== 'object') return;
     if (m.t === 'hand') { cards = m.cards || []; info = m.info || {}; if (sel && !cards.some(c => c.id === sel)) sel = null; render(); }
+    if (m.t === 'choose') { choose = m; sel = null; render(); return; }
     if (m.t === 'banner') {
       banner = m.text; clearTimeout(bannerT);
       bannerT = setTimeout(() => { banner = null; render(); }, 6000);
@@ -57,7 +58,7 @@ window.KTPhone = (function () {
       if (info.phase === 'bottom') { el.style.transform = ''; return; }
       if (dy < -70 && Math.abs(dx) < 80) {
         el.classList.add('fly');
-        setTimeout(() => play(c.id, 'battlefield'), 180);
+        setTimeout(() => play(c.id, 'auto'), 180);
       } else el.style.transform = '';
     });
     el.addEventListener('click', () => {
@@ -87,6 +88,9 @@ window.KTPhone = (function () {
       status === 'linked' && info.phase !== 'deciding' && info.phase !== 'bottom' ? h('button', { onclick: () => send({ t: 'draw' }), disabled: !info.lib }, 'Draw') : null);
     const parts = [head];
     if (banner) parts.push(h('div', { class: 'pbanner' }, banner));
+    if (status === 'linked' && info.prio) parts.push(info.prio.mine
+      ? h('div', { class: 'pprio mine' }, h('span', null, h('b', null, 'Respond? '), info.prio.text), h('button', { class: 'primary', onclick: () => send({ t: 'pass' }) }, 'Pass'))
+      : h('div', { class: 'pprio' }, h('span', null, info.prio.text + ' — waiting for ' + info.prio.waiting)));
     if (info.phase === 'deciding') parts.push(h('div', { class: 'pask' }, h('span', null, info.mull ? `Mulligan ${info.mull}: keep this hand?` : 'Keep this opening hand?'),
       h('button', { class: 'primary', onclick: () => send({ t: 'keep' }) }, 'Keep'), h('button', { onclick: () => send({ t: 'mulligan' }) }, 'Mulligan')));
     if (info.phase === 'bottom') parts.push(h('div', { class: 'pask' }, h('span', null, `Tap ${info.bottomN} card${info.bottomN > 1 ? 's' : ''} to put on the bottom`),
@@ -100,7 +104,7 @@ window.KTPhone = (function () {
       : lost ? 'Can’t find your computer. Make sure Kitchen Table is open there — if you made a new phone code, scan the new one.'
       : 'Waiting for your computer. Keep Kitchen Table open there.'));
     parts.push(strip);
-    if (cards.length && info.phase !== 'bottom') parts.push(h('div', { class: 'phint' }, 'Swipe a card up to play it · tap to see it big'));
+    if (cards.length && info.phase !== 'bottom') parts.push(h('div', { class: 'phint' }, 'Swipe up: lands are played, everything else is cast onto the stack · tap a card to see it big'));
     if (sel) {
       const c = cards.find(x => x.id === sel);
       if (c) {
@@ -109,15 +113,23 @@ window.KTPhone = (function () {
           h('img', { src: img(c), alt: c.d.n }),
           h('div', { class: 'pacts' },
             h('b', null, c.d.n),
-            b(c.land ? 'Play land' : 'Battlefield', 'battlefield', 'primary'),
+            c.land ? b('Play land', 'land', 'primary') : b(info.prio && info.prio.mine ? 'Cast in response' : 'Cast', 'cast', 'primary'),
+            b('Battlefield (no casting)', 'battlefield'),
             b('Battlefield, tapped', 'tapped'),
-            !c.land ? b('Cast (stack)', 'stack') : null,
             b('Face down', 'facedown'),
             b('Graveyard', 'graveyard'), b('Exile', 'exile'),
             b('Top of library', 'top'), b('Bottom of library', 'bottom'),
             b(c.rev ? 'Stop revealing' : 'Reveal to everyone', 'reveal'),
             h('button', { class: 'ghost', onclick: () => { sel = null; render(); } }, 'Close'))));
       }
+    }
+    if (choose) {
+      const q = choose;
+      const answer = v => { choose = null; send({ t: 'chosen', rid: q.rid, value: v }); render(); };
+      parts.push(h('div', { class: 'pbig pchoose' }, h('div', { class: 'pacts' },
+        h('b', null, q.title),
+        q.options.map(o => h('button', { class: o.value === '__none' ? 'ghost' : '', onclick: () => answer(o.value) }, o.label)),
+        h('button', { class: 'ghost', onclick: () => answer(null) }, 'Cancel'))));
     }
     root.replaceChildren(h('div', { class: 'phone' }, parts));
   }

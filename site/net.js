@@ -30,13 +30,15 @@
     if (!v || typeof v !== 'object') return null;
     return { sleeve: okImg(v.sleeve) ? v.sleeve : null, mat: okImg(v.mat) ? v.mat : null, palette: typeof v.palette === 'string' ? v.palette.slice(0, 20) : 'felt' };
   }
+  // An AI player (a hidden copy of the site, ?m=ai&ai=<id>) keeps its own storage space.
+  const NS = (() => { try { const p = new URLSearchParams(location.search); return p.get('m') === 'ai' && p.get('ai') ? 'ai:' + p.get('ai').replace(/[^\w]/g, '').slice(0, 20) + ':' : ''; } catch (e) { return ''; } })();
   const store = {
-    get(k) { try { return JSON.parse(sessionStorage.getItem(k)); } catch (e) { return null; } },
-    set(k, v) { try { sessionStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+    get(k) { try { return JSON.parse(sessionStorage.getItem(NS + k)); } catch (e) { return null; } },
+    set(k, v) { try { sessionStorage.setItem(NS + k, JSON.stringify(v)); } catch (e) {} }
   };
   const lstore = {
-    get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } },
-    set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+    get(k) { try { return JSON.parse(localStorage.getItem(NS + k)); } catch (e) { return null; } },
+    set(k, v) { try { localStorage.setItem(NS + k, JSON.stringify(v)); } catch (e) {} }
   };
 
   // ======================= identity =======================
@@ -67,6 +69,22 @@
   async function phoneIdFor(table, secret) { return baseFor(table) + '-ph-' + (await sha('phone:' + secret)).slice(0, 24); }
   // A 3-digit code shown on both the phone and the computer, so you can tell which phone you're approving.
   async function phoneCode(dev, addr) { return String(parseInt((await sha(dev + '|' + addr)).slice(0, 8), 16) % 900 + 100); }
+
+  // ======================= timers that keep running in a background tab =======================
+  // Browsers slow ordinary timers in hidden tabs to once a minute; a tiny worker keeps the beat steady so a
+  // host (or an AI player) in a background tab stays connected and responsive.
+  const ticker = (() => {
+    const subs = new Map(); let n = 0, w = null;
+    try {
+      w = new Worker(URL.createObjectURL(new Blob(['setInterval(function(){postMessage(0)},250)'], { type: 'text/javascript' })));
+      w.onmessage = () => { const now = Date.now(); for (const s of [...subs.values()]) if (now - s.last >= s.ms) { s.last = now; try { s.fn(); } catch (e) { console.error(e); } } };
+    } catch (e) { w = null; }
+    return {
+      every(ms, fn) { if (!w) return setInterval(fn, ms); const id = 'w' + (++n); subs.set(id, { ms, fn, last: Date.now() }); return id; },
+      clear(id) { if (typeof id === 'string') subs.delete(id); else clearInterval(id); },
+      after(ms, fn) { if (!w) return setTimeout(fn, ms); const id = 'w' + (++n); subs.set(id, { ms, fn: () => { subs.delete(id); fn(); }, last: Date.now() }); return id; }
+    };
+  })();
 
   // ======================= relay servers (MQTT over WebSocket) =======================
   // Every device keeps a secure WebSocket to two free public MQTT servers and sends every message through
@@ -100,7 +118,7 @@
     }
     fail() {
       const was = this.state === 'up';
-      clearTimeout(this.to); clearInterval(this.ping);
+      clearTimeout(this.to); ticker.clear(this.ping);
       if (this.ws) { const w = this.ws; this.ws = null; try { w.close(); } catch (e) {} }
       this.state = 'idle'; this.fails++;
       this.nextTry = Date.now() + Math.min(20000, 1000 * Math.pow(2, Math.min(this.fails, 5)));
@@ -125,7 +143,7 @@
       if (type === 2) {                                             // CONNACK
         if (body[1] !== 0) return this.fail();
         clearTimeout(this.to); this.state = 'up'; this.fails = 0;
-        clearInterval(this.ping); this.ping = setInterval(() => this.raw(new Uint8Array([0xC0, 0])), 15000);
+        ticker.clear(this.ping); this.ping = ticker.every(15000, () => this.raw(new Uint8Array([0xC0, 0])));
         this.hub.brokerUp(this);
       } else if (type === 3) {                                      // PUBLISH
         const tl = body[0] << 8 | body[1];
@@ -143,7 +161,7 @@
 
   const hub = {
     brokers: null, topics: new Map(),
-    init() { if (this.brokers) return; this.brokers = BROKERS.map((u, i) => new Broker(u, i, this)); this.ensure(); setInterval(() => this.ensure(), 2000); },
+    init() { if (this.brokers) return; this.brokers = BROKERS.map((u, i) => new Broker(u, i, this)); this.ensure(); ticker.every(2000, () => this.ensure()); },
     up() { return this.brokers ? this.brokers.filter(b => b.state === 'up') : []; },
     // Keep two servers going, preferring the ones earlier in the list (so every device shares at least one).
     ensure() {
@@ -313,7 +331,7 @@
       // Same address after a reload (this tab only), so a reloading host or player picks up where they were.
       const saved = store.get('kt:addr:' + this.base);
       this.connect(saved && saved.a && saved.a.startsWith(this.base) ? saved : null);
-      setInterval(() => this.tick(), HB);
+      ticker.every(HB, () => this.tick());
     }
     connect(saved) {
       this.addr = saved ? saved.a : this.base + '-' + rid(10);
@@ -419,7 +437,7 @@
       this.hostSince = Date.now(); this.lastClientAt = Date.now();
       if (!this.state) this.state = Rules.newState();
       this.startRev = this.state.rev;
-      for (const id of Object.keys(this.state.players)) this.state.players[id].online = id === this.pid;
+      for (const id of Object.keys(this.state.players)) { const P = this.state.players[id]; if (id !== this.pid && P.online !== false) P.offAt = Date.now(); P.online = id === this.pid; }
       this.clients.clear();
       if (this.mySleeve) this.setImg(this.pid, this.mySleeve);
       this.setStatus('host');
@@ -485,7 +503,7 @@
       const c = this.clients.get(src);
       if (!c) return;
       this.clients.delete(src);
-      if (c.pid && this.state.players[c.pid] && !this.srcOf(c.pid)) { this.state.players[c.pid].online = false; this.publish(); }
+      if (c.pid && this.state.players[c.pid] && !this.srcOf(c.pid)) { this.state.players[c.pid].online = false; this.state.players[c.pid].offAt = Date.now(); if (root.Rules && Rules.fixUp) Rules.fixUp(this.state); this.publish(); }
     }
     limited(c, kind, ms) { c.lim = c.lim || {}; const now = Date.now(); if (now - (c.lim[kind] || 0) < ms) return true; c.lim[kind] = now; return false; }
     iam() { return { t: 'iam', addr: this.addr, trivial: this.trivial() }; }
@@ -739,6 +757,8 @@
       if (!this.main.connected) { if (this.isHost) this.wasDownFor = now - (this.main.downSince || now); return; }
       if (this.isHost) {
         for (const [src, c] of [...this.clients]) if (now - c.lastSeen > 10000) this.dropClient(src);
+        // Someone who has to answer (priority, blockers) is gone: move the game along without them.
+        if (root.Rules && Rules.fixUp && this.state && Rules.fixUp(this.state)) { this.state.rev++; this.publish(); }
         const roster = this.rosterNow();
         if (roster.length > 1) { this.roster = roster; this.lastClientAt = now; }
         this.saveRoster(roster);
@@ -804,7 +824,7 @@
       this.ask = opts.ask; this.trusted = opts.trusted; this.trust = opts.trust;
       this.phone = null; this.dev = null; this.lastSeen = 0;
       this.asking = new Map(); this.denied = new Map();
-      this._w = setInterval(() => { if (this.phone && Date.now() - this.lastSeen > 10000) { this.phone = null; this.onChange(false); } }, 2500);
+      this._w = ticker.every(2500, () => { if (this.phone && Date.now() - this.lastSeen > 10000) { this.phone = null; this.onChange(false); } });
     }
     get linked() { return !!this.phone; }
     async listen() {
@@ -866,14 +886,14 @@
     // Unlink: tell the phone first so it clears your hand right away, then stop listening.
     async revoke() {
       const p = this.phone;
-      this.closed = true; clearInterval(this._w);
+      this.closed = true; ticker.clear(this._w);
       if (p) { try { await this.reply(p, { t: 'revoked' }); } catch (e) {} }
       const s = this.sig;
       setTimeout(() => { if (s) s.close(); }, 800);
       this.sig = null;
       if (this.phone) { this.phone = null; this.onChange(false); }
     }
-    close() { this.closed = true; clearInterval(this._w); if (this.sig) this.sig.close(); this.sig = null; if (this.phone) { this.phone = null; this.onChange(false); } }
+    close() { this.closed = true; ticker.clear(this._w); if (this.sig) this.sig.close(); this.sig = null; if (this.phone) { this.phone = null; this.onChange(false); } }
   }
 
   class PhoneClient {
@@ -888,7 +908,7 @@
       this.saved = saved && saved.a ? saved : { a: 'ktp-' + rid(14), t: rid(12) };
       lstore.set(this.key, this.saved);
       this.addr = this.saved.a;
-      setInterval(() => this.tick(), 2500);
+      ticker.every(2500, () => this.tick());
       document.addEventListener('visibilitychange', () => { if (!document.hidden && !this.stopped()) this.hello(); });
     }
     stopped() { return ['denied', 'moved', 'revoked'].includes(this.status); }
@@ -933,5 +953,5 @@
     send(m) { if (this.relay && this.status === 'linked') this.relay.send(this.sig, this.target, m); }
   }
 
-  root.Net = { Table, PhoneLink, PhoneClient, Sig, slug, hash, baseFor, makeIdentity, phoneIdFor, phoneCode, rid, cleanLook, canon };
+  root.Net = { ticker, Table, PhoneLink, PhoneClient, Sig, slug, hash, baseFor, makeIdentity, phoneIdFor, phoneCode, rid, cleanLook, canon };
 })(window);
