@@ -1,1 +1,1 @@
-v3 2026-10-21T10:23:42Z game over + winner, equip, multi-target, auto-pass option
+v3.1 2026-10-21T10:27:10Z rematch keeps AI players; AI waits for opening hands

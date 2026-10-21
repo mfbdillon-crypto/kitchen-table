@@ -602,7 +602,7 @@
           ns.seats = keep;
           for (const id of keep) {
             const old = ps[id];
-            ns.players[id] = Object.assign(newPlayer(old.name), { online: old.online, phone: old.phone, sleeveRev: old.sleeveRev, deckName: old.deckName });
+            ns.players[id] = Object.assign(newPlayer(old.name), { online: old.online, phone: old.phone, sleeveRev: old.sleeveRev, deckName: old.deckName }, old.ai ? { ai: old.ai } : {});
           }
           ns.rev = s.rev + 1;
           ns.rematch = !!a.rematch;
@@ -807,6 +807,7 @@
         }
         case 'aiMeta': {
           need();
+          if (!me.ai && a.restore) me.ai = { skill: 'normal', by: String(a.by || '').slice(0, 40) };
           if (!me.ai) return { ok: false, err: 'Only an AI player can do that.' };
           if (['easy', 'normal', 'hard'].includes(a.skill)) me.ai.skill = a.skill;
           s.rev++; return { ok: true };

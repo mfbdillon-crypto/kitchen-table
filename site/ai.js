@@ -478,6 +478,7 @@
       }
       return false;
     }
+    if (!me.ai) { await G.act({ type: 'aiMeta', restore: true, by: cfg.owner, skill: cfg.skill }); return true; }
     if (me.ai && cfg.skill && me.ai.skill !== cfg.skill) { await G.act({ type: 'aiMeta', skill: cfg.skill }); return true; }
     if (s.winner && !tried.has('gg:' + s.gameId)) { tried.add('gg:' + s.gameId); say(s.winner === ME() ? 'Good game — thanks for playing! Press Rematch for another.' : `Good game, ${nameOf(s.winner)}!`); return true; }
     if (me.lost || s.winner) {
@@ -555,9 +556,15 @@
   }
   const tried = new Set();
 
+  let openWaitSince = 0;
   async function myTurn() {
     const s = S(), T = s.turn, ph = PH[T.phase];
     const key = s.gameId + ':' + T.n;
+    // Turn 1: let everyone draw and keep an opening hand first (103.5) — up to a minute and a half.
+    if (T.n === 1 && s.seats.some(p => p !== ME() && !s.players[p].lost && s.players[p].handCount === 0 && s.players[p].libCount > 0)) {
+      if (!openWaitSince) { openWaitSince = Date.now(); say('I’ll wait for everyone to draw and keep their opening hands before I start.'); return true; }
+      if (Date.now() - openWaitSince < 90000) return false;
+    }
     if (ph === 'Upkeep') { if (await fireTriggers('upkeep', mine('battlefield'), key)) return true; await G.act({ type: 'phase', to: PI('Draw') }); return true; }
     if (ph === 'Draw') {
       if (G.P.autoDrew !== key && G.P.phase === 'kept') { G.autoDraw(); return true; }
