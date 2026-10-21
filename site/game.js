@@ -270,7 +270,7 @@
     });
     savePriv();
     const land = cards.every(isLand);
-    const r = await act({ type: 'enter', zone, cards: send, tapped: !!opts.tapped, pos: opts.pos, row: opts.row, land: !!opts.playLand, tg: opts.tg, mode: opts.mode, x: opts.x, wardPaid: !!opts.wardPaid, fromPool: opts.fromPool, msg: msgFor(zone, Object.assign({ land }, opts), from) });
+    const r = await act({ type: 'enter', zone, cards: send, tapped: !!opts.tapped, pos: opts.pos, row: opts.row, land: !!opts.playLand, tg: opts.tg, mode: opts.mode, x: opts.x, wardPaid: !!opts.wardPaid, fromPool: opts.fromPool, cast: !!opts.cast, msg: msgFor(zone, Object.assign({ land }, opts), from) });
     if (r.ok) lastAct = { zone, ids, t: Date.now() };
     if (!r.ok) {
       // Only put the cards back if the table really refused. If we just never heard back, look at the board:
@@ -295,8 +295,8 @@
     return { ok: !P.hand.some(x => x.id === id) };
   };
   // Cast a card from your hand onto the stack, with targets/mode/X already chosen.
-  G.castFromHand = (id, opts) => toPublic(P.hand, [id], 'stack', Object.assign({}, opts || {}), 'hand');
-  G.castPublic = (id, opts) => act(Object.assign({ type: 'move', ids: [id], to: 'stack' }, opts || {}));
+  G.castFromHand = (id, opts) => toPublic(P.hand, [id], 'stack', Object.assign({ cast: true }, opts || {}), 'hand');
+  G.castPublic = (id, opts) => act(Object.assign({ type: 'move', ids: [id], to: 'stack', cast: true }, opts || {}));
   G.pass = () => G.S && G.S.prio ? act({ type: 'pass', top: G.S.prio.top }) : null;
   G.activate = (id, i, tg, x, fromPool) => act({ type: 'activate', id, i, tg, x, fromPool });
   G.attack = list => act({ type: 'attack', list });
@@ -694,8 +694,19 @@
       if (!picked.length && !req.upTo) return;
       tg.push(picked);
     }
-    if (G.autoPay && !(await G.autoPay(card, x))) { phoneBanner('Not enough untapped mana to pay for it automatically.'); return; }
-    await G.castFromHand(id, { tg: reqs.length ? tg : undefined, mode: mode || undefined, x: x || undefined, fromPool: G.LS.get('kt:autopay', false) ? G.lastFromPool : undefined });
+    // Ward on a target (702.21a): pay it, or the spell will be countered.
+    const warded = [].concat(...tg).map(t => t.c && G.S.cards[t.c]).filter(w => w && w.ctrl !== KEY && CD.has(w, 'ward', G.S));
+    let wardPaid = false, wardMana = 0;
+    if (warded.length) {
+      const costs = warded.map(w => { const k = CD.wardCost(w) || { mana: 0, text: 'its ward cost' }; return { mana: k.mana, text: k.text, name: R.cardName(w) }; });
+      wardMana = costs.reduce((a, c) => a + c.mana, 0);
+      const v = await phoneAsk(`${costs.map(c => `${c.name} has ward — ${c.text}`).join('; ')}. Pay it, or ${c.d.n} is countered.`, [{ label: `Pay ${costs.map(c => c.text).join(' + ')} and cast`, value: 'pay' }, { label: 'Cast without paying', value: 'no' }]);
+      if (v == null) return;
+      wardPaid = v === 'pay';
+    }
+    const cst = CD.costOf(card); if (wardPaid) cst.g += wardMana;
+    if (G.autoPay && !(await G.autoPay(card, x, cst))) { phoneBanner('Not enough untapped mana to pay for it automatically.'); return; }
+    await G.castFromHand(id, { tg: reqs.length ? tg : undefined, mode: mode || undefined, x: x || undefined, wardPaid: wardPaid || undefined, fromPool: G.LS.get('kt:autopay', false) ? G.lastFromPool : undefined });
   }
   G.phoneSync = phoneSync;
 

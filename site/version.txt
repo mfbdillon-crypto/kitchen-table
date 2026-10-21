@@ -1,1 +1,1 @@
-v5.1 2026-10-21T20:46:17Z surveil, graveyard exile, Gitrog-style upkeep costs, gods' devotion, token abilities, AI help
+v5.2 2026-10-21T21:16:09Z website playtest fixes: combat steps can't be skipped, protection/ward for abilities, cast timing, phone ward, keyboard, badge corner

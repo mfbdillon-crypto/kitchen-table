@@ -529,7 +529,7 @@ input.num { flex: none; width: 80px; }
   .pilecol .pl, .cmdcol .pl { font-size: 0; }
   .pilecol .pl::after, .cmdcol .pl::after { content: attr(data-short); font-size: 9px; }
   .card .tag { font-size: 8px; }
-  #toasts { top: auto; bottom: 46px; }
+  #toasts { top: auto; bottom: var(--toastb, 46px); }
   .board .pbar { gap: 6px; }
   .board .pbar .stats .stat.dim { display: none; }
   .crop { grid-template-columns: auto 1fr; align-items: start; }
@@ -885,3 +885,12 @@ button.small { padding: 3px 9px; font-size: 13px; }
 .phone { padding-bottom: var(--badge-h) !important; }
 .overlay { padding-bottom: max(var(--badge-h), env(safe-area-inset-bottom, 0px)) !important; }
 .aihelp { padding: 6px 12px; font-size: 12.5px; border-bottom: 1px solid var(--line); } .aihelp summary { cursor: pointer; color: var(--brass); font-weight: 700; } .aihelp p { margin: 5px 0; }
+/* keep windows clear of the Netlify badge at the bottom-right */
+.modal { max-height: calc(100dvh - 32px - var(--badge-h)); }
+.modal.xwide { height: min(860px, calc(100dvh - 32px - var(--badge-h))); }
+@media (pointer: coarse) and (max-height: 520px) { .modal { max-height: calc(100dvh - 12px - var(--badge-h)); } .modal.xwide { height: calc(100dvh - 12px - var(--badge-h)); } }
+.cmdcol .card.can { box-shadow: 0 9px 16px -4px rgba(70, 225, 110, .95), 0 3px 0 0 rgba(70, 225, 110, .9); }
+.cmdcol .card.cant { box-shadow: 0 9px 16px -4px rgba(235, 70, 60, .9), 0 3px 0 0 rgba(235, 70, 60, .85); }
+#main { padding-bottom: calc(16px + var(--badge-h)); }
+#hand.drawer .handle { justify-self: start; margin-left: max(10px, env(safe-area-inset-left, 0px)); }
+.deckedit .row { flex-wrap: wrap; }

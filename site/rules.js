@@ -270,7 +270,11 @@
           s.seats = s.seats.filter(x => x !== pid);
           if (s.hostPid === pid) s.hostPid = s.seats.find(p => s.players[p] && !s.players[p].ai) || null;
           const wasActive = s.turn.active === pid;
-          if (wasActive) { s.turn.active = nextSeat; s.turn.phase = 1; s.turn.n++; }
+          if (wasActive && nextSeat && nextSeat !== pid) {
+            s.turn.active = nextSeat; s.turn.phase = 1; s.turn.n++; s.turn.lands = {}; s.combat = null; s.prio = stackTop(s) ? s.prio : null;
+            for (const c of Object.values(s.cards)) if (c.zone === 'battlefield' && c.ctrl === nextSeat && c.tapped && !c.noUntap) c.tapped = false;   // 502.3
+            s.turn.starts = s.turn.starts || {}; s.turn.starts[nextSeat] = s.turn.n;                                                                    // 302.6
+          }
           // The monarch / initiative passes to the active player, or the next player if the leaver was active.
           for (const k of ['monarch', 'initiative']) if (s.table[k] === pid) s.table[k] = s.turn.active || null;
           for (const n of notes) log(s, null, n, 'auto');
@@ -388,7 +392,8 @@
             if (c.tapped !== !!a.tapped) {
               c.tapped = !!a.tapped; changed++;
               // Tapped by hand for mana (not as part of paying for something): the mana goes into the pool.
-              if (a.tapped && !a.pay && !((c.faceDown || isType(c, 'creature')) && sick(s, c) && !(root.Cards && root.Cards.has(c, 'haste', s)))) addPool(s, pid, unitsOf(c));
+              const key = s.turn.n;
+              if (a.tapped && !a.pay && c.manaAt !== key && !((c.faceDown || isType(c, 'creature')) && sick(s, c) && !(root.Cards && root.Cards.has(c, 'haste', s)))) { const u = unitsOf(c); if (u.length) { addPool(s, pid, u); c.manaAt = key; } }
             }
           }
           if (!changed) return { ok: true };
@@ -604,7 +609,12 @@
           const activeOnline = s.players[T.active] && s.players[T.active].online;
           if (T.active !== pid && activeOnline) return { ok: false, err: 'Only the active player can change the phase.' };
           if (stackCards(s).length && !a.force) return { ok: false, err: 'Wait until everything on the stack has resolved.' };
-          if (s.prio && s.prio.step && s.turn.active !== pid) return { ok: false, err: 'Wait for combat damage.' };
+          if (s.prio && s.prio.step && live(s, s.prio.holder) && !(a.force && Date.now() - (s.prio.since || 0) > 45000)) return { ok: false, err: s.prio.holder === pid ? 'Press “Continue to damage” to pass priority — the others get their chance to respond before damage (117.3).' : `Wait — ${nameOf(s, s.prio.holder)} may still cast something before combat damage (510).` };
+          {
+            const K0 = s.combat;
+            const pend = K0 && K0.n === T.n && !K0.done && !K0.blocked ? K0.waiting.filter(p => !K0.ok[p] && live(s, p)) : [];
+            if (pend.length && Date.now() - (K0.since || 0) < 90000) return { ok: false, err: `Wait for ${listNames(pend.map(p => nameOf(s, p)))} to declare blockers (509.1).` };
+          }
           if (a.dir === 'pass' || T.phase >= PHASES.length - 1 && a.dir !== 'back') {
             return passTurn(s, pid, notes, done);
           }
@@ -729,11 +739,13 @@
           const reqs = C.targetsIn(ab.text);
           const tg = cleanTargets(a.tg, reqs.length);
           for (let i = 0; i < reqs.length; i++) for (const t of tg[i] || []) if (!C.legalTarget(s, reqs[i], t, pid)) return { ok: false, err: 'That isn’t a legal target for this ability.' };
+          for (const t of [].concat(...tg)) if (t.c && s.cards[t.c] && C.protectedFrom(s.cards[t.c], src, s)) return { ok: false, err: `${cardName(s.cards[t.c])} has protection from ${cardName(src)}, so it can’t be targeted by its abilities (702.16b).` };
           if (ab.tap) src.tapped = true;
           spendPool(s, pid, ab.mana, num(a.x, 0, 99) || 0, a.fromPool);
           const id = 'ab' + (++s.seq) + '-' + src.id.slice(0, 12);
           s.cards[id] = { id, owner: pid, ctrl: pid, d: src.d, face: src.face || 0, faceDown: false, token: true, cmdr: false, tapped: false, counters: {}, mod: null,
             attachedTo: null, row: null, zone: 'stack', seq: ++s.seq, ab: { src: src.id, text: String(ab.text).slice(0, 400), name: cardName(src) }, tg, reqs, x: num(a.x, 0, 99) || 0 };
+          wardFor(s, pid, s.cards[id], a);
           if (ab.sac) moveOne(s, src, 'graveyard', 'top', null, notes);
           startPrio(s, pid, notes);
           return done(`activated ${cardName(src)}: “${String(ab.text).replace(/^this /i, cardName(src) + ' ')}”${targetText(s, s.cards[id])}`);
@@ -749,6 +761,7 @@
           const reqs = C.targetsIn(tr.text);
           const tg = cleanTargets(a.tg, reqs.length);
           for (let i = 0; i < reqs.length; i++) for (const t of tg[i] || []) if (!C.legalTarget(s, reqs[i], t, pid)) return { ok: false, err: 'That isn’t a legal target for this ability.' };
+          for (const t of [].concat(...tg)) if (t.c && s.cards[t.c] && C.protectedFrom(s.cards[t.c], src, s)) return { ok: false, err: `${cardName(s.cards[t.c])} has protection from ${cardName(src)} (702.16b).` };
           const id = 'tr' + (++s.seq) + '-' + src.id.slice(0, 12);
           s.cards[id] = { id, owner: pid, ctrl: pid, d: src.d, face: src.face || 0, faceDown: false, token: true, cmdr: false, tapped: false, counters: {}, mod: null,
             attachedTo: null, row: null, zone: 'stack', seq: ++s.seq, ab: { src: src.id, text: String(tr.text).slice(0, 400), name: cardName(src), trig: true }, tg, reqs, x: 0 };
@@ -860,12 +873,10 @@
           need();
           const c = s.cards[a.id];
           if (!c || c.zone !== 'stack' || c.ctrl !== pid || !c.wardDue) return { ok: false, err: 'Nothing to pay ward for.' };
-          let life = 0;
-          for (const t of [].concat(...(c.tg || []))) { const w = t.c && s.cards[t.c]; if (w && root.Cards.has(w, 'ward', s)) { const k = wardCost(w); if (k.life) life += k.life; } }
-          if (life) me.life -= life;
+          for (const t of [].concat(...(c.tg || []))) { const w = t.c && s.cards[t.c]; if (w && w.ctrl !== pid && root.Cards.has(w, 'ward', s)) payWard(s, pid, wardCost(w), cardName(w)); }
           c.wardDue = null;
           checkLoss(s, notes); for (const n of notes) log(s, null, n, 'auto');
-          return done(`paid the ward cost for ${cardName(c)}${life ? ` (${life} life)` : ''}`);
+          return done(`paid the ward cost for ${cardName(c)}`);
         }
         case 'pool': {
           // Clear your own pool by hand, or add mana a card made ("Add {R}{R}{R}").
@@ -1042,7 +1053,14 @@
   }
   // Targets chosen while casting must be legal (601.2c).
   function castCheck(s, pid, c, a) {
-    const C = root.Cards; if (!C || !a || !a.tg) return null;
+    const C = root.Cards;
+    // Timing (307.1, 301.1): only instants and cards with flash can be cast outside your own main phase with an empty stack.
+    if (C && a && a.cast && !c.faceDown && !C.instantSpeed(c) && !isType(c, 'land')) {
+      if (s.turn.active && s.turn.active !== pid) return `${cardName(c)} isn’t an instant and doesn’t have flash, so you can cast it only during your own turn (307.1).`;
+      if (s.turn.active && !/^Main/.test(PHASES[s.turn.phase])) return `${cardName(c)} can be cast only in one of your main phases (307.1).`;
+      if (stackCards(s).length) return `${cardName(c)} can be cast only while the stack is empty (307.1).`;
+    }
+    if (!C || !a || !a.tg) return null;
     const reqs = C.targetReqs(c, a.mode);
     const tg = cleanTargets(a.tg, reqs.length);
     for (let i = 0; i < reqs.length; i++) {
@@ -1061,23 +1079,27 @@
     c.tg = cleanTargets(a && a.tg, c.reqs.length);
     c.castBy = pid;
     if (C && !c.faceDown) spendPool(s, pid, C.costOf(c), c.x, a && a.fromPool);
-    // Ward (702.21a): targeting an opponent's permanent with ward is countered unless the ward cost is paid.
+    wardFor(s, pid, c, a);
+  }
+  // Ward (702.21a): a spell or ability targeting an opponent's permanent with ward is countered unless the ward cost is paid.
+  function wardFor(s, pid, c, a) {
+    const C = root.Cards; if (!c) return;
     c.wardDue = null;
-    if (C) for (const t of [].concat(...c.tg)) {
+    if (C) for (const t of [].concat(...(c.tg || []))) {
       const w = t.c && s.cards[t.c];
       if (!w || w.ctrl === pid || !C.has(w, 'ward', s)) continue;
       const cost = wardCost(w);
-      if (a && a.wardPaid) { if (cost.life && s.players[pid]) s.players[pid].life -= cost.life; continue; }
+      if (a && a.wardPaid) { payWard(s, pid, cost, cardName(w)); continue; }
       (c.wardDue = c.wardDue || []).push(`${cardName(w)} (ward ${cost.text})`);
     }
   }
-  function wardCost(c) {
-    const t = root.Cards ? root.Cards.text(c) : '';
-    let m = t.match(/ward\s*(?:—|-)?\s*((?:\{[^}]+\})+)/i);
-    if (m) return { mana: m[1], text: m[1] };
-    m = t.match(/ward\s*(?:—|-)\s*pay (\d+) life/i);
-    if (m) return { life: +m[1], text: `pay ${m[1]} life` };
-    return { text: 'cost' };
+  function wardCost(c) { return (root.Cards && root.Cards.wardCost(c)) || { text: 'its cost', mana: 0, life: 0, discard: 0, sac: null }; }
+  // Paying ward: life now; a discard or sacrifice is asked of the caster.
+  function payWard(s, pid, cost, src) {
+    const P = s.players[pid]; if (!P) return;
+    if (cost.life) P.life -= cost.life;
+    if (cost.discard) todo(s, pid, { k: 'discard', n: cost.discard, src: src + ' (ward)' });
+    if (cost.sac) todo(s, pid, { k: 'sacrifice', n: 1, what: cost.sac, src: src + ' (ward)' });
   }
   function targetText(s, c) {
     if (!c || !c.tg || !c.tg.some(l => l.length)) return '';
@@ -1231,6 +1253,7 @@
       if (n <= 0) return;
       if (t.p) { const P = s.players[t.p]; if (!P) return; P.life -= n; lostThisWay += n; alertChecks(s, t.p); return; }
       const c = tcard(t); if (!c || c.zone !== 'battlefield') return;
+      if (C.protectedFrom(c, s.cards[src.ab ? src.ab.src : src.id] || src, s)) { notes.push(`${cardName(c)}’s protection prevented ${n} damage`); return; }
       if (isType(c, 'planeswalker') && !isType(c, 'creature')) { c.counters.loyalty = Math.max(0, (c.counters.loyalty || 0) - n); return; }
       if (isType(c, 'battle') && !isType(c, 'creature')) { c.counters.defense = Math.max(0, (c.counters.defense || 0) - n); return; }
       c.dmg = (c.dmg || 0) + n;
@@ -1262,7 +1285,7 @@
         case 'grantAll': { for (const c of Object.values(s.cards)) if (c.zone === 'battlefield' && c.ctrl === by) grant(c, e.kws); notes.push(`${nameOf(s, by)}’s permanents gained ${e.kws} until end of turn`); break; }
         case 'counters': { const n = val(e.n); const list = e.each ? Object.values(s.cards).filter(c => c.zone === 'battlefield' && c.ctrl === by && isType(c, 'creature')) : T.map(tcard).filter(Boolean); for (const c of list) c.counters['+1/+1'] = (c.counters['+1/+1'] || 0) + n; notes.push(`${srcName} put ${n} +1/+1 counter${n > 1 ? 's' : ''} on ${list.map(cardName).join(', ') || 'nothing'}`); break; }
         case 'tap': for (const t of T) { const c = tcard(t); if (c) { c.tapped = true; notes.push(`${srcName} tapped ${cardName(c)}`); } } break;
-        case 'untap': for (const t of T) { const c = tcard(t); if (c) { c.tapped = false; notes.push(`${srcName} untapped ${cardName(c)}`); } } break;
+        case 'untap': for (const t of T) { const c = tcard(t); if (c) { c.tapped = false; c.manaAt = null; notes.push(`${srcName} untapped ${cardName(c)}`); } } break;
         case 'tapAllOpp': for (const c of Object.values(s.cards)) if (c.zone === 'battlefield' && c.ctrl !== by && isType(c, 'creature')) c.tapped = true; notes.push(`${srcName} tapped all creatures ${nameOf(s, by)}’s opponents control`); break;
         case 'bite': case 'fight': {
           const a = tcard(pick(e.ti)[0]), b = pick(e.ti2)[0];
@@ -1361,6 +1384,7 @@
       // All combat damage in a step happens at once (510.2).
       for (const e of ev) {
         const k = kwOf(e.src);
+        if (e.c && s.cards[e.c] && C.protectedFrom(s.cards[e.c], e.src, s)) { summary.push(`${cardName(s.cards[e.c])}’s protection prevented ${e.n} damage from ${cardName(e.src)}`); continue; }
         dealt.add(e.src.id);
         if (e.p) {
           const P = s.players[e.p]; if (!P) continue;

@@ -107,6 +107,12 @@
   }
   function refreshModal() {
     if (!modal || !modal.opts.live) return;
+    // Someone is typing in this window: rebuilding it would close a phone's keyboard — do it when they leave the box.
+    const ae = document.activeElement;
+    if (COARSE && ae && modal.body.contains(ae) && (ae.tagName === 'TEXTAREA' || (ae.tagName === 'INPUT' && /^(text|search|number|email|url|tel)$/i.test(ae.type)))) {
+      if (!ae._kt_refresh) { ae._kt_refresh = true; ae.addEventListener('blur', () => { ae._kt_refresh = false; setTimeout(refreshModal, 0); }, { once: true }); }
+      return;
+    }
     const sc = modal.body.querySelector('[data-scroll]');
     const pos = sc ? [sc.scrollLeft, sc.scrollTop] : null;
     const bodyTop = modal.body.scrollTop;
@@ -312,7 +318,7 @@
     el.addEventListener('mouseleave', hidePreview);
     el.addEventListener('contextmenu', e => { e.preventDefault(); if (!opt.noMenu) { hidePreview(); openMenu({ x: e.clientX, y: e.clientY }, items(), R.cardName(c)); } });
     // Double-click a permanent you control to tap or untap it quickly.
-    el.addEventListener('dblclick', e => { if (c.zone === 'battlefield' && c.ctrl === KEY && G.seated()) { e.stopPropagation(); closeMenu(); G.tap([c.id], !c.tapped); } });
+    el.addEventListener('dblclick', e => { if (c.zone === 'battlefield' && c.ctrl === KEY && G.seated()) { e.stopPropagation(); closeMenu(); tapMine(c); } });
     el.addEventListener('click', e => {
       if (G.targeting) { e.stopPropagation(); finishTarget(c); return; }
       if (G.picking && c.zone !== 'hand' && c.zone !== 'library' && !opt.noMenu) { e.stopPropagation(); pickTarget({ c: c.id }); return; }
@@ -337,6 +343,11 @@
     return el;
   }
 
+  // Tapping by hand; a creature that just arrived can tap but makes no mana yet (302.6).
+  function tapMine(c) {
+    if (!c.tapped && CD.manaSource(c) && (c.faceDown || R.isType(c, 'creature')) && R.sick(S(), c) && !CD.keywords(c, S()).has('haste')) G.toast(`${R.cardName(c)} has summoning sickness, so it can’t tap for mana yet (302.6).`, 'err');
+    return G.tap([c.id], !c.tapped);
+  }
   function tinyCounter(k) {
     const map = { '+1/+1': '+1', '-1/-1': '−1', loyalty: 'loy', defense: 'def', 'first strike': '1st', 'double strike': 'dbl', deathtouch: 'dth', indestructible: 'ind', lifelink: 'lnk', hexproof: 'hex', flying: 'fly', trample: 'trm', vigilance: 'vig', shield: 'shd' };
     return map[k] || k.slice(0, 3);
@@ -439,7 +450,7 @@
     const two = c.d && c.d.faces && c.d.faces.length > 1;
     const items = [];
     if (c.zone === 'battlefield') {
-      items.push({ label: c.tapped ? 'Untap' : 'Tap', fn: () => G.tap([c.id], !c.tapped) });
+      items.push({ label: c.tapped ? 'Untap' : 'Tap', fn: () => tapMine(c) });
       const trs = c.faceDown ? [] : CD.triggers(c);
       if (trs.length) items.push({ label: 'Put a triggered ability on the stack', sub: trs.map((t, i) => ({ label: t.line.slice(0, 90), fn: () => triggerFlow(c, i) })) });
       const abs = c.faceDown ? [] : CD.abilities(c);
@@ -533,6 +544,7 @@
     const at = list.findIndex(x => sameT(x, t));
     if (at >= 0) { list.splice(at, 1); render(); return; }
     if (!CD.legalTarget(S(), req, t, KEY)) { G.toast(`That isn’t a legal target for “${req.text}”.`, 'err'); return; }
+    if (t.c && p.card && CD.protectedFrom(S().cards[t.c], p.card, S())) { G.toast(`${R.cardName(S().cards[t.c])} has protection from ${R.cardName(p.card)} (702.16b).`, 'err'); return; }
     list.push(t);
     if (list.length >= req.n) nextReq(); else render();
   }
@@ -563,14 +575,15 @@
   function pickBar() {
     const p = G.picking; if (!p) return null;
     const req = p.reqs[p.i];
-    const choices = CD.orderChoices(S(), CD.targetChoices(S(), req, KEY), KEY, !!p.hc && CD.helpfulTarget(p.hc, p.mode, p.i));
+    const choices = CD.orderChoices(S(), CD.targetChoices(S(), req, KEY).filter(t => !(t.c && p.card && CD.protectedFrom(S().cards[t.c], p.card, S()))), KEY, !!p.hc && CD.helpfulTarget(p.hc, p.mode, p.i));
+    const need = req.upTo ? 0 : Math.min(req.n >= 99 ? 1 : req.n, choices.length);
     const got = p.picked[p.i];
     return h('div', { class: 'pickbar', role: 'dialog', 'aria-label': p.title },
       h('div', { class: 'pkhead' }, h('b', null, p.title), h('span', null, ` — choose ${CD.reqLabel(req)}${p.reqs.length > 1 ? `  (${p.i + 1} of ${p.reqs.length})` : ''}`)),
       h('div', { class: 'pkchoices' }, choices.length ? choices.slice(0, 40).map(t => h('button', { class: 'chip' + (got.some(x => sameT(x, t)) ? ' set' : ''), onclick: () => pickTarget(t) }, tlabel(t)))
         : h('span', { class: 'muted' }, 'Nothing can be chosen for this right now.')),
       h('div', { class: 'pkbtns' },
-        (req.upTo || got.length) ? h('button', { class: 'primary', onclick: nextReq }, got.length ? 'Done' : 'No target') : null,
+        (req.upTo || got.length) ? h('button', { class: 'primary', disabled: got.length < need, title: got.length < need ? `Choose ${need} different targets (601.2c)` : '', onclick: nextReq }, got.length ? (got.length < need ? `Choose ${need - got.length} more` : 'Done') : 'No target') : null,
         !choices.length && !req.upTo ? h('button', { onclick: () => { p.picked[p.i] = []; nextReq(); } }, 'Cast it without a target') : null,
         h('button', { onclick: () => { const q = G.picking; G.picking = null; q.cancel(); render(); } }, 'Cancel'),
         h('span', { class: 'muted small' }, COARSE ? 'Tap a highlighted card or a name above.' : 'Click a highlighted card or a name above. Esc cancels.')));
@@ -617,7 +630,7 @@
     const warded = [].concat(...(tg || [])).map(t => t.c && S().cards[t.c]).filter(w => w && w.ctrl !== KEY && CD.has(w, 'ward', S()));
     let wardPaid = false, wardMana = 0;
     if (warded.length) {
-      const costs = warded.map(w => { const m = CD.text(w).match(/ward\s*(?:—|-)?\s*((?:\{[^}]+\})+)/i); const l = CD.text(w).match(/ward\s*(?:—|-)\s*pay (\d+) life/i); return { w, mana: m ? CD.costTotal(CD.parseCost(m[1]), 0) : 0, text: m ? m[1] : l ? `pay ${l[1]} life` : 'its ward cost' }; });
+      const costs = warded.map(w => { const k = CD.wardCost(w) || { mana: 0, text: 'its ward cost' }; return { w, mana: k.mana, text: k.text }; });
       wardMana = costs.reduce((a, c) => a + c.mana, 0);
       const ans = await new Promise(res => choose('Ward', `${costs.map(c => `${R.cardName(c.w)} has ward — ${c.text}`).join('; ')}. If you don’t pay, ${R.cardName(card)} is countered.`, [
         { label: `Pay ${costs.map(c => c.text).join(' + ')} and cast`, primary: true, fn: () => res(true) },
@@ -662,8 +675,9 @@
   }
   function affordable(card) {
     const s = S();
-    if (G.isLand(card)) { const T = s.turn; return !!(T.active === KEY && !((T.lands || {})[KEY] >= 1)); }
+    if (G.isLand(card)) { const T = s.turn, used = ((T.lands || {})[KEY] || 0) >= 1; return T.active === KEY && !used && !R.stackTop(s) && (T.phase <= R.PI('Main 1') || R.PHASES[T.phase] === 'Main 2'); }
     const cost = CD.costOf(card);
+    if (card.zone === 'command' && card.cmdr) cost.g += 2 * ((s.tax || {})[card.id] || 0);   // commander tax (903.8)
     return !!CD.pay(cost, myMana(), 0);
   }
   G.affordable = affordable;
@@ -771,7 +785,7 @@
       // Either order works: blocker then attacker, or attacker then blocker.
       const pair = (b, a) => {
         const why = blockProblem(b, a);
-        if (why) { G.toast(why, 'err'); return false; }
+        if (why) { G.toast(why, 'err'); P.cur = null; P.curAtt = null; render(); return false; }
         P.pairs[b.id] = a.id; P.cur = null; P.curAtt = null; return true;
       };
       if (c.ctrl === KEY && canBlockUI(c)) {
@@ -871,13 +885,17 @@
     if (T.active) {
       const active = T.active === KEY;
       const canDrive = active || !(s.players[T.active] && s.players[T.active].online);
+      // While defenders are declaring blockers, or players may still respond before damage, the steps can't move on.
+      const K0 = s.combat, blkWait = !!(K0 && K0.n === T.n && !K0.done && !K0.blocked && K0.waiting.some(p => !K0.ok[p] && s.players[p] && s.players[p].online && !s.players[p].lost));
+      const stepWait = !!(s.prio && s.prio.step);
+      const hold = blkWait ? 'Waiting for blockers' : stepWait ? (s.prio.holder === KEY ? 'Continue to damage first' : 'Waiting for responses before damage') : '';
       turnBox.append(...[
         h('span', { class: 'tn' }, (COARSE ? 'T' : 'Turn ') + T.n),
         h('span', { class: 'who' + (active ? ' me' : '') }, active ? 'Your turn' : nameOf(T.active)),
         h('button', { class: 'ph', disabled: !canDrive || !me, title: 'Previous step', onclick: () => G.act({ type: 'phase', dir: 'back' }) }, '◀'),
         h('button', { class: 'phase', disabled: !canDrive || !me, title: 'Jump to a step', onclick: e => openMenu(e.currentTarget, R.PHASES.slice(1, -1).map((p, i) => ({ label: p, fn: () => G.act({ type: 'phase', to: i + 1 }) })), 'Steps') }, R.PHASES[T.phase]),
-        h('button', { class: 'ph', disabled: !canDrive || !me, title: 'Next step', onclick: () => G.act({ type: 'phase' }) }, '▶'),
-        canDrive && me ? h('button', { class: 'pass primary', onclick: passTurn }, 'Pass turn') : null
+        h('button', { class: 'ph', disabled: !canDrive || !me || (blkWait || (stepWait && s.prio.holder !== KEY)), title: hold || 'Next step', onclick: () => stepWait && s.prio.holder === KEY ? G.pass() : G.act({ type: 'phase' }) }, '▶'),
+        canDrive && me ? h('button', { class: 'pass primary', disabled: !!hold, title: hold || 'End your turn', onclick: passTurn }, 'Pass turn') : null
       ].filter(Boolean));
     } else if (me) {
       turnBox.append(h('button', { class: 'primary', onclick: () => G.act({ type: 'start' }), title: 'Randomizes the turn order and picks who goes first' }, 'Start game'));
@@ -1141,7 +1159,7 @@
   function cmdCol(pid) {
     const cmd = R.zoneCards(S(), 'command', pid, 'owner');
     return h('aside', { class: 'cmdcol' }, h('div', { class: 'plabel' }, h('span', { class: 'pl', 'data-short': 'Cmdr' }, 'Command')),
-      cmd.length ? cmd.map(c => cardEl(c)) : h('div', { class: 'none' }));
+      cmd.length ? cmd.map(c => cardEl(c, pid === KEY && c.cmdr && G.seated() && S().turn.active ? { cls: affordable(c) ? 'can' : 'cant' } : undefined)) : h('div', { class: 'none' }));
   }
   // Right, top to bottom: exile, graveyard, library (library at the bottom).
   function pileCol(pid) {
@@ -1283,7 +1301,7 @@
   G.addAI = function (name, deck, skill) {
     const id = G.R.rid(10);
     G.LS.raw.set('ai:' + id + ':kt:aicfg', { name, skill, owner: KEY, deckId: deck.id });
-    if (!G.LS.raw.set('ai:' + id + ':kt:decks', [Object.assign({}, deck, { mat: null })])) { G.toast('Your browser storage is full — delete a deck or a playmat picture first.', 'err'); return; }
+    if (!G.LS.raw.set('ai:' + id + ':kt:decks', [deck]) && !G.LS.raw.set('ai:' + id + ':kt:decks', [Object.assign({}, deck, { mat: null })])) { G.toast('Your browser storage is full — delete a deck or a playmat picture first.', 'err'); return; }
     saveMyAIs(myAIs().concat([{ id, table: G.TABLE, name }]));
     spawnAI({ id });
     G.toast(`${name} is sitting down…`, 'info');
@@ -1294,7 +1312,7 @@
     if (!G.seated()) return G.toast('Take a seat first.', 'err');
     const used = new Set(S().seats.map(p => S().players[p].name));
     let name = AI_NAMES.find(n => !used.has(n)) || 'AI player';
-    let skill = 'normal', deckId = (G.decks()[0] || {}).id || null, busy = '';
+    let skill = 'normal', deckId = (G.decks()[0] || {}).id || null, busy = '', preAI = null;
     const imp = {};
     openModal('Add an AI player', b => {
       const decks = G.decks();
@@ -1307,7 +1325,7 @@
       b.append(h('h4', null, 'Deck'));
       if (!decks.length) b.append(h('p', { class: 'muted' }, 'You don’t have any decks yet. Import one below, or in Decks.'));
       else b.append(h('div', { class: 'aidecks' }, decks.map(d => h('button', { class: 'dk' + (d.id === deckId ? ' on' : ''), onclick: () => { deckId = d.id; refreshModal(); } }, h('img', { src: d.sleeve || BACK, alt: '' }), h('span', null, h('b', null, d.name), h('small', null, `${d.cards.reduce((a, c) => a + c.qty, 0)} cards${d.cards.some(c => c.cmdr) ? ' · ' + d.cards.filter(c => c.cmdr).map(c => c.d.n).join(' & ') : ''}`))))));
-      b.append(h('details', { class: 'predetails', open: !decks.length || undefined }, h('summary', null, 'Ready-made decks by bracket'), preconPicker(d => { deckId = d.id; refreshModal(); }, msg => { busy = msg; refreshModal(); })));
+      b.append(h('details', { class: 'predetails', open: (preAI == null ? !decks.length : preAI) || undefined, ontoggle: e => { preAI = e.target.open; } }, h('summary', null, 'Ready-made decks by bracket'), preconPicker(d => { deckId = d.id; refreshModal(); }, msg => { busy = msg; refreshModal(); })));
       b.append(deckImporter(imp, d => { deckId = d.id; busy = `Imported ${d.name}.`; refreshModal(); }, msg => { busy = msg; refreshModal(); }));
       if (busy) b.append(h('p', { class: 'muted small immsg' }, busy));
       b.append(h('div', { class: 'row wrap' },
@@ -1321,7 +1339,7 @@
       const p = S().players[pid]; if (!p) { b.append(h('p', null, 'That AI left the table.')); return; }
       b.append(h('h4', null, 'Skill'), h('div', { class: 'skills' }, SKILLS.map(([k, l, d]) => h('button', { class: 'skill' + (p.ai && p.ai.skill === k ? ' on' : ''), onclick: () => { aiPost(a.id, { t: 'skill', v: k }); G.toast(`${p.name} will play on ${l}.`); setTimeout(refreshModal, 1500); } }, h('b', null, l), h('span', null, d)))));
       b.append(h('h4', null, 'Deck'), h('p', { class: 'muted small' }, `Playing ${p.deckName || '—'}. Choosing another deck restarts its side of the game.`),
-        h('div', { class: 'aidecks' }, G.decks().map(d => h('button', { class: 'dk' + (d.name === p.deckName ? ' on' : ''), title: d.name === p.deckName ? 'Playing this deck now' : '', onclick: () => { aiPost(a.id, { t: 'deck', deck: Object.assign({}, d, { mat: null }) }); G.toast(`${p.name} switches to ${d.name}.`); closeModal(); } }, h('img', { src: d.sleeve || BACK, alt: '' }), h('span', null, h('b', null, d.name))))));
+        h('div', { class: 'aidecks' }, G.decks().map(d => h('button', { class: 'dk' + (d.name === p.deckName ? ' on' : ''), title: d.name === p.deckName ? 'Playing this deck now' : '', onclick: () => { aiPost(a.id, { t: 'deck', deck: d }); G.toast(`${p.name} switches to ${d.name}.`); closeModal(); } }, h('img', { src: d.sleeve || BACK, alt: '' }), h('span', null, h('b', null, d.name))))));
       b.append(h('div', { class: 'row' }, h('button', { class: 'ghost danger', onclick: () => choose(`Remove ${p.name}?`, `${p.name} leaves the table and its cards go with it.`, [{ label: 'Remove', primary: true, fn: () => { aiPost(a.id, { t: 'remove' }); closeModal(); G.toast(`${p.name} is leaving the table.`); } }, { label: 'Cancel', fn: () => {} }]) }, 'Remove this AI')));
     }, { live: true });
   }
@@ -1792,7 +1810,7 @@
         h('label', { class: 'import' }, 'Import from ManaBox (.txt or .csv)',
           h('input', { type: 'file', accept: '.csv,.txt,text/csv,text/plain', id: 'importfile', onchange: e => importFile(e.target.files[0]) })),
         h('button', { class: 'ghost small preconbtn', onclick: () => { preOpen = !preOpen; refreshModal(); } }, preOpen ? 'Hide ready-made decks ▴' : 'Ready-made decks (brackets 1–4) ▾'),
-        preOpen ? preconPicker(d => { editing = d.id; preOpen = false; refreshModal(); }, msg => { importMsg = msg; refreshModal(); }) : null,
+        preOpen ? preconPicker(d => { editing = d.id; refreshModal(); }, msg => { importMsg = msg; refreshModal(); }) : null,
         deckImporter(imp, d => { editing = d.id; importMsg = `Imported ${d.name}.`; refreshModal(); }, msg => { importMsg = msg; refreshModal(); }),
         importMsg ? h('p', { class: 'muted small immsg' }, importMsg) : null,
         all.map(d => h('button', { class: 'dk' + (d.id === editing ? ' on' : ''), onclick: () => { editing = d.id; refreshModal(); } },
@@ -2131,7 +2149,7 @@
     if (aeId) { const ne = document.getElementById(aeId); if (ne && ne !== document.activeElement) { ne.focus({ preventScroll: true }); if (sel && ne.setSelectionRange) try { ne.setSelectionRange(sel[0], sel[1]); } catch (e) {} } }
     fitTop();
     // Toasts sit just above the hand, so they never cover the prompts at the top of the table.
-    const hb = document.getElementById('hand'); if (hb) document.documentElement.style.setProperty('--toastb', (hb.offsetHeight + 14) + 'px');
+    const hb = document.getElementById('hand'); if (hb) document.documentElement.style.setProperty('--toastb', ((hb.classList.contains('drawer') && !hb.classList.contains('open') ? 40 : hb.offsetHeight) + 14) + 'px');
     root.querySelectorAll('[data-scroll]').forEach(el => { const s = scrolls[el.dataset.scroll]; if (s) { el.scrollLeft = s[0]; el.scrollTop = s[1]; } });
     refreshModal();
     recheckPreview();

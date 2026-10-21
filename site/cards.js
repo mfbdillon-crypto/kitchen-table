@@ -7,7 +7,7 @@
   const NUM = { a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, x: 'X' };
   const toNum = w => w == null ? 1 : /^\d+$/.test(w) ? +w : (NUM[String(w).toLowerCase()] !== undefined ? NUM[String(w).toLowerCase()] : null);
   const KEYWORDS = ['flying', 'first strike', 'double strike', 'deathtouch', 'haste', 'hexproof', 'indestructible', 'lifelink', 'menace',
-    'reach', 'trample', 'vigilance', 'defender', 'flash', 'shroud', 'infect', 'wither', 'prowess', 'ward'];
+    'reach', 'trample', 'vigilance', 'defender', 'flash', 'shroud', 'infect', 'wither', 'prowess', 'ward', 'skulk', 'shadow', 'horsemanship'];
 
   // ---------- basic card facts ----------
   function face(c) { return c && c.d && c.d.faces ? (c.d.faces[c.face || 0] || c.d.faces[0]) : null; }
@@ -442,7 +442,7 @@
     if (bk.has("can't block")) return `${nm(b)} can’t block.`;
     if (ak.has('unblockable')) return `${nm(a)} can’t be blocked.`;
     if (ak.has('flying') && !bk.has('flying') && !bk.has('reach')) return `${nm(a)} has flying — only creatures with flying or reach can block it (702.9b).`;
-    if (protectedFrom(a, b, s)) return `${nm(a)} has protection from ${nm(b)}’s qualities, so ${nm(b)} can’t block it (702.16e).`;
+    if (protectedFrom(a, b, s)) return `${nm(a)} has protection from ${nm(b)}’s qualities, so ${nm(b)} can’t block it (702.16f).`;
     const t = text(a).toLowerCase(), bp = (pt(s, b) || [0, 0])[0], ap = (pt(s, a) || [0, 0])[0];
     if (/can't be blocked except by creatures with flying/.test(t) && !bk.has('flying')) return `${nm(a)} can be blocked only by creatures with flying.`;
     let m = t.match(/can't be blocked by creatures with power (\d+) or (less|greater)/);
@@ -462,6 +462,16 @@
       if (!['permanent', 'token', 'creature', 'artifact', 'enchantment', 'land', 'planeswalker', 'battle', 'legendary', 'basic', 'snow'].includes(k)) return true;
       return neg ? !is(k) : is(k);
     }));
+  }
+  // Ward's cost (702.21): "Ward {2}", "Ward—Pay 4 life", "Ward—Discard a card", "Ward—{3}, Pay 3 life", "Ward—Sacrifice a …".
+  function wardCost(c) {
+    const m = text(c).match(/\bward\s*(?:—|-|:)?\s*([^.\n]+)/i); if (!m) return null;
+    const t = m[1].trim(), out = { text: t.replace(/^[A-Z]/, x => x.toLowerCase()), mana: 0, life: 0, discard: 0, sac: null };
+    const mana = t.match(/^((?:\{[^}]+\})+)/); if (mana) out.mana = costTotal(parseCost(mana[1]), 0), out.manaText = mana[1];
+    const life = t.match(/pay (\d+) life/i); if (life) out.life = +life[1];
+    const dis = t.match(/discard (a|one|two) cards?/i); if (dis) out.discard = toNum(dis[1]) || 1;
+    const sac = t.match(/sacrifice (?:a|an) ([a-z ]+)/i); if (sac) out.sac = sac[1].trim();
+    return out;
   }
   // Every legal choice for a requirement, for menus and the AI.
   function targetChoices(s, req, by) {
@@ -623,5 +633,5 @@
   function instantSpeed(c) { return /\binstant\b/i.test(typeLine(c)) || has(c, 'flash'); }
 
   root.Cards = { KEYWORDS, colorsOf, face, typeLine, isType, nameOf, text, rawText, keywords, has, statics, pt, parseCost, costOf, manaValue, costTotal, manaSource, pay,
-    setState, notCreatureNow, targetReqs, targetsIn, legalTarget, targetChoices, reqLabel, protections, protectedFrom, blockProblem, matchesWhat, helpfulTarget, orderChoices, modesOf, effectsIn, effectsOf, abilities, triggers, instantSpeed, isPermanentCard, toNum, spellText };
+    setState, notCreatureNow, wardCost, targetReqs, targetsIn, legalTarget, targetChoices, reqLabel, protections, protectedFrom, blockProblem, matchesWhat, helpfulTarget, orderChoices, modesOf, effectsIn, effectsOf, abilities, triggers, instantSpeed, isPermanentCard, toNum, spellText };
 })(typeof window !== 'undefined' ? window : globalThis);

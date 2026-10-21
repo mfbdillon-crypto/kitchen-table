@@ -112,8 +112,10 @@
         .filter(t => !t.c || !C.protectedFrom(s.cards[t.c], card, s))
         .filter(t => { // Ward {N}: the spell is countered unless I can also pay the ward cost (702.21a).
           const c = t.c && s.cards[t.c]; if (!c || c.ctrl === ME() || !kw(c).has('ward')) return true;
-          const m = C.text(c).match(/ward\s*(?:—|-)?\s*((?:\{[^}]+\})+)/i); if (!m) return skill() === 'easy';
-          return manaAvailable() >= C.costTotal(C.costOf(card), 0) + C.costTotal(C.parseCost(m[1]), 0);
+          if (extra && extra.noWard) return false;                     // abilities: I don't pay ward for them
+          const k = C.wardCost(c); if (!k || k.discard || k.sac) return skill() === 'easy';
+          if (k.life && S().players[ME()].life <= k.life + 8) return false;
+          return manaAvailable() >= C.costTotal(C.costOf(card), 0) + k.mana;
         });
       const intent = intentFor(card, eff, i);
       const e = eff.effects.find(x => x.ti === i);
@@ -212,7 +214,7 @@
     const t = chooseTargets(card, mode, eff, { x });
     if (!t) return null;
     // Ward on a target: pay it on top (702.21a).
-    const wardMana = t.tg.flat().reduce((a, q) => { const c = q.c && s.cards[q.c]; if (!c || c.ctrl === ME() || !kw(c).has('ward')) return a; const m = C.text(c).match(/ward\s*(?:—|-)?\s*((?:\{[^}]+\})+)/i); return a + (m ? C.costTotal(C.parseCost(m[1]), 0) : 0); }, 0);
+    const wardMana = t.tg.flat().reduce((a, q) => { const c = q.c && s.cards[q.c]; if (!c || c.ctrl === ME() || !kw(c).has('ward')) return a; const k = C.wardCost(c); return a + (k ? k.mana : 0); }, 0);
     if (wardMana) { pay = C.pay(Object.assign({}, cost, { g: cost.g + wardMana, hy: cost.hy.slice(), ph: cost.ph.slice() }), sources(), x); if (!pay) return null; }
     if (selfHarm(eff, x) >= s.players[ME()].life - (skill() === 'easy' ? 0 : 3)) return null;
     if (!perm && skill() !== 'easy' && eff.effects.every(e => e.k === 'dmg') && t.tg.length && t.tg.every(l => !l[0] || l[0].p)) {
@@ -783,7 +785,7 @@
         let i = -1, tg = [];
         for (const o of order) {
           const eff = C.effectsIn(o.a.text), reqs = C.targetsIn(o.a.text);
-          if (reqs.length) { const t = chooseTargets({ d: { faces: [{ n: cn(pw), t: 'Instant', o: o.a.text }] }, counters: {} }, null, eff); if (!t) continue; tg = t.tg; }
+          if (reqs.length) { const t = chooseTargets({ d: { faces: [{ n: cn(pw), t: 'Instant', o: o.a.text }] }, counters: {} }, null, eff, { noWard: true }); if (!t) continue; tg = t.tg; }
           else tg = [];
           i = o.i; break;
         }
@@ -927,7 +929,7 @@
   }
   function chooseTargetsFor(pseudo, reqs, eff) {
     const save = C.targetReqs;
-    try { C.targetReqs = () => reqs; return chooseTargets(pseudo, null, eff); } finally { C.targetReqs = save; }
+    try { C.targetReqs = () => reqs; return chooseTargets(pseudo, null, eff, { noWard: true }); } finally { C.targetReqs = save; }
   }
 
   // ---------------- the loop ----------------
