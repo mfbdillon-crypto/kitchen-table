@@ -1,1 +1,1 @@
-v3.1 2026-10-21T10:27:10Z rematch keeps AI players; AI waits for opening hands
+v4 2026-10-21T11:05:19Z combat-trick window, draws, loser cleanup, top bar fits, deck importer, phone targets

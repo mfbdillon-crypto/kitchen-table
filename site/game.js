@@ -247,7 +247,7 @@
     if (opts.msg) return opts.msg;
     const src = from === 'library' ? ' from their library' : from === 'command' ? '' : '';
     switch (zone) {
-      case 'battlefield': return (opts.faceDown ? 'put {cards} onto the battlefield face down' : opts.land ? 'played {cards}' : 'put {cards}' + src + ' onto the battlefield') + (opts.tapped ? ' tapped' : '');
+      case 'battlefield': return (opts.faceDown ? 'put {cards} onto the battlefield face down' : opts.playLand ? 'played {cards}' : 'put {cards}' + src + ' onto the battlefield') + (opts.tapped ? ' tapped' : '');
       case 'stack': return opts.faceDown ? 'cast {cards} face down' : 'cast {cards}' + src;
       case 'graveyard': return from === 'hand' ? 'discarded {cards}' : 'put {cards}' + src + ' into their graveyard';
       case 'exile': return 'exiled {cards}' + (from === 'hand' ? ' from their hand' : src);
@@ -522,7 +522,8 @@
 
   function autoDraw() {
     const T = G.S.turn;
-    if (!T || T.active !== KEY || R.PHASES[T.phase] !== 'Draw') return;
+    // The draw step happened, even if the turn skipped ahead (e.g. a land played from upkeep moved it to main).
+    if (!T || T.active !== KEY || T.phase < R.PI('Draw') || T.phase > R.PI('End step')) return;
     if (P.phase !== 'kept') return; // still deciding on an opening hand: don't draw for the turn yet
     const k = G.S.gameId + ':' + T.n;
     if (P.autoDrew === k) return;
@@ -611,14 +612,17 @@
         prio: phonePrio(),
         name: m ? m.name : '', life: m ? m.life : 0, lib: P.library.length,
         turn: T && T.active ? `Turn ${T.n} · ${R.nameOf(G.S, T.active)} · ${R.PHASES[T.phase]}` : 'Game not started',
-        myTurn: !!(T && T.active === KEY), phase: P.phase, bottomN: P.bottomN, mull: P.mull
+        myTurn: !!(T && T.active === KEY), phase: P.phase, bottomN: P.bottomN, mull: P.mull,
+        over: G.S && G.S.winner ? (G.S.winner === 'draw' ? '🤝 The game is a draw' : G.S.winner === KEY ? '🏆 You win!' : `🏆 ${R.nameOf(G.S, G.S.winner)} wins the game`) : m && m.lost ? `You’re out — ${m.lost.why}` : ''
       }
     });
   }
-  function phoneBanner(text) { if (G.phone && G.phone.linked) G.phone.send({ t: 'banner', text }); }
+  function phoneBanner(text) { if (G.phone && G.phone.linked) G.phone.send({ t: 'banner', text: String(text).replace(/use “Move to → Battlefield” instead/, 'tap the card and choose “Battlefield (no casting)” instead') }); }
   function phonePrio() {
     const s = G.S; if (!s || !s.prio) return null;
-    const top = R.stackTop(s); if (!top) return null;
+    const top = R.stackTop(s);
+    if (!top && s.prio.step) return { mine: s.prio.holder === KEY, step: true, text: 'Blockers are set — combat damage is next', waiting: s.prio.holder !== KEY ? R.nameOf(s, s.prio.holder) : '' };
+    if (!top) return null;
     const tg = [].concat(...(top.tg || [])).map(t => t.p ? (t.p === KEY ? 'you' : R.nameOf(s, t.p)) : s.cards[t.c] ? (s.cards[t.c].ctrl === KEY ? 'your ' : R.nameOf(s, s.cards[t.c].ctrl) + '’s ') + R.cardName(s.cards[t.c]) : 'a card');
     return { mine: s.prio.holder === KEY, text: `${top.ctrl === KEY ? 'You' : R.nameOf(s, top.ctrl)} ${top.ab ? 'activated ' + top.ab.name : 'cast ' + R.cardName(top)}${tg.length ? ' → ' + R.listNames(tg) : ''}`, waiting: s.prio.holder !== KEY ? R.nameOf(s, s.prio.holder) : '' };
   }
@@ -652,22 +656,27 @@
     if (CD.costOf(card).x) { const v = await phoneAsk(`${c.d.n}: choose X`, Array.from({ length: 13 }, (_, k) => ({ label: String(k), value: k }))); if (v == null) return; x = v; }
     const reqs = CD.targetReqs(card, mode);
     const tg = [];
-    for (const req of reqs) {
-      const choices = CD.targetChoices(G.S, req, KEY);
-      const lab = t => t.p ? (t.p === KEY ? 'You' : R.nameOf(G.S, t.p)) : (G.S.cards[t.c].ctrl === KEY ? 'Your ' : R.nameOf(G.S, G.S.cards[t.c].ctrl) + '’s ') + R.cardName(G.S.cards[t.c]);
+    // Every target is chosen as the spell is cast (601.2c); a spell that needs a target it can't get stays in hand.
+    for (const req of reqs) if (!req.upTo && !CD.targetChoices(G.S, req, KEY).length) { phoneBanner(`${c.d.n} needs ${CD.reqLabel(req)}, and there isn’t a legal one — it stays in your hand.`); return; }
+    for (let ri = 0; ri < reqs.length; ri++) {
+      const req = reqs[ri];
+      const choices = CD.orderChoices(G.S, CD.targetChoices(G.S, req, KEY), KEY, CD.helpfulTarget(card, mode, ri));
+      const lab = t => t.p ? (t.p === KEY ? 'You' : R.nameOf(G.S, t.p)) : (G.S.cards[t.c].ctrl === KEY ? 'Your ' : R.nameOf(G.S, G.S.cards[t.c].ctrl) + '’s ') + R.cardName(G.S.cards[t.c]) + (G.S.cards[t.c].zone === 'stack' ? ' (spell)' : G.S.cards[t.c].zone === 'graveyard' ? ' (graveyard)' : '');
       const picked = [];
       const max = Math.min(req.n, 10);
       for (let i = 0; i < max; i++) {
         const opts = choices.filter(t => !picked.some(p => (p.c && p.c === t.c) || (p.p && p.p === t.p))).map(t => ({ label: lab(t), value: t }));
         if (!opts.length) break;
         if (req.upTo || i > 0) opts.push({ label: i > 0 ? 'Done' : 'No target', value: '__none' });
-        const v = await phoneAsk(`${c.d.n}: choose ${req.text}${max > 1 ? ` (${i + 1})` : ''}`, opts);
+        const v = await phoneAsk(`${c.d.n}: choose ${CD.reqLabel(req)}${reqs.length > 1 ? ` (${ri + 1} of ${reqs.length})` : max > 1 ? ` (${i + 1})` : ''}`, opts);
         if (v == null) return;
         if (v === '__none') break;
         picked.push(v);
       }
+      if (!picked.length && !req.upTo) return;
       tg.push(picked);
     }
+    if (G.autoPay && !(await G.autoPay(card, x))) { phoneBanner('Not enough untapped mana to pay for it automatically.'); return; }
     await G.castFromHand(id, { tg: reqs.length ? tg : undefined, mode: mode || undefined, x: x || undefined });
   }
   G.phoneSync = phoneSync;

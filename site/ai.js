@@ -32,7 +32,7 @@
   // ---------------- what I can see ----------------
   const hand = () => G.P.hand.map(c => Object.assign({ zone: 'hand', counters: {}, face: 0 }, c));
   const mine = (zone) => Object.values(S().cards).filter(c => c.zone === zone && (zone === 'battlefield' ? c.ctrl === ME() : c.owner === ME()));
-  const opps = () => S().seats.filter(p => p !== ME() && S().players[p] && S().players[p].life > 0);
+  const opps = () => S().seats.filter(p => p !== ME() && S().players[p] && R.alive(S(), p));
   const creaturesOf = pid => Object.values(S().cards).filter(c => c.zone === 'battlefield' && c.ctrl === pid && (c.faceDown || R.isType(c, 'creature')));
   const isCreature = c => c.faceDown || R.isType(c, 'creature');
   const ptOf = c => C.pt(S(), c) || [0, 0];
@@ -55,7 +55,7 @@
       const m = C.manaSource(c);
       if (!m || m.sac) continue;
       if (isCreature(c) && R.sick(S(), c) && !kw(c).has('haste')) continue;
-      out.push({ id: c.id, amount: m.amount, colors: m.colors, name: cn(c) });
+      out.push({ id: c.id, amount: m.amount, colors: m.colors, units: m.units, name: cn(c) });
     }
     return out;
   }
@@ -73,6 +73,8 @@
     const es = eff.effects.filter(e => e.ti === i || e.ti2 === i || e.forTargetCtrl === i || (e.tis && e.tis.includes(i)));
     if (es.some(e => e.k === 'bite' || e.k === 'fight')) return es.some(e => e.ti === i) ? 'mine-fighter' : 'theirs';
     if (es.some(e => e.k === 'life' && e.sign < 0) || es.some(e => HARM.includes(e.k))) return 'theirs';
+    // "Target creature gets -4/-4": that's removal, not a pump.
+    if (es.some(e => e.k === 'pump' && (/^-/.test(String(e.t)) || (/^-/.test(String(e.p)) && !/^\+/.test(String(e.t)))))) return 'theirs';
     if (es.some(e => e.k === 'draw' || (e.k === 'life' && e.sign > 0))) return 'me';
     if (es.some(e => HELP.includes(e.k) || e.k === 'attachSrc')) return 'mine';
     const t = C.text(card).toLowerCase();
@@ -170,7 +172,9 @@
     }
     if (!perm && eff.effects.some(e => e.k === 'counter') && when !== 'instant') return null;
     // Pump / protection tricks are for combat or for answering removal, not for casting into an empty board.
-    if (!perm && when === 'main' && eff.effects.every(e => ['pump', 'grant', 'pumpAll', 'grantAll', 'untap'].includes(e.k))) return null;
+    if (!perm && when === 'main' && eff.effects.every(e => ['pump', 'grant', 'pumpAll', 'grantAll', 'untap'].includes(e.k) && !(e.k === 'pump' && intentFor(card, eff, e.ti) === 'theirs'))) return null;
+    // Auras that enchant a card in a graveyard (Animate Dead) need hands-on play; I leave those alone.
+    if (perm && /aura/i.test(R.typeLine(card)) && C.targetReqs(card, mode).some(r => r.gy || /graveyard/.test(r.text || ''))) return null;
     const cost = costFor(card);
     let x = 0;
     if (cost.x) { x = Math.max(0, manaAvailable() - C.costTotal(cost, 0)); if (x < 1) return null; }
@@ -255,6 +259,7 @@
   }
   function blockersFor(att, defPid) {
     const ak = kw(att);
+    if (ak.has('unblockable')) return [];
     return creaturesOf(defPid).filter(b => !b.tapped && !kw(b).has("can't block") && (!ak.has('flying') || kw(b).has('flying') || kw(b).has('reach')));
   }
   // Does blocker b kill attacker a / survive?
@@ -356,6 +361,34 @@
     return null;
   }
 
+  // After blockers: a pump spell that wins a fight (my creature survives, or kills theirs and survives).
+  function combatTrick() {
+    const s = S(), K = s.combat; if (!K) return null;
+    const fights = [];
+    for (const [aid, x] of Object.entries(K.att)) {
+      const a = s.cards[aid]; if (!a) continue;
+      for (const bid of x.blk || []) { const b = s.cards[bid]; if (!b) continue; if (a.ctrl === ME()) fights.push([a, b]); else if (b.ctrl === ME()) fights.push([b, a]); }
+    }
+    if (!fights.length) return null;
+    for (const c of hand()) {
+      const p = plan(c, 'instant'); if (!p) continue;
+      const pump = p.eff.effects.find(e => e.k === 'pump' && !/^-/.test(String(e.t)) && !/x/i.test(String(e.p) + String(e.t)));
+      if (!pump || p.eff.effects.length > 2) continue;
+      const dp = parseInt(pump.p, 10) || 0, dt = parseInt(pump.t, 10) || 0;
+      for (const [m, o] of fights) {
+        const [mp, mt] = ptOf(m), [op, ot] = ptOf(o), mk = kw(m), ok = kw(o);
+        const dies = (pw, dtch, t, dmg, ind) => !ind && ((dtch && pw > 0) || pw >= t - (dmg || 0));
+        const before = { me: dies(op, ok.has('deathtouch'), mt, m.dmg, mk.has('indestructible')), them: dies(mp, mk.has('deathtouch'), ot, o.dmg, ok.has('indestructible')) };
+        const after = { me: dies(op, ok.has('deathtouch'), mt + dt, m.dmg, mk.has('indestructible')), them: dies(mp + dp, mk.has('deathtouch'), ot, o.dmg, ok.has('indestructible')) };
+        if (after.me || (!before.me && before.them === after.them)) continue;
+        const t = chooseTargets(c, p.mode, p.eff, { protect: [m.id], x: p.x });
+        if (!t || !t.tg.flat().some(x => x.c === m.id)) continue;
+        return Object.assign(p, t);
+      }
+    }
+    return null;
+  }
+
   // ---------------- answering questions ----------------
   const FAQ = [
     [/flying/, 'Flying: a creature with flying can be blocked only by creatures with flying or reach (702.9b).'],
@@ -400,10 +433,13 @@
       const why = ref.why && ref.why.length ? ref.why : ['That was an ordinary game action with no special requirements.'];
       return { text: `Yes, “${ref.text}” is legal. Here’s what I checked:`, why };
     }
-    if (/(legal|allowed|cheat|why (did|can|could)|how (did|can|could) you|is that ok|wrong|illegal|not allowed)/.test(t) && lastWhy) {
+    const aboutMe = /\b(you|your|that|this|it)\b/.test(t) && /(legal|allowed|cheat|why|how (did|can|could)|is that ok|wrong|illegal|not allowed|okay|ok\b|right)/.test(t);
+    const faq = FAQ.find(([re]) => re.test(t));
+    if (aboutMe && lastWhy && !(faq && /^(what|how) (does|do|is|are)\b/.test(t))) {
       return { text: `My last move was: “${lastWhy.text}” I checked the rules before doing it:`, why: lastWhy.why.length ? lastWhy.why : ['It didn’t need any special permission.'] };
     }
-    for (const [re, a] of FAQ) if (re.test(t)) return { text: a };
+    if (faq) return { text: faq[1] };
+    if (/(legal|allowed|cheat|illegal)/.test(t) && lastWhy) return { text: `My last move was: “${lastWhy.text}” I checked the rules before doing it:`, why: lastWhy.why.length ? lastWhy.why : ['It didn’t need any special permission.'] };
     if (/(mana|untapped|lands)/.test(t)) {
       const src = sources();
       return { text: `I have ${src.reduce((a, x) => a + x.amount, 0)} mana available right now${src.length ? ': ' + src.map(x => `${x.name} ({${x.colors.split('').join('/')}})`).join(', ') : ''}.` };
@@ -478,9 +514,9 @@
       }
       return false;
     }
-    if (!me.ai) { await G.act({ type: 'aiMeta', restore: true, by: cfg.owner, skill: cfg.skill }); return true; }
-    if (me.ai && cfg.skill && me.ai.skill !== cfg.skill) { await G.act({ type: 'aiMeta', skill: cfg.skill }); return true; }
-    if (s.winner && !tried.has('gg:' + s.gameId)) { tried.add('gg:' + s.gameId); say(s.winner === ME() ? 'Good game — thanks for playing! Press Rematch for another.' : `Good game, ${nameOf(s.winner)}!`); return true; }
+    if (!me.ai && cfg) { await G.act({ type: 'aiMeta', restore: true, by: cfg.owner, skill: cfg.skill }); return true; }
+    if (me.ai && cfg && cfg.skill && me.ai.skill !== cfg.skill) { await G.act({ type: 'aiMeta', skill: cfg.skill }); return true; }
+    if (s.winner && !tried.has('gg:' + s.gameId)) { tried.add('gg:' + s.gameId); say(s.winner === ME() ? 'Good game — thanks for playing! Press Rematch for another.' : s.winner === 'draw' ? 'A draw — good game, everyone!' : `Good game, ${nameOf(s.winner)}!`); return true; }
     if (me.lost || s.winner) {
       // Still answer questions after the game.
       const q = (s.aichat || []).find(m => m.kind === 'q' && m.to === ME() && !answered.has(m.id));
@@ -524,7 +560,7 @@
     }
     // Priority: someone cast something.
     if (s.prio && s.prio.holder === ME()) {
-      const p = respond();
+      const p = s.prio.step ? (skill() !== 'easy' && !R.stackTop(s) && !tried.has('trick:' + s.gameId + ':' + s.turn.n + ':' + s.prio.since) ? (tried.add('trick:' + s.gameId + ':' + s.turn.n + ':' + s.prio.since), combatTrick()) : null) : respond();
       if (p) { const ok = await cast(p, 'instant'); if (ok) return true; }
       await G.pass(); return true;
     }
@@ -636,7 +672,9 @@
     if (ph === 'Beginning of combat' || ph === 'Declare attackers') {
       if (s.combat && s.combat.n === T.n) { await G.act({ type: 'phase', to: PI('Main 2') }); return true; }
       const list = planAttack();
-      const r = await G.attack(list.map(x => ({ id: x.id, p: x.p })));
+      let r = await G.attack(list.map(x => ({ id: x.id, p: x.p })));
+      if (!r.ok && list.length) { console.warn('[ai] attack refused:', r.err); r = await G.attack([]); }
+      if (!r.ok) { await G.act({ type: 'phase', to: PI('Main 2') }); return true; }
       if (r.ok && list.length) {
         const by = {}; for (const x of list) (by[x.p] = by[x.p] || []).push(cn(S().cards[x.id] || s.cards[x.id]));
         lastCombat = `I attacked ${Object.entries(by).map(([p, v]) => `${nameOf(p)} with ${R.listNames(v)}`).join(' and ')}${list.some(x => x.why === 'lethal') ? ' — that should be lethal' : skill() === 'easy' ? '' : `, because ${list.every(x => x.why === 'safe') ? 'no blocker can kill them for free' : 'it keeps the pressure on'}`}.`;
@@ -689,8 +727,13 @@
         const reqs = C.targetsIn(tr.text);
         let tg = [], desc = [];
         if (reqs.length) {
-          const t = chooseTargetsFor({ d: { faces: [{ n: cn(c), t: 'Instant', o: tr.text }] }, counters: {} }, reqs, eff);
-          if (!t) { say(`${cn(c)}’s triggered ability has no target I want, so it does nothing (603.3d).`); return true; }
+          let t = chooseTargetsFor({ d: { faces: [{ n: cn(c), t: 'Instant', o: tr.text }] }, counters: {} }, reqs, eff);
+          const optional = /\byou may\b|\bup to\b/i.test(tr.text);
+          if (!t && !optional) t = anyTargets(reqs, eff);
+          if (!t) {
+            const none = reqs.some(r => !C.targetChoices(S(), r, ME()).length);
+            say(none ? `${cn(c)}’s triggered ability has no legal target, so it’s removed from the stack (603.3d).` : `${cn(c)}’s triggered ability says “may”, and no target is worth it, so I skip it.`); return true;
+          }
           tg = t.tg; desc = t.desc;
         }
         const r = await G.act({ type: 'trigger', id: c.id, i, tg });
@@ -731,6 +774,21 @@
       }
     }
     return false;
+  }
+  // A mandatory trigger must target something if it can: prefer an opponent's thing, else the least valuable of mine.
+  function anyTargets(reqs, eff) {
+    const s = S(), tg = [], desc = [], taken = new Set();
+    for (let i = 0; i < reqs.length; i++) {
+      const ch = C.targetChoices(s, reqs[i], ME()).filter(t => !taken.has(t.c || t.p));
+      if (!ch.length) { if (reqs[i].upTo) { tg.push([]); continue; } return null; }
+      const theirs = ch.filter(t => t.p ? t.p !== ME() : s.cards[t.c] && s.cards[t.c].ctrl !== ME());
+      const intent = intentFor({ d: null }, eff, i);
+      const pool = intent === 'theirs' ? (theirs.length ? theirs : ch) : (ch.filter(t => !theirs.includes(t)).length ? ch.filter(t => !theirs.includes(t)) : ch);
+      const pick = pool.slice().sort((a, b) => (intent === 'theirs' && pool !== theirs ? threat(a) - threat(b) : threat(b) - threat(a)))[0];
+      taken.add(pick.c || pick.p); tg.push([pick]);
+      desc.push(pick.p ? (pick.p === ME() ? 'myself' : nameOf(pick.p)) : (s.cards[pick.c].ctrl !== ME() ? nameOf(s.cards[pick.c].ctrl) + '’s ' : 'my ') + cn(s.cards[pick.c]));
+    }
+    return { tg, desc };
   }
   function chooseTargetsFor(pseudo, reqs, eff) {
     const save = C.targetReqs;

@@ -268,7 +268,7 @@ input.num { flex: none; width: 80px; }
 #preview { flex-wrap: wrap; max-width: 440px; }
 #preview .pinfo { background: rgba(10,14,12,.94); border: 1px solid #44554c; border-radius: 8px; padding: 6px 10px; max-width: 300px; }
 
-#toasts { position: fixed; top: 104px; left: 50%; transform: translateX(-50%); z-index: 200; display: grid; gap: 6px; justify-items: center; pointer-events: none; width: min(560px, calc(100% - 32px)); }
+#toasts { position: fixed; top: auto; bottom: var(--toastb, 170px); left: 50%; transform: translateX(-50%); z-index: 200; display: grid; gap: 6px; justify-items: center; pointer-events: none; width: min(560px, calc(100% - 32px)); }
 .toast { background: #1d2723; border: 1px solid #44554c; border-radius: 9px; padding: 8px 14px; box-shadow: 0 8px 20px rgba(0,0,0,.5); transition: opacity .4s, transform .4s; text-align: center; }
 .toast.out { opacity: 0; transform: translateY(-8px); }
 .toast.err { border-color: var(--bad); } .toast.alert { border-color: var(--bad); background: #3a1d17; font-weight: 700; }
@@ -290,7 +290,7 @@ input.num { flex: none; width: 80px; }
 .wcard p { margin: 0; }
 
 /* decks */
-.decks { display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 16px; min-height: 0; }
+.decks { display: grid; grid-template-columns: 290px minmax(0, 1fr); gap: 16px; min-height: 0; }
 .decklist { display: grid; gap: 6px; align-content: start; }
 .dk { display: flex; gap: 8px; align-items: center; text-align: left; padding: 6px; }
 .dk img { width: 34px; border-radius: 3px; }
@@ -475,7 +475,7 @@ input.num { flex: none; width: 80px; }
 @media (pointer: coarse) and (max-height: 520px) {
   .pilecol .plabel { font-size: 7.5px; padding: 8px 3px 3px; letter-spacing: 0; }
   .pilecol .plabel b { font-size: 12px; }
-  #toasts { top: 70px; }
+  #toasts { top: 70px; bottom: auto; }
   .toast { padding: 5px 10px; font-size: 12px; }
 }
 
@@ -788,6 +788,7 @@ button.small { padding: 3px 9px; font-size: 13px; }
 .pprio { display: flex; gap: 10px; align-items: center; justify-content: space-between; padding: 8px 12px; border-radius: 10px; background: #1a231f; border: 1px solid #44554c; font-size: 14px; }
 .pprio.mine { background: #2d2412; border-color: var(--brass); }
 .pprio.mine b { color: var(--brass); }
+.pprio.over { background: #1d2a3a; border-color: #5b7fa8; justify-content: flex-start; }
 .pchoose .pacts { grid-template-columns: 1fr; width: min(420px, 92vw); }
 .pchoose .pacts button { text-align: left; }
 @media (pointer: coarse) {
@@ -812,3 +813,37 @@ button.small { padding: 3px 9px; font-size: 13px; }
 .winbar.out b { color: #f2a07f; font-size: 15px; }
 .tag2.lostt { color: #fff; background: #7a1f16; border-color: #7a1f16; }
 .board.lost { filter: grayscale(.75) brightness(.8); }
+
+#hand .autopay { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+
+/* top bar folding (ui.js fitTop): each level hides one more group; hidden things live in the ⋯ menu */
+#top.fit1 .markers { display: none; }
+#top.fit2 .brand b, #top.fit2 .brand .tname, #top.fit2 .tools .f2 { display: none; }
+#top.fit3 .tools .f3 { display: none; }
+#top.fit4 .tools .f4, #top.fit4 .turn .tn { display: none; }
+#top.fit4 .turn .phase { min-width: 0; }
+#top.fit5 .turn .who { overflow: hidden; text-overflow: ellipsis; max-width: 14vw; }
+#top .turn .who { min-width: 0; }
+#top:not(.compact) { flex-wrap: nowrap; }
+.decklist > * { min-width: 0; }
+.decklist .import { white-space: normal; }
+.importer { min-width: 0; grid-template-columns: minmax(0, 1fr); }
+.importer > * { min-width: 0; }
+.importer .imhead { font-size: 13px; font-weight: 700; color: var(--muted); }
+.importer .imrow { display: flex; flex-wrap: nowrap; gap: 6px; }
+.importer .imrow input { flex: 1; min-width: 0; width: auto; }
+.importer .imrow button { flex: none; }
+.importer > button { justify-self: start; }
+.immsg { overflow-wrap: anywhere; }
+#log > * { min-width: 0; }
+.askrow { min-width: 0; }
+.askrow input { flex: 1; min-width: 0; width: auto; }
+.askrow button { flex: none; }
+@media (pointer: fine) {
+  .cm { position: relative; }
+  .cm .legal:not(.latest) { opacity: 0; transition: opacity .15s; position: absolute; right: 6px; bottom: 4px; background: #18201c; }
+  .cm:hover .legal, .cm .legal:focus-visible { opacity: 1; }
+}
+.app.touch #log { z-index: 27; }
+.crow button.bignum { font: 700 22px var(--display); min-width: 54px; background: transparent; border-color: transparent; text-decoration: underline dotted #6b7d73; text-underline-offset: 4px; }
+.crow button.bignum:hover { border-color: #44554c; }

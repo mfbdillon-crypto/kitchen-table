@@ -65,6 +65,7 @@
         p: str(f.p, 8), tg: str(f.tg, 8), loy: str(f.loy, 8), def: str(f.def, 8), mc: str(f.mc, 60), o: str(f.o, 1500)
       })),
       kw: Array.isArray(d.kw) ? d.kw.slice(0, 16).map(k => str(k, 30)) : undefined,
+      col: Array.isArray(d.col) ? d.col.filter(x => /^[WUBRG]$/.test(x)).slice(0, 5) : undefined,
       pm: Array.isArray(d.pm) ? d.pm.filter(x => /^[WUBRGC]$/.test(x)).slice(0, 6) : undefined
     };
   }
@@ -559,6 +560,7 @@
           const activeOnline = s.players[T.active] && s.players[T.active].online;
           if (T.active !== pid && activeOnline) return { ok: false, err: 'Only the active player can change the phase.' };
           if (stackCards(s).length && !a.force) return { ok: false, err: 'Wait until everything on the stack has resolved.' };
+          if (s.prio && s.prio.step && s.turn.active !== pid) return { ok: false, err: 'Wait for combat damage.' };
           if (a.dir === 'pass' || T.phase >= PHASES.length - 1 && a.dir !== 'back') {
             return passTurn(s, pid, notes, done);
           }
@@ -568,7 +570,7 @@
           else T.phase++;
           const K = s.combat;
           // Moving into combat damage deals it (blockers not declared in time count as no blocks).
-          if (K && K.n === T.n && !K.done && T.phase >= PI('Combat damage') && was < PI('Combat damage') && Object.keys(K.att).length) { combatDamage(s, notes); for (const x of notes) log(s, null, x, 'auto'); s.rev++; return { ok: true }; }
+          if (K && K.n === T.n && !K.done && T.phase >= PI('Combat damage') && was < PI('Combat damage') && Object.keys(K.att).length) { if (s.prio && s.prio.step) s.prio = null; combatDamage(s, notes); for (const x of notes) log(s, null, x, 'auto'); s.rev++; return { ok: true }; }
           if (PHASES[T.phase] === 'Cleanup') clearMods(s);
           s.rev++; return { ok: true };
         }
@@ -624,7 +626,7 @@
           need();
           const P = s.prio;
           if (!P) return { ok: true };
-          if (a.top && P.top !== a.top) return { ok: true, stale: true };
+          if (a.top && P.top && P.top !== a.top) return { ok: true, stale: true };
           let who = pid;
           if (P.holder !== pid) {
             if (a.for && a.for === P.holder && !live(s, a.for)) who = a.for;
@@ -638,6 +640,11 @@
           // Nobody answered for a while (or the player who has to answer is away): resolve the top anyway.
           need();
           const P = s.prio, top = stackTop(s);
+          if (!top && P && P.step) {
+            if (s.turn.active !== pid && live(s, P.holder) && Date.now() - (P.since || 0) < 45000) return { ok: false, err: `${nameOf(s, P.holder)} is still deciding.` };
+            s.prio = null; if (combatWaiting(s)) combatDamage(s, notes);
+            remember(); sba(s, notes); for (const n of notes) log(s, null, n, 'auto'); s.rev++; return { ok: true };
+          }
           if (!top) return { ok: true };
           const waited = P ? Date.now() - (P.since || 0) : 1e9;
           if (P && live(s, P.holder) && waited < 45000) return { ok: false, err: `${nameOf(s, P.holder)} is still deciding. You can resolve it yourself after 45 seconds.` };
@@ -660,6 +667,10 @@
             if (sick(s, src)) return { ok: false, err: `${cardName(src)} hasn’t been under your control since your turn began, so it can’t use {T} abilities yet (summoning sickness, 302.6).` };
           }
           if (ab.equip && (s.turn.active !== pid || stackCards(s).length || !/^Main/.test(PHASES[s.turn.phase]))) return { ok: false, err: 'Equip only as a sorcery: in your main phase with an empty stack (702.6a).' };
+          {
+            const reqs0 = C.targetsIn(ab.text), tg0 = cleanTargets(a.tg, reqs0.length);
+            for (let i = 0; i < reqs0.length; i++) for (const t of tg0[i] || []) if (!C.legalTarget(s, reqs0[i], t, pid)) return { ok: false, err: 'That isn’t a legal target for this ability.' };
+          }
           if (ab.loyalty !== undefined) {
             const have = (src.counters || {}).loyalty || 0;
             if (s.turn.active !== pid || stackCards(s).length || !/^Main/.test(PHASES[s.turn.phase])) return { ok: false, err: 'Loyalty abilities can be activated only in your main phase with an empty stack (606.3).' };
@@ -734,7 +745,7 @@
           for (const [id, x] of Object.entries(att)) { const k = x.def.p ? nameOf(s, x.def.p) : cardName(s.cards[x.def.c]); (byDef[k] = byDef[k] || []).push(cardName(s.cards[id])); }
           log(s, pid, 'attacked ' + Object.entries(byDef).map(([k, v]) => `${k} with ${listNames(v)}`).join('; '));
           for (const p of s.combat.waiting) if (!live(s, p)) s.combat.ok[p] = true;
-          if (s.combat.waiting.every(p => s.combat.ok[p])) combatDamage(s, notes);
+          if (s.combat.waiting.every(p => s.combat.ok[p])) { s.combat.blocked = true; startStep(s, notes); }
           remember(); sba(s, notes); for (const n of notes) log(s, null, n, 'auto'); s.rev++; return { ok: true };
         }
         case 'block': {
@@ -755,6 +766,7 @@
             if (target !== pid) return { ok: false, err: `${cardName(at)} isn’t attacking you.` };
             const bk = C.keywords(b, s), ak = C.keywords(at, s);
             if (bk.has("can't block")) return { ok: false, err: `${cardName(b)} can’t block.` };
+            if (ak.has('unblockable')) return { ok: false, err: `${cardName(at)} can’t be blocked.` };
             if (ak.has('flying') && !bk.has('flying') && !bk.has('reach')) return { ok: false, err: `${cardName(at)} has flying — only creatures with flying or reach can block it (702.9b).` };
             used.add(b.id); pairs.push([b, at]);
           }
@@ -764,7 +776,7 @@
           K.ok[pid] = true;
           if (pairs.length) log(s, pid, 'blocked ' + pairs.map(([b, at]) => `${cardName(at)} with ${cardName(b)}`).join(', '));
           else log(s, pid, 'didn’t block');
-          if (K.waiting.every(p => K.ok[p] || !live(s, p))) combatDamage(s, notes);
+          if (K.waiting.every(p => K.ok[p] || !live(s, p))) { K.blocked = true; if (!stackTop(s)) startStep(s, notes); }
           remember(); sba(s, notes); for (const n of notes) log(s, null, n, 'auto'); s.rev++; return { ok: true };
         }
         case 'lose': {
@@ -777,6 +789,7 @@
           need();
           const P = s.players[a.pid || pid];
           if (!P || !P.lost) return { ok: true };
+          if (P.lost.removed) return { ok: false, err: `${P.name}’s cards already left the game.` };
           if (P.life <= 0 || P.poison >= 10 || Object.values(P.cmdDmg || {}).some(v => v >= 21)) return { ok: false, err: `Fix ${P.name}’s life, poison or commander damage first.` };
           delete P.lost;
           if (s.winner && s.seats.filter(p => alive(s, p)).length > 1) s.winner = null;
@@ -830,13 +843,15 @@
         if (isType(c, 'creature') || c.faceDown) {
           // 704.5g / 704.5h: lethal damage, or any damage from a source with deathtouch, destroys it (unless it's indestructible).
           const ptl = root.Cards ? root.Cards.pt(s, c) : ptOf(c);
-          if (ptl && ((c.dmg > 0 && c.dmg >= ptl[1] && ptl[1] > 0) || (c.dtd && c.dmg > 0)) && !(root.Cards && root.Cards.has(c, 'indestructible', s))) {
+          if (ptl && ((c.dmg > 0 && c.dmg >= ptl[1] && ptl[1] > 0) || c.dtd) && !(root.Cards && root.Cards.has(c, 'indestructible', s))) {
             const nm = cardName(c); moveOne(s, c, 'graveyard', 'top', null, notes);
             notes.push(`${nm} was destroyed (${c.dtd ? 'deathtouch damage' : 'lethal damage'})`); changed = true; continue;
           }
           // 704.5f: toughness 0 or less dies. The table can't see every lasting boost, so it asks the controller.
           const pt = root.Cards ? root.Cards.pt(s, c) : ptOf(c);
-          const zero = !!(pt && pt[1] <= 0);
+          const fpt = face(c);
+          const starPT = !c.faceDown && fpt && /\*/.test(String(fpt.tg || ''));
+          const zero = !!(pt && pt[1] <= 0) && !starPT;
           if (zero && !c.zeroT && !c.zeroOk) notes.push(`${cardName(c)} has ${pt[1]} toughness — its controller should put it into the graveyard unless something else is boosting it`);
           c.zeroT = zero;
           if (!zero) c.zeroOk = false;
@@ -873,6 +888,7 @@
   const alive = (s, p) => !!(s.players[p] && !s.players[p].lost);
   // 704.5a / 704.5c / 903.10a: a player with 0 or less life, 10 poison counters or 21 damage from one commander loses.
   function checkLoss(s, notes) {
+    const losing = [];
     for (const pid of s.seats) {
       const P = s.players[pid];
       if (!P || P.lost) continue;
@@ -880,17 +896,40 @@
       if (P.life <= 0) why = `has ${P.life} life (704.5a)`;
       else if (P.poison >= 10) why = `has ${P.poison} poison counters (704.5c)`;
       else { const cd = Object.entries(P.cmdDmg || {}).find(([, v]) => v >= 21); if (cd) why = `took ${cd[1]} combat damage from ${s.cards[cd[0]] ? cardName(s.cards[cd[0]]) : 'one commander'} (903.10a)`; }
-      if (why) lose(s, pid, why, notes);
+      if (why) losing.push([pid, why]);
     }
+    if (!losing.length) return;
+    // Everyone who loses at the same moment loses together; if nobody is left, the game is a draw (104.4a).
+    const after = s.seats.filter(p => alive(s, p) && !losing.some(([q]) => q === p));
+    for (const [pid, why] of losing) lose(s, pid, why, notes, after.length === 0);
   }
-  function lose(s, pid, why, notes) {
+  function lose(s, pid, why, notes, drawGame) {
     const P = s.players[pid]; if (!P || P.lost) return;
-    P.lost = { why: String(why).slice(0, 120), t: Date.now() };
+    const before = s.seats.filter(p => alive(s, p)).length;
+    P.lost = { why: String(why).slice(0, 120), t: Date.now(), pending: before > 2 && !drawGame };
     log(s, pid, `lost the game — ${P.lost.why}`, 'alert');
     const left = s.seats.filter(p => alive(s, p));
-    if (s.seats.length >= 2 && left.length === 1 && !s.winner) { s.winner = left[0]; log(s, left[0], 'wins the game!', 'alert'); }
+    if (drawGame && !left.length && !s.winner) { s.winner = 'draw'; log(s, null, 'The game is a draw — everyone left lost at the same time (104.4a).', 'alert'); }
+    if (s.seats.length >= 2 && left.length === 1 && !s.winner && !drawGame) { s.winner = left[0]; log(s, left[0], 'wins the game!', 'alert'); }
+    if (P.lost.pending && !s.winner) log(s, pid, 'is out — their cards leave the game in 20 seconds unless this was a mistake', 'auto');
     if (s.combat && !s.combat.done) { delete s.combat.ok[pid]; s.combat.waiting = s.combat.waiting.filter(p => p !== pid); for (const [id, x] of Object.entries(s.combat.att)) if (x.def.p === pid) delete s.combat.att[id]; }
-    if (s.turn.active === pid && left.length >= 1 && !s.winner) { s.prio = null; for (const c of Object.values(s.cards)) if (c.zone === 'stack' && c.ctrl === pid) { if (c.ab || c.token) delete s.cards[c.id]; } passTurn(s, pid, notes, () => ({ ok: true })); }
+    // Their spells and abilities leave the stack (800.4a); priority that was waiting on them moves on.
+    if (!s.winner) for (const c of Object.values(s.cards)) if (c.zone === 'stack' && c.ctrl === pid) { if (c.ab || c.token) delete s.cards[c.id]; else moveOne(s, c, 'graveyard', 'top', null, notes); }
+    if (s.prio) { if (!s.prio.passed.includes(pid)) s.prio.passed.push(pid); if (!stackTop(s) && !s.prio.step) s.prio = null; }
+    if (s.turn.active === pid && left.length >= 1 && !s.winner) { s.prio = null; passTurn(s, pid, notes, () => ({ ok: true })); }
+  }
+  // 800.4a: when a player leaves a multiplayer game, everything they own leaves too, and what they controlled goes back.
+  function removeLoser(s, pid, notes) {
+    const P = s.players[pid]; if (!P || !P.lost || !P.lost.pending) return;
+    P.lost.pending = false; P.lost.removed = true;
+    let n = 0;
+    for (const c of Object.values(s.cards)) {
+      if (c.owner === pid) { if (c.zone === 'battlefield') leaveBattlefield(s, c, notes); delete s.cards[c.id]; n++; }
+      else if (c.ctrl === pid && c.zone === 'battlefield') c.ctrl = c.owner;
+    }
+    delete s.inbox[pid]; if (s.todo) delete s.todo[pid];
+    for (const k of ['monarch', 'initiative']) if (s.table[k] === pid) s.table[k] = s.turn.active && alive(s, s.turn.active) ? s.turn.active : null;
+    notes.push(`${P.name}’s cards left the game (${n})`);
   }
   function stackCards(s) { return Object.values(s.cards).filter(c => c.zone === 'stack').sort((a, b) => a.seq - b.seq); }
   function stackTop(s) { const st = stackCards(s); return st[st.length - 1] || null; }
@@ -962,21 +1001,32 @@
       const P = s.prio;
       const cand = P.order.find(p => !P.passed.includes(p) && live(s, p));
       if (cand) { P.holder = cand; P.since = Date.now(); return; }
+      if (P.step) { s.prio = null; if (P.step === 'damage' && combatWaiting(s)) combatDamage(s, notes); return; }
       resolveTop(s, notes);
       sba(s, notes);
       const top = stackTop(s);
-      if (!top) { s.prio = null; return; }
+      if (!top) { s.prio = null; if (combatWaiting(s)) startStep(s, notes); return; }
       s.prio = { order: rotate(s, s.turn.active || s.seats[0]), passed: [], holder: null, since: Date.now(), top: top.id };
     }
   }
   // Players who left or went offline can't hold up the stack or combat.
   function fixUp(s, notes) {
+    // Players who lost in a game that goes on: after a short undo window their cards leave the game (800.4a).
+    for (const pid of s.seats) { const L = s.players[pid] && s.players[pid].lost; if (L && L.pending && Date.now() - L.t > 20000) removeLoser(s, pid, notes); }
+    if (!s.prio && stackTop(s)) startPrio(s, null, notes);
+    if (!s.prio && combatWaiting(s)) startStep(s, notes);
     const P = s.prio;
-    if (P && !stackTop(s)) s.prio = null;
+    if (P && !P.step && !stackTop(s)) s.prio = null;
     else if (P && P.holder && !live(s, P.holder)) { if (!P.passed.includes(P.holder)) P.passed.push(P.holder); nextHolder(s, notes); }
-    else if (P && P.top !== (stackTop(s) || {}).id) { const t = stackTop(s); P.top = t.id; }
+    else if (P && !P.step && P.top !== (stackTop(s) || {}).id) { const t = stackTop(s); P.top = t.id; }
     const K = s.combat;
-    if (K && !K.done && K.n === s.turn.n && Object.keys(K.att).length && K.waiting.length && K.waiting.every(p => K.ok[p] || !live(s, p))) combatDamage(s, notes);
+    if (K && !K.done && !K.blocked && K.n === s.turn.n && Object.keys(K.att).length && K.waiting.every(p => K.ok[p] || !live(s, p))) { K.blocked = true; if (!s.prio && !stackTop(s)) startStep(s, notes); }
+  }
+  // After blockers are declared, players may cast tricks before combat damage (510.1 / 117.3).
+  function combatWaiting(s) { const K = s.combat; return !!(K && !K.done && K.blocked && K.n === s.turn.n && !stackTop(s)); }
+  function startStep(s, notes) {
+    s.prio = { order: rotate(s, s.turn.active || s.seats[0]), passed: [], holder: null, since: Date.now(), top: null, step: 'damage' };
+    nextHolder(s, notes);
   }
 
   function resolveTop(s, notes) {
@@ -1004,9 +1054,14 @@
       return;
     }
     if (perm) {
-      const aura = reqs[0] && reqs[0].aura && legal[0] && legal[0][0];
+      let aura = reqs[0] && reqs[0].aura && legal[0] && legal[0][0];
+      const x = c.x || 0;
       moveOne(s, c, 'battlefield', 'top', { by }, notes);
+      if (aura && aura.c && s.cards[aura.c] && s.cards[aura.c].zone !== 'battlefield') { notes.push(`${nm} enchants a card that isn’t on the battlefield — finish its effect by hand`); aura = null; }
       if (aura && s.cards[c.id]) { if (aura.c && s.cards[aura.c]) s.cards[c.id].attachedTo = aura.c; }
+      // "This enters with X (or N) +1/+1 counters on it."
+      const em = C && s.cards[c.id] && C.text(s.cards[c.id]).match(/this (?:creature )?enters(?: the battlefield)? with (x|a|an|one|two|three|four|five|six|\d+) (\+1\/\+1|-1\/-1|loyalty|charge|oil) counters? on it/i);
+      if (em) { const n = /^x$/i.test(em[1]) ? x : C.toNum(em[1]) || 0; const k = em[2].toLowerCase(); if (n > 0) s.cards[c.id].counters[k] = (s.cards[c.id].counters[k] || 0) + n; }
       notes.push(`${nm} resolved and entered the battlefield${aura && aura.c && s.cards[aura.c] ? ' attached to ' + cardName(s.cards[aura.c]) : ''}`);
       return;
     }
@@ -1033,8 +1088,9 @@
     const words = what.replace(/,/g, '').split(/\s+/).filter(w => w && !colorsW.includes(w) && w !== 'and' && w !== 'creature' && w !== 'artifact' && w !== 'enchantment' && w !== 'legendary');
     const sub = words.map(w => w[0].toUpperCase() + w.slice(1)).join(' ') || 'Creature';
     const isCre = /creature/.test(what) || e.p !== '';
+    const col = [['white', 'W'], ['blue', 'U'], ['black', 'B'], ['red', 'R'], ['green', 'G']].filter(([w]) => new RegExp('\\b' + w + '\\b').test(what)).map(([, c]) => c);
     const kw = String(e.kws || '').split(/,\s*|\s+and\s+/).map(x => x.trim()).filter(Boolean);
-    return { n: sub, kw: kw.map(k => k[0].toUpperCase() + k.slice(1)), faces: [{ n: sub, t: 'Token ' + (/artifact/.test(what) ? 'Artifact ' : '') + (isCre ? 'Creature — ' : '— ') + sub, img: '', p: isCre ? String(e.p || '1') : '', tg: isCre ? String(e.t || '1') : '', mc: '', o: kw.join(', ') }] };
+    return { n: sub, col, kw: kw.map(k => k[0].toUpperCase() + k.slice(1)), faces: [{ n: sub, t: 'Token ' + (/artifact/.test(what) ? 'Artifact ' : '') + (isCre ? 'Creature — ' : '— ') + sub, img: '', p: isCre ? String(e.p || '1') : '', tg: isCre ? String(e.t || '1') : '', mc: '', o: kw.join(', ') }] };
   }
   function makeToken(s, pid, d, n, tapped, notes) {
     for (let i = 0; i < Math.min(n, 30); i++) {
@@ -1064,8 +1120,8 @@
     const pick = i => (i != null && legal[i]) ? legal[i] : [];
     const tcard = t => t && t.c && s.cards[t.c];
     const label = t => t.p ? nameOf(s, t.p) : (tcard(t) ? cardName(tcard(t)) : 'it');
-    const powers = {};
-    for (const l of legal) for (const t of l) if (tcard(t)) { const p = C.pt(s, tcard(t)); powers[t.c] = p ? p[0] : 0; }
+    const powers = {}, ctrlOf = {};
+    for (const l of legal) for (const t of l) if (tcard(t)) { const p = C.pt(s, tcard(t)); powers[t.c] = p ? p[0] : 0; ctrlOf[t.c] = tcard(t).ctrl; }
     let lostThisWay = 0;
     const hurt = (t, n) => {
       if (n <= 0) return;
@@ -1114,8 +1170,8 @@
           break;
         }
         case 'token': {
-          const owner = e.forTargetCtrl != null ? ((pick(e.forTargetCtrl)[0] && (pick(e.forTargetCtrl)[0].p || (tcard(pick(e.forTargetCtrl)[0]) || {}).owner)) || null) : by;
-          const owner2 = owner || (legal[e.forTargetCtrl] && legal[e.forTargetCtrl][0] && s.cards[legal[e.forTargetCtrl][0].c] ? s.cards[legal[e.forTargetCtrl][0].c].ctrl : by);
+          const ft = e.forTargetCtrl != null ? pick(e.forTargetCtrl)[0] : null;
+          const owner2 = ft ? (ft.p || ctrlOf[ft.c] || by) : by;
           const n = e.n === 'X' ? X : (e.n || 1);
           const d = tokenD(e);
           makeToken(s, s.players[owner2] ? owner2 : by, d, n, e.tapped, notes);
@@ -1136,7 +1192,8 @@
           if (who.length) notes.push(`${who.map(p => nameOf(s, p)).join(', ')} ${e.sign > 0 ? 'gained' : 'lost'} ${n} life (${srcName})`);
           break;
         }
-        case 'lifeEqPow': for (const t of T) { const c = s.cards[t.c]; const owner = c ? c.ctrl : null; const pw = powers[t.c] || 0; const who = owner || by; if (pw > 0 && s.players[who]) { s.players[who].life += pw; notes.push(`${nameOf(s, who)} gained ${pw} life`); } } break;
+        case 'lifeEqPow': for (const t of T) { const who = ctrlOf[t.c]; const pw = powers[t.c] || 0; if (pw > 0 && who && s.players[who]) { s.players[who].life += pw; notes.push(`${nameOf(s, who)} gained ${pw} life`); } } break;
+        case 'fetchCtrl': for (const t of T) { const who = ctrlOf[t.c]; if (who && s.players[who]) { todo(s, who, { k: 'fetch', n: 1, dest: 'battlefield', tapped: e.tapped, optional: true, src: srcName }); notes.push(`${nameOf(s, who)} may search for a basic land (${srcName})`); } } break;
         case 'fetch': todo(s, by, { k: 'fetch', n: e.n, dest: e.dest, tapped: e.tapped, split: e.split, src: srcName }); notes.push(`${nameOf(s, by)} searches for ${e.n === 1 ? 'a basic land' : e.n + ' basic lands'} (${srcName})`); break;
         case 'scry': todo(s, by, { k: 'scry', n: val(e.n), src: srcName }); break;
         case 'mill': { const who = e.who === 'target player' ? T.filter(t => t.p).map(t => t.p) : e.who === 'each opponent' ? s.seats.filter(p => p !== by) : s.seats.slice(); for (const p of who) todo(s, p, { k: 'mill', n: val(e.n), src: srcName }); break; }
@@ -1205,7 +1262,7 @@
           const t = s.cards[e.c]; if (!t) continue;
           if (isType(t, 'planeswalker') && !isType(t, 'creature')) { t.counters.loyalty = Math.max(0, (t.counters.loyalty || 0) - e.n); summary.push(`${cardName(e.src)} dealt ${e.n} damage to ${cardName(t)}`); }
           else if (isType(t, 'battle') && !isType(t, 'creature')) { t.counters.defense = Math.max(0, (t.counters.defense || 0) - e.n); }
-          else if (k.has('infect') || k.has('wither')) { t.counters['-1/-1'] = (t.counters['-1/-1'] || 0) + e.n; summary.push(`${cardName(e.src)} put ${e.n} −1/−1 counter${e.n > 1 ? 's' : ''} on ${cardName(t)}`); }
+          else if (k.has('infect') || k.has('wither')) { t.counters['-1/-1'] = (t.counters['-1/-1'] || 0) + e.n; if (k.has('deathtouch')) t.dtd = true; summary.push(`${cardName(e.src)} put ${e.n} −1/−1 counter${e.n > 1 ? 's' : ''} on ${cardName(t)}`); }
           else { t.dmg = (t.dmg || 0) + e.n; if (k.has('deathtouch')) t.dtd = true; summary.push(`${cardName(e.src)} dealt ${e.n} damage to ${cardName(t)}`); }
         }
         if (k.has('lifelink') && s.players[e.src.ctrl]) s.players[e.src.ctrl].life += e.n;

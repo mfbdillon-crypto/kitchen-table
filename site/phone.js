@@ -88,8 +88,9 @@ window.KTPhone = (function () {
       status === 'linked' && info.phase !== 'deciding' && info.phase !== 'bottom' ? h('button', { onclick: () => send({ t: 'draw' }), disabled: !info.lib }, 'Draw') : null);
     const parts = [head];
     if (banner) parts.push(h('div', { class: 'pbanner' }, banner));
+    if (status === 'linked' && info.over) parts.push(h('div', { class: 'pprio over' }, h('b', null, info.over), h('span', { class: 'muted' }, ' — rematch from your computer')));
     if (status === 'linked' && info.prio) parts.push(info.prio.mine
-      ? h('div', { class: 'pprio mine' }, h('span', null, h('b', null, 'Respond? '), info.prio.text), h('button', { class: 'primary', onclick: () => send({ t: 'pass' }) }, 'Pass'))
+      ? h('div', { class: 'pprio mine' }, h('span', null, h('b', null, info.prio.step ? 'Combat tricks? ' : 'Respond? '), info.prio.text), h('button', { class: 'primary', onclick: () => send({ t: 'pass' }) }, info.prio.step ? 'Continue' : 'Pass'))
       : h('div', { class: 'pprio' }, h('span', null, info.prio.text + ' — waiting for ' + info.prio.waiting)));
     if (info.phase === 'deciding') parts.push(h('div', { class: 'pask' }, h('span', null, info.mull ? `Mulligan ${info.mull}: keep this hand?` : 'Keep this opening hand?'),
       h('button', { class: 'primary', onclick: () => send({ t: 'keep' }) }, 'Keep'), h('button', { onclick: () => send({ t: 'mulligan' }) }, 'Mulligan')));
@@ -131,7 +132,10 @@ window.KTPhone = (function () {
         q.options.map(o => h('button', { class: o.value === '__none' ? 'ghost' : '', onclick: () => answer(o.value) }, o.label)),
         h('button', { class: 'ghost', onclick: () => answer(null) }, 'Cancel'))));
     }
+    // Re-rendering replaces the hand strip: keep where it was scrolled to.
+    const old = root.querySelector('.phand'), sl = old ? old.scrollLeft : 0;
     root.replaceChildren(h('div', { class: 'phone' }, parts));
+    const nw = root.querySelector('.phand'); if (nw && sl) nw.scrollLeft = sl;
   }
 
   if (G.MODE === 'hand') G.ready.then(start);
