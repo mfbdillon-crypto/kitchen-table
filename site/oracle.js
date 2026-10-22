@@ -47,7 +47,7 @@
     melee: 'Whenever this attacks, it gets +1/+1 until end of turn for each opponent you attacked this turn.',
     dethrone: 'Whenever this attacks the player with the most life or tied for most life, put a +1/+1 counter on this.',
     toxic: '',
-    cascade: 'When you cast this spell, exile cards from the top of your library until you exile a nonland card that costs less. You may cast it without paying its mana cost. Put the exiled cards on the bottom in a random order.'
+    cascade: 'When you cast this spell, cascade.'
   };
   const cache = new Map();
   function faceOf(c, i) { return c && c.d && c.d.faces ? c.d.faces[i == null ? (c.face || 0) : i] || c.d.faces[0] : null; }
@@ -148,6 +148,7 @@
     if ((m = e.match(/^(another |one or more (?:other )?)?((?:[a-z]+ )*?)(creatures?|permanents?) you control leaves? the battlefield(?: without dying)?$/))) return { type: 'leave', self: false, other: !!m[1] && /another|other/.test(m[1]), what: (m[2] || '') + m[3].replace(/s$/, ''), who: 'you', notDie: /without dying/.test(e), many: /one or more/.test(e) };
     if (/^an opponent plays a land$/.test(e)) return { type: 'enter', self: false, what: 'land', who: 'opp', played: true };
     if ((m = e.match(/^you put one or more (\+1\/\+1 )?counters on (?:a|an) ([a-z ]+?)(?: you control)?$/))) return { type: 'counter', kind: m[1] ? '+1/+1' : 'any', self: false, what: m[2] };
+    if (/^you cast this spell$/.test(e)) return { type: 'cast', who: 'you', self: true };
     if (/^you expend/.test(e)) return { type: 'other', text: e };
     return { type: 'other', text: e };
   }
@@ -370,7 +371,8 @@
         if (E.attached) return !!(ev.card && src.attachedTo === ev.card.id);
         if (E.toYou) return ev.player === ctrl && ev.card && ev.card.ctrl !== ctrl;
         return E.self ? !!(ev.card && ev.card.id === src.id) : whoOk(E.who, ev.card && ev.card.ctrl) && whatOk(E.what, ev.card);
-      case 'cast': return ev.type === 'cast' && whoOk(E.who, ev.player) && castWhatOk(E.what, ev.card) && (!E.first || ev.nth === 1) && (!E.second || ev.nth === 2);
+      case 'cast': if (E.self) return ev.type === 'cast' && ev.card && ev.card.id === src.id;
+        return ev.type === 'cast' && whoOk(E.who, ev.player) && castWhatOk(E.what, ev.card) && (!E.first || ev.nth === 1) && (!E.second || ev.nth === 2);
       case 'draw': return ev.type === 'draw' && whoOk(E.who, ev.player);
       case 'discard': return ev.type === 'discard' && whoOk(E.who, ev.player);
       case 'gainLife': return ev.type === 'gainLife' && whoOk(E.who, ev.player);

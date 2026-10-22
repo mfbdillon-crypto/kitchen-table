@@ -558,6 +558,9 @@
     if (a.loyalty !== undefined && ((T.loyal || {})[c.id] === T.n)) return 'already used a loyalty ability this turn';
     if (a.loyalty !== undefined && ((c.counters || {}).loyalty || 0) + a.loyalty < 0) return 'not enough loyalty';
     if (a.mana && CD.costTotal(a.mana, 0) && !CD.pay(a.mana, myMana().filter(m => !(a.tap && m.id === c.id)), 0)) return 'not enough mana';
+    if (a.crew) { const pw = Object.values(s.cards).filter(x => x.zone === 'battlefield' && x.ctrl === c.ctrl && x.id !== c.id && !x.tapped && (x.faceDown || R.isType(x, 'creature'))).reduce((t, x) => t + Math.max(0, (CD.pt(s, x) || [0])[0]), 0); if (pw < a.crew) return `needs untapped creatures with total power ${a.crew}`; }
+    if (a.sacOther && !Object.values(s.cards).some(x => x.zone === 'battlefield' && x.ctrl === c.ctrl && CD.matchesWhat(x, a.sacOther))) return `no ${a.sacOther} to sacrifice`;
+    if (a.life && (G.me() || {}).life < a.life) return 'not enough life';
     return null;
   }
   function handCard(c) { return { id: c.id, owner: KEY, ctrl: KEY, d: c.d, zone: 'hand', cmdr: c.cmdr, counters: {} }; }
@@ -820,13 +823,45 @@
     if (reqs.length) { tg = await pickTargets(`${R.cardName(c)}: trigger`, c, reqs, null, { d: { faces: [{ n: R.cardName(c), t: 'Instant', o: tr.text }] }, counters: {} }); if (!tg) return; }
     G.act({ type: 'trigger', id: c.id, i, tg });
   }
+  // Choose permanents of your own for a cost: crew (total power N) or "Sacrifice a Spirit".
+  function pickOwn(title, note, pool, done, enough) {
+    return new Promise(resolve => {
+      const sel = [];
+      openModal(title, b => {
+        b.append(h('p', { class: 'muted' }, note));
+        b.append(h('div', { class: 'pkchoices pics' }, pool.map(x => targetThumb({ c: x.id }, sel.includes(x.id), () => { const k = sel.indexOf(x.id); if (k >= 0) sel.splice(k, 1); else sel.push(x.id); if (done && sel.length === 1 && !enough) { closeModal(true); resolve(sel.slice()); return; } refreshModal(); }))));
+        if (enough) b.append(h('div', { class: 'row' }, h('button', { class: 'primary', disabled: !enough(sel), onclick: () => { closeModal(true); resolve(sel.slice()); } }, 'OK'), h('button', { onclick: () => { closeModal(true); resolve(null); } }, 'Cancel')));
+      }, { live: true, onClose: () => resolve(null) });
+    });
+  }
   async function activateFlow(c, i) {
     const ab = CD.abilities(c)[i];
     if (!ab) return;
+    const s0 = S();
+    const extra = {};
+    if (ab.crew) {
+      const pool = Object.values(s0.cards).filter(x => x.zone === 'battlefield' && x.ctrl === c.ctrl && x.id !== c.id && !x.tapped && (x.faceDown || R.isType(x, 'creature')));
+      const pw = ids => ids.reduce((t, id) => t + Math.max(0, (CD.pt(S(), S().cards[id]) || [0])[0]), 0);
+      const ids = await pickOwn(`Crew ${ab.crew}: ${R.cardName(c)}`, `Tap untapped creatures with total power ${ab.crew} or more (702.122). Summoning-sick creatures can crew.`, pool, false, sel => pw(sel) >= ab.crew);
+      if (!ids) return;
+      extra.crew = ids;
+    }
+    if (ab.sacOther) {
+      const pool = Object.values(s0.cards).filter(x => x.zone === 'battlefield' && x.ctrl === c.ctrl && (!/another/i.test(ab.cost) || x.id !== c.id) && CD.matchesWhat(x, ab.sacOther));
+      if (!pool.length) { G.toast(`You don’t control ${/^[aeiou]/.test(ab.sacOther) ? 'an' : 'a'} ${ab.sacOther} to sacrifice.`, 'err'); return; }
+      const ids = await pickOwn(`${R.cardName(c)}: sacrifice ${/^[aeiou]/.test(ab.sacOther) ? 'an' : 'a'} ${ab.sacOther}`, 'Choose the one to sacrifice.', pool, true);
+      if (!ids) return;
+      extra.sac = ids[0];
+    }
+    if (extra.crew || extra.sac || ab.manaAb) {
+      if (!ab.manaAb && CD.targetsIn(ab.text).length) { /* falls through to targets below */ }
+      else { if (CD.costTotal(ab.mana, 0) && !(await autoPay(c, 0, Object.assign({}, ab.mana, { hy: ab.mana.hy.slice(), ph: ab.mana.ph.slice() })))) return; return G.act(Object.assign({ type: 'activate', id: c.id, i, fromPool: G.lastFromPool }, extra)); }
+    }
     const reqs = CD.targetsIn(ab.text);
     let tg;
     if (reqs.length) { tg = await pickTargets(`${R.cardName(c)}: ${ab.cost}`, c, reqs, null, { d: { faces: [{ n: R.cardName(c), t: 'Instant', o: ab.text }] }, counters: {} }); if (!tg) return; }
     if (!(await autoPay(c, 0, Object.assign({}, ab.mana, { hy: ab.mana.hy.slice(), ph: ab.mana.ph.slice() })))) return;
+    if (extra.crew || extra.sac) return G.act(Object.assign({ type: 'activate', id: c.id, i, tg, fromPool: G.lastFromPool }, extra));
     G.activate(c.id, i, tg, 0, G.lastFromPool);
   }
 
@@ -898,6 +933,11 @@
       if (a.kind === 'assign') { G._askSeen[a.id] = 1; askNow(() => askAssign(a)); continue; }
       if (a.kind === 'legend') { G._askSeen[a.id] = 1; ask(() => askLegend(a)); continue; }
       if (a.kind === 'choose') { G._askSeen[a.id] = 1; ask(() => askChoose(a)); continue; }
+      if (a.kind === 'copy') { G._askSeen[a.id] = 1; ask(() => openAskModal(a, `${a.name} — enter as a copy of…`, b => {
+        b.append(h('p', { class: 'muted' }, `Choose the ${a.what} it copies (707.9), or let it enter as itself.`));
+        b.append(h('div', { class: 'pkchoices pics' }, a.choices.filter(id => S().cards[id]).map(id => targetThumb({ c: id }, false, () => { closeModal(true); answer(a, { pick: id }); setTimeout(pumpAsks, 50); }))));
+        b.append(h('div', { class: 'row' }, h('button', { onclick: () => { closeModal(true); answer(a, {}); setTimeout(pumpAsks, 50); } }, 'Don’t copy anything')));
+      }, { live: true, onClose: () => setTimeout(pumpAsks, 50) })); continue; }
     }
   }
   const answer = (a, extra) => G.act(Object.assign({ type: 'answer', id: a.id }, extra)).then(r => { if (r && !r.ok && r.err) { G.toast(r.err, 'err'); delete G._askSeen[a.id]; } render(); return r; });
@@ -1715,6 +1755,14 @@
         b.append(h('div', { class: 'strip pick' }, pool.length ? pool.map(c => cardEl(Object.assign({ zone: 'library', owner: KEY, counters: {} }, c), { noMenu: true, cls: sel.includes(c.id) ? 'sel' : '', onClick: () => { const i = sel.indexOf(c.id); if (i >= 0) sel.splice(i, 1); else if (sel.length < (t.n || 1)) sel.push(c.id); refreshModal(); } })) : h('p', { class: 'muted' }, 'Nothing in your library fits.')));
         b.append(h('div', { class: 'row' }, h('button', { class: 'primary', onclick: () => finish(sel.slice()) }, sel.length ? `Take ${sel.length}` : 'Find nothing'), h('span', { class: 'muted small' }, 'Your library is shuffled afterwards.')));
       }, { live: true, cls: 'wide', sticky: true, noEsc: true });
+      return;
+    }
+    if (t.k === 'cascade') {
+      const hit = G.cascadeReveal(t.mv || 0);
+      if (!hit) { ack(); return pumpAsks(); }
+      choose(`${t.src}: cascade`, `You hit ${hit.d.n}. Cast it without paying its mana cost?`, [
+        { label: `Cast ${hit.d.n} free`, primary: true, fn: async () => { await castFlow(hit, 'hand', { kind: 'free', cost: '' }); if (G.P.hand.some(c => c.id === hit.id)) G.cascadeDecline(hit.id); ack(); setTimeout(pumpAsks, 50); } },
+        { label: 'Don’t cast it (bottom of library)', fn: () => { G.cascadeDecline(hit.id); ack(); setTimeout(pumpAsks, 50); } }]);
       return;
     }
     // "Look at the top N cards…": the look window, with the card's instructions on top.

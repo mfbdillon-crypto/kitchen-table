@@ -113,7 +113,7 @@
   function leaveBattlefield(s, c, notes) {
     c.loySeen = false; c.defSeen = false; c.noUntap = false; c.zeroT = false; c.zeroOk = false;
     c.counters = {}; c.tapped = false; c.mod = null; c.attachedTo = null; c.ctrl = c.owner; c.row = null;
-    c.dmg = 0; c.dtd = false; c.grant = null; c.ctlT = null; c.alt = null; c.eot = null; c.chosen = null;
+    c.dmg = 0; c.dtd = false; c.grant = null; c.ctlT = null; c.alt = null; c.eot = null; c.chosen = null; c.animated = null; c.animPT = null; if (c.origD) { c.d = c.origD; c.origD = null; c.copyOf = null; }
     if (s.combat && s.combat.att) { delete s.combat.att[c.id]; for (const a of Object.values(s.combat.att)) a.blk = (a.blk || []).filter(x => x !== c.id); }
     for (const o of Object.values(s.cards)) {
       if (o.attachedTo === c.id) {
@@ -195,7 +195,23 @@
       const m = root.Cards.text(o).match(/(?:^|\n|\. )((?:[a-z]+(?:, | and | or ))*[a-z]+) your opponents control enter(?: the battlefield)? tapped/i);
       if (m && m[1].toLowerCase().split(/,\s*(?:and |or )?|\s+and\s+|\s+or\s+/).some(w => w && (w.replace(/s$/, '') === 'permanent' || root.Cards.isType(c, w.replace(/s$/, ''))))) return true;
     }
-    return root.Cards.text(c).split(/\n|\.\s+/).some(l => /^(this|this (land|creature|artifact|permanent)) enters(?: the battlefield)? tapped\.?$/i.test(l.trim()));
+    const t = root.Cards.text(c);
+    if (t.split(/\n|\.\s+/).some(l => /^(this|this (land|creature|artifact|permanent)) enters(?: the battlefield)? tapped\.?$/i.test(l.trim()))) return true;
+    // Conditional enters-tapped lands (305.7): "…enters tapped unless you control a Mountain or a Forest" and friends.
+    const m = t.match(/this (?:land )?enters(?: the battlefield)? tapped unless ([^.\n]+)/i);
+    if (!m || !s) return false;
+    const u = m[1].toLowerCase().trim(), who = c.ctrl;
+    const mine = Object.values(s.cards).filter(o => o.zone === 'battlefield' && o.ctrl === who && o.id !== c.id);
+    const lands = mine.filter(o => isType(o, 'land'));
+    let k;
+    if (/^you have two or more opponents/.test(u)) return s.seats.filter(p => p !== who && alive(s, p)).length < 2;
+    if ((k = u.match(/^you control two or fewer other lands/))) return lands.length > 2;
+    if ((k = u.match(/^you control two or more other lands/))) return lands.length < 2;
+    if ((k = u.match(/^you control (?:an? )?([a-z]+)(?: or (?:an? )?([a-z]+))?$/))) return !lands.concat(mine).some(o => [k[1], k[2]].filter(Boolean).some(w => isType(o, w)));
+    if ((k = u.match(/^you control two or more basic lands/))) return lands.filter(o => isType(o, 'basic')).length < 2;
+    if (/^a player has 13 or less life/.test(u)) return !s.seats.some(p => s.players[p] && s.players[p].life <= 13);
+    if ((k = u.match(/^you control a legendary (creature|permanent)/))) return !mine.some(o => isType(o, 'legendary') && (k[1] === 'permanent' || isType(o, 'creature')));
+    return false;
   }
   const ZONE_WORDS = { battlefield: 'the battlefield', stack: 'the stack', graveyard: 'the graveyard', exile: 'exile', command: 'the command zone', hand: 'hand', library: 'library' };
 
@@ -426,7 +442,12 @@
               c.tapped = !!a.tapped; changed++;
               // Tapped by hand for mana (not as part of paying for something): the mana goes into the pool.
               const key = s.turn.n;
-              if (a.tapped && !a.pay && c.manaAt !== key && !((c.faceDown || isType(c, 'creature')) && sick(s, c) && !(root.Cards && root.Cards.has(c, 'haste', s)))) { const u = unitsOf(c); if (u.length) { addPool(s, pid, u); c.manaAt = key; } }
+              if (a.tapped && !a.pay && c.manaAt !== key && !((c.faceDown || isType(c, 'creature')) && sick(s, c) && !(root.Cards && root.Cards.has(c, 'haste', s)))) {
+                const ms = root.Cards && root.Cards.manaSource(c);
+                // A Signet needs {1} from the pool to make its mana.
+                if (ms && ms.filter) { const P = s.players[pid]; if ((P.pool || []).length >= ms.filter) { spendPool(s, pid, { g: ms.filter, W: 0, U: 0, B: 0, R: 0, G: 0, C: 0, x: 0, hy: [], ph: [] }, 0); addPool(s, pid, ms.units.slice()); c.manaAt = key; } }
+                else { const u = unitsOf(c); if (u.length) { addPool(s, pid, u); c.manaAt = key; } }
+              }
             }
           }
           if (!changed) return { ok: true };
@@ -633,6 +654,8 @@
           // Random seating order and starting player (103.1 / 103.2).
           const order = s.seats.slice();
           for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
+          // Players who are out (or just watching) don't take turns.
+          order.sort((x, y) => (alive(s, x) ? 0 : 1) - (alive(s, y) ? 0 : 1));
           s.seats = order;
           s.turn = { active: order[0], phase: 1, n: 1, first: order[0], lands: {}, starts: { [order[0]]: 1 }, goal: 'main1' };
           return done(`randomized the turn order: ${order.map(x => nameOf(s, x)).join(' → ')}. ${nameOf(s, order[0])} goes first.`);
@@ -792,7 +815,7 @@
           if (!ab) return { ok: false, err: 'That ability isn’t on the card.' };
           if (ab.tap) {
             if (src.tapped) return { ok: false, err: `${cardName(src)} is already tapped.` };
-            if (sick(s, src)) return { ok: false, err: `${cardName(src)} hasn’t been under your control since your turn began, so it can’t use {T} abilities yet (summoning sickness, 302.6).` };
+            if ((src.faceDown || isType(src, 'creature')) && sick(s, src) && !(C.has(src, 'haste', s))) return { ok: false, err: `${cardName(src)} hasn’t been under your control since your turn began, so it can’t use {T} abilities yet (summoning sickness, 302.6).` };
           }
           if (ab.equip && (s.turn.active !== pid || stackCards(s).length || !/^Main/.test(PHASES[s.turn.phase]))) return { ok: false, err: 'Equip only as a sorcery: in your main phase with an empty stack (702.6a).' };
           {
@@ -811,15 +834,39 @@
           const tg = cleanTargets(a.tg, reqs.length);
           for (let i = 0; i < reqs.length; i++) for (const t of tg[i] || []) if (!C.legalTarget(s, reqs[i], t, pid)) return { ok: false, err: 'That isn’t a legal target for this ability.' };
           for (const t of [].concat(...tg)) if (t.c && s.cards[t.c] && C.protectedFrom(s.cards[t.c], src, s)) return { ok: false, err: `${cardName(s.cards[t.c])} has protection from ${cardName(src)}, so it can’t be targeted by its abilities (702.16b).` };
+          // Other costs: crew (tap creatures), sacrifice another permanent, pay life (602.2b, 118).
+          let crewNames = null, sacked = null;
+          if (ab.crew) {
+            const ids = [...new Set((a.crew || []).slice(0, 20))];
+            const crew = ids.map(id => s.cards[id]).filter(x => x && x.zone === 'battlefield' && x.ctrl === pid && x.id !== src.id && (x.faceDown || isType(x, 'creature')) && !x.tapped);
+            if (crew.length !== ids.length) return { ok: false, err: 'Crew with untapped creatures you control.' };
+            const pw = crew.reduce((t, x) => t + Math.max(0, (C.pt(s, x) || [0])[0]), 0);
+            if (pw < ab.crew) return { ok: false, err: `Crew ${ab.crew} needs creatures with total power ${ab.crew} or more (you chose ${pw}).` };
+            for (const x of crew) x.tapped = true;
+            crewNames = crew.map(cardName);
+          }
+          if (ab.sacOther) {
+            const v = s.cards[a.sac];
+            if (!v || v.zone !== 'battlefield' || v.ctrl !== pid || (/another/i.test(ab.cost) && v.id === src.id) || !C.matchesWhat(v, ab.sacOther)) return { ok: false, err: `Choose ${/^[aeiou]/.test(ab.sacOther) ? 'an' : 'a'} ${ab.sacOther} you control to sacrifice.` };
+            sacked = cardName(v); moveOne(s, v, 'graveyard', 'top', { sac: true }, notes);
+          }
+          if (ab.life) { if (me.life < ab.life) return { ok: false, err: `You need ${ab.life} life to pay.` }; me.life -= ab.life; }
           if (ab.tap) src.tapped = true;
           spendPool(s, pid, ab.mana, num(a.x, 0, 99) || 0, a.fromPool);
+          // Mana abilities don't use the stack (605.3).
+          if (ab.manaAb && root.Effects) {
+            const r = root.Effects.parse(ab.text);
+            for (const o of r.ops) if (o.op === 'addMana') addPool(s, pid, Array.isArray(o.units) ? o.units : ['WUBRG']);
+            if (ab.sac) moveOne(s, src, 'graveyard', 'top', { sac: true }, notes);
+            return done(`used ${cardName(src)}${sacked ? ' (sacrificed ' + sacked + ')' : ''}: ${ab.text}`);
+          }
           const id = 'ab' + (++s.seq) + '-' + src.id.slice(0, 12);
           s.cards[id] = { id, owner: pid, ctrl: pid, d: src.d, face: src.face || 0, faceDown: false, token: true, cmdr: false, tapped: false, counters: {}, mod: null,
             attachedTo: null, row: null, zone: 'stack', seq: ++s.seq, ab: { src: src.id, text: String(ab.text).slice(0, 400), name: cardName(src) }, tg, reqs, x: num(a.x, 0, 99) || 0 };
           wardFor(s, pid, s.cards[id], a);
           if (ab.sac) moveOne(s, src, 'graveyard', 'top', { sac: true }, notes);
           startPrio(s, pid, notes);
-          return done(`activated ${cardName(src)}: “${String(ab.text).replace(/^this /i, cardName(src) + ' ')}”${targetText(s, s.cards[id])}`);
+          return done(`activated ${cardName(src)}${crewNames ? ' (crewed by ' + listNames(crewNames) + ')' : ''}${sacked ? ' (sacrificed ' + sacked + ')' : ''}${ab.life ? ' (paid ' + ab.life + ' life)' : ''}: “${String(ab.text).replace(/^this /i, cardName(src) + ' ')}”${targetText(s, s.cards[id])}`);
         }
         case 'trigger': {
           // A triggered ability goes on the stack (603.3): its controller puts it there and picks targets.
@@ -1029,6 +1076,7 @@
           const fpt = face(c);
           const starPT = !c.faceDown && fpt && /\*/.test(String(fpt.tg || ''));
           const zero = !!(pt && pt[1] <= 0) && !starPT;
+          if (zero && root.Engine) { const nm = cardName(c); moveOne(s, c, 'graveyard', 'top', null, notes); notes.push(`${nm} had ${pt[1]} toughness and was put into the graveyard (704.5f)`); changed = true; continue; }
           if (zero && !c.zeroT && !c.zeroOk) notes.push(`${cardName(c)} has ${pt[1]} toughness — its controller should put it into the graveyard unless something else is boosting it`);
           c.zeroT = zero;
           if (!zero) c.zeroOk = false;
@@ -1142,7 +1190,7 @@
   function castCheck(s, pid, c, a) {
     const C = root.Cards;
     // Timing (307.1, 301.1): only instants and cards with flash can be cast outside your own main phase with an empty stack.
-    if (C && a && a.cast && !c.faceDown && !C.instantSpeed(c) && !isType(c, 'land')) {
+    if (C && a && a.cast && a.alt !== 'free' && !c.faceDown && !C.instantSpeed(c) && !isType(c, 'land')) {   // cast during an effect (cascade): no timing check (608.2g)
       if (s.turn.active && s.turn.active !== pid) return `${cardName(c)} isn’t an instant and doesn’t have flash, so you can cast it only during your own turn (307.1).`;
       if (s.turn.active && !/^Main/.test(PHASES[s.turn.phase])) return `${cardName(c)} can be cast only in one of your main phases (307.1).`;
       if (stackCards(s).length) return `${cardName(c)} can be cast only while the stack is empty (307.1).`;
@@ -1449,6 +1497,18 @@
   }
 
   // ======================= combat damage (510) =======================
+  // Toxic N, printed or granted ("Other Rats you control have toxic 1"); several instances add up (702.164c).
+  function toxicOf(s, c) {
+    const C = root.Cards; if (!C || c.faceDown) return 0;
+    let n = 0;
+    for (const m of C.text(c).matchAll(/(?:^|\n|, )toxic (\d+)/gi)) n += +m[1];
+    for (const o of Object.values(s.cards)) {
+      if (o.zone !== 'battlefield' || o.ctrl !== c.ctrl || o.faceDown || !o.d) continue;
+      const m = C.text(o).match(/(other )?([a-z ]+?)s? you control have toxic (\d+)/i);
+      if (m && !(m[1] && o.id === c.id) && C.matchesWhat(c, m[2].replace(/s$/, ''))) n += +m[3];
+    }
+    return n;
+  }
   function combatDamage(s, notes) {
     const C = root.Cards, K = s.combat;
     if (!K || K.done) return;
@@ -1521,6 +1581,8 @@
         if (e.p) {
           const P = s.players[e.p]; if (!P) continue;
           if (k.has('infect')) P.poison += e.n; else P.life -= e.n;
+          // Toxic N (702.164): combat damage to a player also gives them N poison counters.
+          { const tx = toxicOf(s, e.src); if (tx) { P.poison += tx; summary.push(`${nameOf(s, e.p)} got ${tx} poison counter${tx > 1 ? 's' : ''} (toxic)`); } }
           if (e.src.cmdr) P.cmdDmg[e.src.id] = (P.cmdDmg[e.src.id] || 0) + e.n;
           if (root.Engine) root.Engine.emit({ type: 'combatDamage', card: e.src, to: 'player', player: e.p, n: e.n });
           summary.push(`${cardName(e.src)} dealt ${e.n} ${k.has('infect') ? 'poison ' : ''}damage to ${nameOf(s, e.p)}`);
@@ -1535,12 +1597,14 @@
         if (k.has('lifelink') && s.players[e.src.ctrl]) s.players[e.src.ctrl].life += e.n;
       }
       for (const p of s.seats) alertChecks(s, p);
+      // The damage line first, then what died from it (state-based actions, 704.3).
+      if (summary.length) { notes.push((first ? 'First-strike damage: ' : 'Combat: ') + summary.join('; ')); anyDmg = true; summary.length = 0; }
       sba(s, notes);
     };
+    let anyDmg = false;
     if (twoSteps) step(true);
     step(false);
-    if (summary.length) notes.push('Combat: ' + summary.join('; '));
-    else notes.push('Combat: no damage was dealt');
+    if (!anyDmg) notes.push('Combat: no damage was dealt');
     // After combat damage the turn moves on by itself: end of combat (triggers), then main phase 2.
     if (root.Engine) s.turn.goal = 'main2'; else s.turn.phase = PI('Main 2');
   }

@@ -16,6 +16,7 @@
   let CUR = null;
   function setState(s) { CUR = s; }
   function isType(c, w) {
+    if (c && c.animated && c.zone === 'battlefield' && new RegExp('\\b' + w + '\\b', 'i').test(c.animated)) return true;   // crewed Vehicle, animated land
     if (!new RegExp('\\b' + w + '\\b', 'i').test(typeLine(c))) return false;
     if (/^creatures?$/i.test(w) && CUR && c && c.zone === 'battlefield' && !c.faceDown && notCreatureNow(CUR, c)) return false;
     return true;
@@ -127,14 +128,23 @@
     if (c.faceDown) { p = 2; t = 2; }
     else {
       const f = face(c);
-      if (!f || f.p === '' || f.tg === '' || f.p == null) return null;
+      if ((!f || f.p === '' || f.tg === '' || f.p == null) && !c.animPT) return null;
       p = parseInt(f.p, 10); t = parseInt(f.tg, 10);
+      if (c.animPT) { p = c.animPT[0]; t = c.animPT[1]; }
       if (isNaN(p)) p = 0; if (isNaN(t)) t = 0;   // */* creatures: the table can't count, so 0 plus boosts
     }
     const k = c.counters || {};
     p += (k['+1/+1'] || 0) - (k['-1/-1'] || 0); t += (k['+1/+1'] || 0) - (k['-1/-1'] || 0);
     if (c.mod) { p += c.mod[0]; t += c.mod[1]; }
     if (s) { const st = statics(s, c); p += st.p; t += st.t; }
+    // "This creature gets +1/+0 for each other Rat you control." (Rat Colony and friends)
+    if (s && s.cards && !c.faceDown && c.zone === 'battlefield') for (const line of lines(c)) {
+      const m = line.match(/^this (?:creature )?gets ([+-]\d+)\/([+-]\d+) for each (other )?(.+?) you control\.?$/i);
+      if (!m) continue;
+      const w = m[4].toLowerCase().replace(/(elv|dwarv|wolv)es$/, x => x.slice(0, -3) + 'f').replace(/ies$/, 'y').replace(/s$/, '');
+      const n = Object.values(s.cards).filter(o => o.zone === 'battlefield' && o.ctrl === c.ctrl && !(m[3] && o.id === c.id) && matchesWhat(o, w)).length;
+      p += +m[1] * n; t += +m[2] * n;
+    }
     return [p, t];
   }
 
@@ -153,7 +163,26 @@
     }
     return r;
   }
-  function costOf(c) { const f = face(c); return parseCost(f && f.mc); }
+  function costOf(c, raw) {
+    const f = face(c); const r = parseCost(f && f.mc);
+    if (raw || !CUR || !CUR.cards || !c || c.zone === 'battlefield' || c.zone === 'stack') return r;
+    // Cost changes from permanents (601.2f): "Creature spells you cast cost {1} less", Herald's Horn, Thalia's "Noncreature spells cost {1} more".
+    const who = c.ctrl || c.owner;
+    let delta = 0;
+    const fits = f0 => { const w = String(f0 || '').trim().toLowerCase(); if (!w || w === 'any') return true; return w.split(/\s+or\s+|,\s*/).some(x => matchesWhat(c, x.replace(/s$/, ''))); };
+    for (const o of Object.values(CUR.cards)) {
+      if (o.zone !== 'battlefield' || o.faceDown || !o.d) continue;
+      const t = text(o);
+      for (const line of t.split('\n')) {
+        let m = line.match(/^([A-Za-z ]*?)spells you cast(?: of the chosen type)? cost \{(\d+)\} less to cast\.?$/i);
+        if (m && o.ctrl === who) { if (/of the chosen type/i.test(line) && !(o.chosen && new RegExp('\\b' + o.chosen + '\\b', 'i').test(typeLine(c)))) continue; if (fits(m[1])) delta -= +m[2]; continue; }
+        m = line.match(/^([A-Za-z ]*?)spells (your opponents cast )?cost \{(\d+)\} more to cast\.?$/i);
+        if (m && (!m[2] || o.ctrl !== who) && fits(m[1])) delta += +m[3];
+      }
+    }
+    r.g = Math.max(0, r.g + delta);
+    return r;
+  }
   function manaValue(c) { return (c && c.d && +c.d.cmc) || 0; }
   function costTotal(r, x) { return r.g + r.W + r.U + r.B + r.R + r.G + r.C + r.hy.length + r.ph.length + r.x * (x || 0); }
 
@@ -163,6 +192,9 @@
     const tl = typeLine(c).toLowerCase();
     let best = null;
     for (const line of lines(c)) {
+      // Filter mana (Signets, Talismans' cousins): "{1}, {T}: Add {R}{W}." — needs one other mana fed in.
+      const fm = line.match(/^\{(\d)\}, \{T\}: Add ((?:\{[WUBRGC]\})+)\.?$/i);
+      if (fm) { const pips = [...fm[2].matchAll(/\{([WUBRGC])\}/gi)].map(x => x[1].toUpperCase()); const src = { amount: pips.length, colors: [...new Set(pips)].join(''), units: pips, filter: +fm[1], sac: false }; if (!best) best = src; continue; }
       const m = line.match(/^\{T\}(?:, ([^:]+))?: Add (.+?)\.?$/i);
       if (!m) continue;
       const extra = (m[1] || '').toLowerCase();
@@ -199,7 +231,27 @@
   }
 
   // Pay a cost from a list of sources [{id, amount, colors}]: returns the ids to tap, or null.
+  // Filter sources (a Signet) are used only when needed, each fed by one other mana (605).
   function pay(cost, sources, x) {
+    const plain = sources.filter(s => !s.filter), filters = sources.filter(s => s.filter);
+    let r = pay0(cost, plain, x);
+    if (r || !filters.length) return r;
+    let pool = plain.slice(); const extra = [];
+    for (const f of filters) {
+      // Feed it with the least useful single mana (prefer colorless, then the widest).
+      const feeders = pool.filter(p => p.amount === 1).sort((a, b) => (a.colors === 'C' ? -1 : 0) - (b.colors === 'C' ? -1 : 0) || b.colors.length - a.colors.length);
+      for (const fd of feeders) {
+        const trial = pool.filter(p => p !== fd).concat([{ id: f.id, amount: f.amount, colors: f.colors, units: f.units }]);
+        r = pay0(cost, trial, x);
+        if (r) return r.concat(extra, [fd.id]);
+      }
+      // Not enough yet: keep this one fed by the first feeder and try adding another filter.
+      if (!feeders.length) break;
+      const fd = feeders[0]; pool = pool.filter(p => p !== fd).concat([{ id: f.id, amount: f.amount, colors: f.colors, units: f.units }]); extra.push(fd.id);
+    }
+    return null;
+  }
+  function pay0(cost, sources, x) {
     const need = [];
     for (const col of ['W', 'U', 'B', 'R', 'G', 'C']) for (let i = 0; i < cost[col]; i++) need.push(col);
     for (const col of cost.ph) need.push(col);
@@ -629,10 +681,18 @@
   function abilities(c) {
     const out = [];
     for (const line of lines(c)) {
-      const m = line.match(/^((?:\{[^}]+\}|,|\s|tap|sacrifice this[a-z ]*|discard a card|pay \d+ life|remove [a-z ]+ counters? from this[a-z ]*)+?):\s*(.+)$/i);
+      const m = line.match(/^((?:\{[^}]+\}|,|\s|tap|sacrifice this[a-z ]*|sacrifice (?:an?|another) [a-z ]+?|discard a card|pay \d+ life|remove [a-z ]+ counters? from this[a-z ]*)+?):\s*(.+)$/i);
       if (!m) continue;
-      if (/^add\b/i.test(m[2])) continue;           // mana abilities don't use the stack
-      out.push({ cost: m[1].trim(), tap: /\{T\}/.test(m[1]), sac: /sacrifice this/i.test(m[1]), mana: parseCost(m[1].replace(/\{T\}|\{Q\}/g, '')), text: m[2].trim() });
+      const sacOther = (m[1].match(/sacrifice (?:an?|another) ([a-z ]+?)\s*(?:,|$)/i) || [])[1] || null;
+      const life = +((m[1].match(/pay (\d+) life/i) || [])[1] || 0);
+      // Tap-only mana abilities are used by tapping the card; ones with other costs (Kykar's "Sacrifice a Spirit: Add {R}") are in the menu.
+      if (/^add\b/i.test(m[2]) && !sacOther && !life && !/\{\d+\}/.test(m[1])) continue;
+      out.push({ cost: m[1].trim(), tap: /\{T\}/.test(m[1]), sac: /sacrifice this/i.test(m[1]), sacOther: sacOther && sacOther.trim(), life, manaAb: /^add\b/i.test(m[2]), mana: parseCost(m[1].replace(/\{T\}|\{Q\}/g, '')), text: m[2].trim() });
+    }
+    // Crew N (702.122): tap untapped creatures with total power N or more — the Vehicle becomes an artifact creature until end of turn.
+    for (const line of lines(c)) {
+      const m = line.match(/^crew (\d+)/i);
+      if (m) out.push({ cost: 'Crew ' + m[1], crew: +m[1], tap: false, sac: false, mana: parseCost(''), text: 'This becomes an artifact creature until end of turn.' });
     }
     // Equip {N}: attach to a creature you control, only as a sorcery (702.6).
     for (const line of lines(c)) {

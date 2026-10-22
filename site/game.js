@@ -309,6 +309,18 @@
   G.attack = list => act({ type: 'attack', list });
   G.block = list => act({ type: 'block', list });
   G.fromLibrary = (ids, zone, opts) => toPublic(P.library, ids, zone, opts, 'library');
+  // Cascade (702.85): exile from the top until a nonland card with lesser mana value; it may be cast free; the rest go to the bottom in a random order.
+  G.cascadeReveal = function (mv) {
+    const out = []; let hit = null;
+    while (P.library.length) { const c = P.library.shift(); out.push(c); if (!isLand(c) && (+c.d.cmc || 0) < mv) { hit = c; break; } }
+    const rest = out.filter(c => c !== hit);
+    shuffle(rest); P.library.push(...rest);
+    if (hit) P.hand.push(hit);         // held in hand only while its controller decides; cast it or it goes to the bottom
+    savePriv();
+    log(`cascaded: revealed ${plural(out.length, 'card')}${hit ? ', hitting ' + hit.d.n : ' and hit nothing'}; the rest went to the bottom in a random order`);
+    return hit;
+  };
+  G.cascadeDecline = function (id) { const i = P.hand.findIndex(c => c.id === id); if (i < 0) return; const [c] = P.hand.splice(i, 1); P.library.push(c); savePriv(); log(`put ${c.d.n} on the bottom of their library (didn’t cast it with cascade)`); };
 
   G.handToLibrary = function (ids, pos) {
     const cards = take(P.hand, ids);

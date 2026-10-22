@@ -78,7 +78,7 @@
     let optional = false, ifDid = false, m;
     if ((m = s.match(/^if you do,? (.+)$/))) { ifDid = true; s = m[1]; }
     if ((m = s.match(/^you may (.+)$/))) { optional = true; s = m[1]; }
-    const wrap = op => op && Object.assign(op, optional ? { optional: true } : {}, ifDid ? { ifDid: true } : {});
+    const wrap = op => op && Object.assign(op, optional ? { optional: true } : {}, ifDid ? { ifDid: true } : {}, op.op !== 'manual' && !op.src ? { src: raw.trim().replace(/\.$/, '').replace(/^./, x => x.toUpperCase()) } : {});
     // Subject + verb.
     let subj = { k: 'you' }, body = s;
     const sm = s.match(/^(you|each opponent|each player|each other player|target player|target opponent|that player|they|its controller|its owner|that creature's controller|enchanted creature's controller|defending player|the defending player|that opponent) (.+)$/);
@@ -94,6 +94,10 @@
       return ops.map(wrap);
     }
     if ((m = s.match(/^(?:this|it) deals (\d+|x) damage$/)) && st.lastTo) return [wrap({ op: 'dmg', src: 'self', n: amt(m[1]), to: st.lastTo })];
+    if (/^cascade$/.test(s)) return [wrap({ op: 'cascade' })];
+    if ((m = body.match(/^gets? (a|an|one|two|three|\d+|x) poison counters?$/))) return [wrap({ op: 'poison', who: subj, n: amt(m[1]) })];
+    if ((m = s.match(/^double the power and toughness of (.+?) until end of turn$/))) { const what = targetOf(m[1], st); if (what) return [wrap({ op: 'doublePT', what })]; }
+    if (/^do this only once each turn$|^this ability triggers only once each turn$/.test(s)) return [];
     // Energy (107.14): "you get {E}{E}", "you get that many {E}".
     if ((m = body.match(/^gets? ((?:\{e\})+)$/))) return [wrap({ op: 'energy', who: subj, n: m[1].length / 3 })];
     if ((m = body.match(/^gets? that many \{e\}$/))) return [wrap({ op: 'energy', who: subj, n: { v: 'thatMany' } })];

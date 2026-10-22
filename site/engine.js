@@ -99,6 +99,7 @@
       const pool = onBf.slice();
       if (ev.type === 'die' || ev.type === 'leave') for (const c of left) if (!pool.some(x => x.id === c.id)) pool.push(c);
       if (ev.type === 'toGraveyard' && ev.card && ev.card.zone === 'graveyard' && !pool.includes(ev.card)) pool.push(ev.card);
+      if (ev.type === 'cast' && ev.card && ev.card.zone === 'stack' && !pool.includes(ev.card)) pool.push(ev.card);   // "When you cast this spell" (cascade, Eldrazi)
       for (const src of pool) {
         if (!src.d || src.faceDown) continue;
         const M = O().model(src); if (!M) continue;
@@ -107,6 +108,8 @@
           const isLeave = a.event.type === 'die' || a.event.type === 'leave';
           if (leftIds.has(src.id) && !isLeave && !(ev.type === 'toGraveyard' && a.event.type === 'toGraveyard')) return;
           if (src.zone === 'graveyard' && a.event.type !== 'toGraveyard') return;
+          if (src.zone === 'stack' && !(a.event.type === 'cast' && a.event.self)) return;
+          if (src.zone === 'battlefield' && a.event.type === 'cast' && a.event.self) return;
           let ok = false; try { ok = O().fires(s, src, a, ev); } catch (e) { ok = false; }
           if (!ok) return;
           if (/\bone or more\b/.test(a.eventText || '') || a.event.many) { const k = src.id + '#' + i + '#' + (ev.player || ''); if (manyDone.has(k)) return; manyDone.add(k); }
@@ -144,8 +147,22 @@
         const ask = { id: 'a' + (++s.seq), kind: 'enterOpt', pid: c.ctrl, card: c.id, name: cardName(c), text: a.text, life: m[2] ? +m[2] : 0, since: Date.now() };
         if (isAI(s, c.ctrl) || !I().live(s, c.ctrl)) { if (m[2] && s.players[c.ctrl].life > 10) s.players[c.ctrl].life -= +m[2]; else if (m[2]) c.tapped = true; continue; }
         s.ask = (s.ask || []).concat([ask]);
+      } else if ((m = t.match(/^you may have this enter(?: the battlefield)? as a copy of (?:any|an?) (creature|artifact|enchantment|permanent|land)(?: [a-z ]*?)?(?: on the battlefield)?\b/))) {
+        // Clones (707.9): pick what it copies as it enters.
+        const kind = m[1];
+        const choices = Object.values(s.cards).filter(o => o.zone === 'battlefield' && o.id !== c.id && !o.faceDown && o.d && (kind === 'permanent' || I().isType(o, kind))).map(o => o.id);
+        if (!choices.length) continue;
+        const ask = { id: 'a' + (++s.seq), kind: 'copy', pid: c.ctrl, card: c.id, name: cardName(c), what: kind, choices, since: Date.now() };
+        if (isAI(s, c.ctrl) || !I().live(s, c.ctrl)) { const best = choices.map(id => s.cards[id]).sort((a, b) => ((+b.d.cmc) || 0) - ((+a.d.cmc) || 0))[0]; becomeCopy(s, c, best, notes); continue; }
+        s.ask = (s.ask || []).concat([ask]);
       } else if (/^as this enters, note your life total/.test(t)) { c.noted = s.players[c.ctrl] ? s.players[c.ctrl].life : 0; }
     }
+  }
+  function becomeCopy(s, c, of, notes) {
+    if (!of || !of.d) return;
+    const nm = cardName(c);
+    c.origD = c.origD || c.d; c.d = JSON.parse(JSON.stringify(of.d)); c.face = of.face || 0; c.copyOf = of.id; c.row = I().rowFor(c);
+    notes.push(`${nm} entered as a copy of ${cardName(of)} (707.9)`);
   }
   function defaultChoice(s, c, what) {
     if (what === 'color') { const cs = Cd().colorsOf(c); return ({ W: 'white', U: 'blue', B: 'black', R: 'red', G: 'green' })[cs[0] || 'W']; }
@@ -469,7 +486,7 @@
         if (nx && nx.op === 'instead' && condOk(nx.cond)) { runList(nx.ops, off); continue; }
         if (o.ifDid && !st.did) continue;
         if (o.optional && ab.may === false) { st.did = false; continue; }
-        try { one(o); } catch (e) { st.manual.push(String(o.text || o.op)); }
+        try { one(o); } catch (e) { st.manual.push(String(o.text || (typeof o.src === 'string' ? o.src : '') || o.op)); }
       }
     };
     const one = o => {
@@ -589,6 +606,20 @@
           }
           break;
         }
+        case 'animate': {
+          // "becomes a 3/3 Elemental creature with haste until end of turn", crewed Vehicles (205.1b keeps its other types).
+          for (const c of cards(o.what)) {
+            c.animated = String(o.types || 'creature').toLowerCase(); c.animPT = o.p && o.t ? [o.p === 'x' ? X : +o.p, o.t === 'x' ? X : +o.t] : null;
+            c.row = 'creatures'; badge(c, { label: c.animPT ? `${c.animPT[0]}/${c.animPT[1]} ${c.animated}` : (/vehicle/i.test(R.typeLine(c)) ? 'crewed' : c.animated), until: 'eot', animate: true });
+            if (o.kws) grantTo(c, o.kws);
+            notes.push(`${cardName(c)} became ${c.animPT ? c.animPT.join('/') + ' ' : 'an '}${c.animated} until end of turn`);
+            emit({ type: 'crewed', card: c });
+          }
+          break;
+        }
+        case 'cascade': R.todo(s, by, { k: 'cascade', mv: ctx.mv || (+((item.d || {}).cmc) || 0), src: srcName }); notes.push(`${srcName}: cascade (${nameOf(s, by)} reveals until a cheaper nonland card)`); break;
+        case 'poison': { const n = val(o.n); for (const p of players(o.who)) { const P = s.players[p]; if (P) P.poison = (P.poison || 0) + n; } notes.push(`${R.listNames(players(o.who).map(p => nameOf(s, p)))} got ${n} poison counter${n > 1 ? 's' : ''} (${srcName})`); break; }
+        case 'doublePT': for (const c of cards(o.what)) { const v = C.pt(s, c) || [0, 0]; c.mod = [(c.mod ? c.mod[0] : 0) + v[0], (c.mod ? c.mod[1] : 0) + v[1]]; badge(c, { label: `+${v[0]}/+${v[1]}`, until: 'eot' }); } notes.push(`${srcName} doubled power and toughness until end of turn`); break;
         case 'biggest': {
           for (const p of players(o.who)) {
             const cs = Object.values(s.cards).filter(c => c.zone === 'battlefield' && c.ctrl === p && (c.faceDown || R.isType(c, 'creature')));
@@ -622,7 +653,7 @@
         case 'look': R.todo(s, by, { k: 'look', n: val(o.n), reveal: !!o.reveal, text: o.text, src: srcName }); break;
         case 'addlCost': case 'altCost': case 'choose': case 'rest': break;
         case 'manual': st.manual.push(o.text); break;
-        default: st.manual.push(o.text || o.op);
+        default: st.manual.push(o.text || (typeof o.src === 'string' ? o.src : '') || o.op);
       }
     };
     runList(ops, 0);
@@ -713,6 +744,12 @@
       notes.push(`${cardName(c)}: ${nameOf(s, ask.pid)} chose ${ask.what === 'player' || ask.what === 'opponent' ? nameOf(s, v) : v}`);
       return { ok: true };
     }
+    if (ask.kind === 'copy') {
+      const c = s.cards[ask.card]; if (!c) return { ok: true };
+      if (a.pick && ask.choices.includes(a.pick) && s.cards[a.pick]) becomeCopy(s, c, s.cards[a.pick], notes);
+      else notes.push(`${cardName(c)} entered as itself (no copy)`);
+      return { ok: true };
+    }
     if (ask.kind === 'enterOpt') {
       const c = s.cards[ask.card]; if (!c) return { ok: true };
       if (a.yes && ask.life) { s.players[ask.pid].life -= ask.life; notes.push(`${nameOf(s, ask.pid)} paid ${ask.life} life so ${cardName(c)} entered untapped`); }
@@ -743,7 +780,7 @@
       if (ask.kind === 'manual') { if (now - ask.since > 10 * 60000) { s.ask = s.ask.filter(x => x !== ask); changed = true; } continue; }
       s.ask = s.ask.filter(x => x !== ask); changed = true;
       if (ask.kind === 'assign') { const K = s.combat; if (K && !K.done) { K.assign = K.assign || {}; K.assign[ask.att] = 'auto'; I().combatDamage(s, notes); } continue; }
-      if (ask.kind === 'choose' || ask.kind === 'enterOpt') { s.ask.push(ask); answer(s, ask.pid, { id: ask.id, value: '', yes: false }, notes); continue; }
+      if (ask.kind === 'choose' || ask.kind === 'enterOpt' || ask.kind === 'copy') { s.ask.push(ask); answer(s, ask.pid, { id: ask.id, value: '', yes: false }, notes); continue; }
       if (ask.kind === 'legend') { s.ask.push(ask); answer(s, ask.pid, { id: ask.id, keep: ask.ids[ask.ids.length - 1] }, notes); continue; }
       if (ask.kind === 'may') { const it = s.cards[ask.item]; if (it && it.ab) { it.ab.may = false; it.ab.condOk = false; } notes.push(`${ask.name}: no answer in time, so it wasn’t used`); if (s.prio) { s.prio.holder = null; R.nextHolder(s, notes); } }
       else { const q = (s.tq || []).find(x => x.id === ask.q); if (q) q.timeout = true; for (const q2 of s.tq || []) if (ask.kind === 'order') q2.ordered = true; place(s, notes); }
@@ -763,6 +800,7 @@
       for (const b of c.eot) {
         if (b.until && b.until !== 'eot') { keep.push(b); continue; }
         if (b.counter && c.counters && c.counters[b.counter]) { c.counters[b.counter]--; if (!c.counters[b.counter]) delete c.counters[b.counter]; }
+        if (b.animate) { c.animated = null; c.animPT = null; if (c.zone === 'battlefield') c.row = I().rowFor(c); }
       }
       c.eot = keep.length ? keep : null;
     }
