@@ -15,13 +15,14 @@ window.KTPhone = (function () {
     return e;
   }
 
+  let push = 'hand', chat = null, tab = 'hand', draft = '', chatTo = null;
   let cards = [], info = {}, status = 'connecting', banner = null, bannerT = null, sel = null, client = null, choose = null;
   const bottomSel = new Set();
   const send = m => client && client.send(m);
 
   function onMsg(m) {
     if (!m || typeof m !== 'object') return;
-    if (m.t === 'hand') { cards = m.cards || []; info = m.info || {}; if (sel && !cards.some(c => c.id === sel)) sel = null; render(); }
+    if (m.t === 'hand') { push = m.push || 'hand'; chat = m.chat || null; if (push !== 'both') tab = push; cards = m.cards || []; info = m.info || {}; if (sel && !cards.some(c => c.id === sel)) sel = null; render(); }
     if (m.t === 'choose') { choose = m; sel = null; render(); return; }
     if (m.t === 'banner') {
       banner = m.text; clearTimeout(bannerT);
@@ -87,6 +88,20 @@ window.KTPhone = (function () {
       status === 'linked' && info.phase !== 'deciding' && info.phase !== 'bottom' && !cards.length && info.lib && info.phase !== 'kept' ? h('button', { class: 'primary', onclick: () => send({ t: 'opening' }) }, 'Opening hand') : null,
       status === 'linked' && info.phase !== 'deciding' && info.phase !== 'bottom' ? h('button', { onclick: () => send({ t: 'draw' }), disabled: !info.lib }, 'Draw') : null);
     const parts = [head];
+    if (status === 'linked' && push === 'both') parts.push(h('div', { class: 'ptabs' }, h('button', { class: tab === 'hand' ? 'on' : '', onclick: () => { tab = 'hand'; render(); } }, 'Hand'), h('button', { class: tab === 'chat' ? 'on' : '', onclick: () => { tab = 'chat'; render(); } }, 'Chat')));
+    if (status === 'linked' && chat && tab === 'chat') {
+      // The AI chat box on the phone: read what the AI players say and ask them things.
+      const log = h('div', { class: 'pchat' }, chat.lines.length ? chat.lines.map(l => h('div', { class: 'pline' + (l.mine ? ' mine' : '') }, h('b', null, l.who + (l.to ? ' → ' + l.to : '') + ': '), l.text)) : h('div', { class: 'pempty' }, 'No chat yet.'));
+      const inp = h('input', { type: 'text', value: draft, placeholder: chat.ais.length ? 'Ask the AI…' : 'No AI players at the table', oninput: e => { draft = e.target.value; }, onkeydown: e => { if (e.key === 'Enter') go(); } });
+      const go = () => { const t = draft.trim(); if (!t) return; send({ t: 'chat', text: t, to: chatTo || (chat.ais[0] || {}).id }); draft = ''; inp.value = ''; };
+      parts.push(log, h('div', { class: 'pchatin' }, chat.ais.length > 1 ? h('select', { onchange: e => { chatTo = e.target.value; } }, chat.ais.map(a => h('option', { value: a.id, selected: a.id === chatTo }, a.name))) : null, inp, h('button', { class: 'primary', onclick: go, disabled: !chat.ais.length }, 'Send')));
+      const hadFocus = document.activeElement && document.activeElement.tagName === 'INPUT';
+      const root0 = document.getElementById('app');
+      root0.replaceChildren(h('div', { class: 'phone' }, parts));
+      const pc = root0.querySelector('.pchat'); if (pc) pc.scrollTop = pc.scrollHeight;
+      if (hadFocus) { const i2 = root0.querySelector('.pchatin input'); if (i2) { i2.focus(); i2.setSelectionRange(i2.value.length, i2.value.length); } }
+      return;
+    }
     if (banner) parts.push(h('div', { class: 'pbanner' }, banner));
     if (status === 'linked' && info.over) parts.push(h('div', { class: 'pprio over' }, h('b', null, info.over), h('span', { class: 'muted' }, ' — rematch from your computer')));
     if (status === 'linked' && info.prio) parts.push(info.prio.mine

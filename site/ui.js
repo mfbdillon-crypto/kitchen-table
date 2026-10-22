@@ -252,6 +252,7 @@
   function canAct(c) {
     if (!c || !G.seated()) return false;
     if (c.zone === 'hand' || c.zone === 'library') return c.owner === KEY;
+    if (S().dev && S().hostPid === KEY) return true;     // developer debugging: every public card
     return R.canAct(S(), KEY, c);
   }
 
@@ -300,7 +301,8 @@
     }
     if (c.token && !c.ab) el.append(h('div', { class: 'tag tok' }, 'Token'));
     if (c.zone === 'battlefield' && c.dmg) el.append(h('div', { class: 'tag dmg', title: 'Damage marked this turn' }, c.dmg + ' dmg'));
-    if (c.zone === 'battlefield' && c.grant && c.grant.length) el.append(h('div', { class: 'tag grant', title: 'Until end of turn' }, c.grant.join(', ')));
+    if (c.zone === 'battlefield' && c.eot && c.eot.length) el.append(h('div', { class: 'tag eot', title: 'Until end of turn (or until its controller’s next turn) — removed automatically' }, c.eot.map(b => b.label.replace(/^protection from /, 'pro ')).join(' · ') + ' EOT'));
+    else if (c.zone === 'battlefield' && c.grant && c.grant.length) el.append(h('div', { class: 'tag grant', title: 'Until end of turn' }, c.grant.join(', ')));
     const K = S() && S().combat;
     if (c.zone === 'battlefield' && K && !K.done && K.att && K.att[c.id]) { const d = K.att[c.id].def; el.classList.add('attacking'); el.append(h('div', { class: 'tag atk' }, '⚔ ' + (d.p ? nameOf(d.p) : R.cardName(S().cards[d.c] || {})))); }
     if (c.zone === 'battlefield' && K && !K.done && K.att && Object.values(K.att).some(a => (a.blk || []).includes(c.id))) { el.classList.add('blocking'); el.append(h('div', { class: 'tag blk' }, '🛡 blocking')); }
@@ -390,8 +392,35 @@
           closeModal(); it.fn();
         } }, it.label + (it.sub ? ' ›' : '')));
       }
-      b.append(h('div', { class: 'ewrap' }, pic, h('div', { class: 'eside' }, previewInfo(c), acts)));
+      b.append(h('div', { class: 'ewrap' }, pic, h('div', { class: 'eside' }, previewInfo(c), acts, modelInfo(c), rulingsEl(c))));
     }, { cls: 'enl', live: true });
+  }
+  // What the table understands about the card: every ability, counted and classified (v6 card model).
+  const KIND_LABEL = { keyword: 'Keyword', triggered: 'Triggered', activated: 'Activated', mana: 'Mana', static: 'Static', replacement: 'Replacement', spell: 'Spell', modal: 'Modal' };
+  function modelInfo(c) {
+    if (c.faceDown || !c.d || !window.Oracle) return null;
+    const m = Oracle.model(c); if (!m || !m.abilities.length) return null;
+    const rows = m.abilities.map(a => {
+      const auto = a.kind === 'triggered' ? (a.event && a.event.type !== 'other' ? (a.understood ? 'automatic' : 'automatic, partly by hand') : 'by hand') : a.kind === 'keyword' ? a.keywords.join(', ') : a.kind === 'static' ? (a.unknownStatic ? 'by hand' : 'applies by itself') : a.understood === false ? 'partly by hand' : a.understood ? 'automatic' : '';
+      return h('div', { class: 'mrow' }, h('span', { class: 'mk k-' + a.kind }, KIND_LABEL[a.kind] || a.kind), h('span', { class: 'mt' }, a.kind === 'keyword' ? '' : String(a.text).replace(/\bthis\b/g, m.name.split(',')[0]).slice(0, 160)), auto ? h('span', { class: 'ma muted small' }, auto) : null);
+    });
+    const counts = Object.entries(m.counts || {}).map(([k, n]) => `${n} ${(KIND_LABEL[k] || k).toLowerCase()}`).join(' · ');
+    const alts = m.costs.filter(k => k.kind !== 'normal').map(k => `${ALT_LABEL[k.kind] || k.kind} ${costText(k)}`);
+    return h('details', { class: 'model' }, h('summary', null, `Abilities: ${m.abilities.length} (${counts})`), alts.length ? h('div', { class: 'muted small' }, 'Other costs: ' + alts.join(' · ')) : null, rows);
+  }
+  // Official rulings from Scryfall (fetched once per card).
+  const RULINGS = {};
+  function rulingsEl(c) {
+    const sid = c && c.d && !c.faceDown && c.d.sid; if (!sid) return null;
+    const r = RULINGS[sid];
+    if (r === undefined) {
+      RULINGS[sid] = null;
+      fetch('https://api.scryfall.com/cards/' + encodeURIComponent(sid) + '/rulings').then(x => x.ok ? x.json() : null).then(j => { RULINGS[sid] = j && Array.isArray(j.data) ? j.data.map(x => ({ d: x.published_at, t: x.comment })) : []; if (modal) refreshModal(); }).catch(() => { RULINGS[sid] = []; });
+      return h('div', { class: 'rulings muted small' }, 'Loading rulings…');
+    }
+    if (!r) return h('div', { class: 'rulings muted small' }, 'Loading rulings…');
+    if (!r.length) return h('div', { class: 'rulings muted small' }, 'No official rulings for this card.');
+    return h('details', { class: 'rulings', open: r.length <= 3 }, h('summary', null, `Rulings (${r.length})`), r.slice(0, 20).map(x => h('p', null, h('span', { class: 'muted small' }, x.d + ' — '), x.t)));
   }
 
   // ======================= card menus =======================
@@ -451,11 +480,13 @@
     const items = [];
     if (c.zone === 'battlefield') {
       items.push({ label: c.tapped ? 'Untap' : 'Tap', fn: () => tapMine(c) });
-      const trs = c.faceDown ? [] : CD.triggers(c);
-      if (trs.length) items.push({ label: 'Put a triggered ability on the stack', sub: trs.map((t, i) => ({ label: t.line.slice(0, 90), fn: () => triggerFlow(c, i) })) });
+      // Triggered abilities the table handles by itself aren't offered by hand (it puts them on the stack when they trigger).
+      const trs = c.faceDown ? [] : CD.triggers(c).map((t, i) => ({ t, i })).filter(x => !(window.Engine && Engine.handles(c, x.t.text)));
+      if (trs.length) items.push({ label: 'Put a triggered ability on the stack (by hand)', sub: trs.map(({ t, i }) => ({ label: t.line.slice(0, 90), fn: () => triggerFlow(c, i) })) });
       const abs = c.faceDown ? [] : CD.abilities(c);
-      if (abs.length) items.push(abs.length === 1 ? { label: `Activate: ${abs[0].cost}: ${abs[0].text.slice(0, 60)}`, fn: () => activateFlow(c, 0) }
-        : { label: 'Activate an ability', sub: abs.map((a, i) => ({ label: `${a.cost}: ${a.text.slice(0, 70)}`, fn: () => activateFlow(c, i) })) });
+      const why = abilityProblem;
+      const abItem = (a, i, short) => { const w = why(c, a); return { label: `${short ? 'Activate: ' : ''}${a.cost}: ${a.text.slice(0, short ? 60 : 70)}${w ? ' — ' + w : ''}`, disabled: !!w && !(S().dev && S().hostPid === KEY), fn: () => activateFlow(c, i) }; };
+      if (abs.length) items.push(abs.length === 1 ? abItem(abs[0], 0, true) : { label: 'Activate an ability', sub: abs.map((a, i) => abItem(a, i)) });
       items.push({ label: 'Counters…', fn: () => counterModal(c.id) });
       items.push({ label: c.noUntap ? 'Let it untap normally' : 'Doesn’t untap during untap step', fn: () => G.act({ type: 'noUntap', id: c.id, on: !c.noUntap }) });
       if (R.ptOf(c)) items.push({ label: 'Change P/T until end of turn…', fn: () => ptModal(c.id) });
@@ -479,6 +510,16 @@
       items.push({ label: 'Move to', sub: moveSub(c) });
       if (c.token) items.push({ label: 'Remove copy from the game', fn: () => G.removeToken([c.id]) });
     } else {
+      // v6: casting from the graveyard or exile — flashback, escape, disturb, foretell, plot, warp… and permissions like Muldrotha's.
+      if ((c.zone === 'graveyard' || c.zone === 'exile') && !c.faceDown && c.d) {
+        const opts = castOptions(c, c.zone);
+        for (const k of opts) items.push({ label: `${ALT_LABEL[k.kind] || k.kind} — ${costText(k)}`, fn: () => castFlow(c, 'public', k) });
+        const perm = graveyardPermission(c);
+        if (perm) items.push({ label: `Cast it from your graveyard (${perm})`, fn: () => castFlow(c, 'public', { kind: 'normal', cost: R.face(c).mc }) });
+        if (perm && G.isLand(c)) items.push({ label: `Play it from your graveyard (${perm})`, fn: () => G.act({ type: 'move', ids: [c.id], to: 'battlefield', land: true }) });
+        if (c.zone === 'exile' && c.warpedOut) items.push({ label: `Cast it from exile (warp) — ${R.face(c).mc}`, fn: () => castFlow(c, 'public', { kind: 'normal', cost: R.face(c).mc }) });
+        if (opts.length || perm) items.push({ sep: true });
+      }
       items.push(...moveSub(c).filter(Boolean));
       if (two) items.push({ sep: true }, { label: 'Flip to other face', fn: () => G.flip(c.id) });
       if (c.zone === 'exile' && c.owner === KEY) {
@@ -490,6 +531,33 @@
     return items;
   }
 
+  // Why an activated ability can't be used right now (or null): tapped, summoning sickness, timing, loyalty, mana.
+  // Muldrotha-style permissions: a permanent you control lets you play this card from your graveyard (just allowed — you track the limits).
+  function graveyardPermission(c) {
+    const s = S();
+    if (c.zone !== 'graveyard' || c.owner !== KEY || !window.Oracle) return null;
+    for (const o of Object.values(s.cards)) {
+      if (o.zone !== 'battlefield' || o.ctrl !== KEY || o.faceDown || !o.d) continue;
+      const m = Oracle.model(o); if (!m) continue;
+      for (const a of m.abilities) {
+        if (a.kind !== 'static' || a.sub !== 'permission' || a.from !== 'graveyard') continue;
+        if (a.muldrotha && (s.turn.active !== KEY || !CD.isPermanentCard(c))) continue;
+        return R.cardName(o);
+      }
+    }
+    return null;
+  }
+  function abilityProblem(c, a) {
+    const s = S(), T = s.turn;
+    if (a.tap && c.tapped) return 'it’s tapped';
+    if (a.tap && (c.faceDown || R.isType(c, 'creature')) && R.sick(s, c) && !CD.keywords(c, s).has('haste')) return 'summoning sickness';
+    const sorcery = a.equip || a.loyalty !== undefined || /activate only as a sorcery/i.test(a.text + ' ' + (a.line || ''));
+    if (sorcery && (T.active !== KEY || R.stackTop(s) || !/^Main/.test(R.PHASES[T.phase]))) return 'only in your main phase with an empty stack';
+    if (a.loyalty !== undefined && ((T.loyal || {})[c.id] === T.n)) return 'already used a loyalty ability this turn';
+    if (a.loyalty !== undefined && ((c.counters || {}).loyalty || 0) + a.loyalty < 0) return 'not enough loyalty';
+    if (a.mana && CD.costTotal(a.mana, 0) && !CD.pay(a.mana, myMana().filter(m => !(a.tap && m.id === c.id)), 0)) return 'not enough mana';
+    return null;
+  }
   function handCard(c) { return { id: c.id, owner: KEY, ctrl: KEY, d: c.d, zone: 'hand', cmdr: c.cmdr, counters: {} }; }
 
   function handMenu(c) {
@@ -554,14 +622,25 @@
     if (p.i >= p.reqs.length) { G.picking = null; if (p.prevTab && G.tab === 'all') G.tab = p.prevTab; p.resolve(p.picked); }
     render();
   }
-  function pickTargets(title, card, reqs, mode, textCard) {
+  function pickTargets(title, card, reqs, mode, textCard, opts) {
     return new Promise(resolve => {
       const prevTab = G.tab;
-      G.picking = { title, card, reqs, mode, hc: textCard || card, i: 0, picked: reqs.map(() => []), resolve, prevTab,
+      G.picking = { title, card, reqs, mode, hc: textCard || card, i: 0, picked: reqs.map(() => []), resolve, prevTab, engine: opts && opts.engine,
         cancel: () => { if (G.tab === 'all') G.tab = prevTab; resolve(null); } };
       if (S().seats.length > 1) G.tab = 'all';
       closeMenu(); hidePreview(); render();
     });
+  }
+  // A target choice as a picture: the card itself, or the player's name plate (601.2c — you see what you're choosing).
+  function targetThumb(t, on, fn) {
+    const s = S();
+    if (t.p) { const P = s.players[t.p] || {}; return h('button', { class: 'tthumb player' + (on ? ' set' : ''), onclick: fn, title: tlabel(t) }, h('span', { class: 'tpname' }, t.p === KEY ? 'You' : nameOf(t.p)), h('span', { class: 'tplife' }, '♥ ' + P.life)); }
+    const c = s.cards[t.c]; if (!c) return h('button', { class: 'chip', onclick: fn }, tlabel(t));
+    const f = R.face(c), img = !c.faceDown && f && f.img;
+    const pt = c.zone === 'battlefield' && (R.isType(c, 'creature') || c.faceDown) ? CD.pt(s, c) : null;
+    return h('button', { class: 'tthumb' + (on ? ' set' : ''), onclick: fn, title: tlabel(t), onmouseenter: e => showPreview(c, e), onmouseleave: hidePreview },
+      img ? h('img', { src: img, alt: R.cardName(c), loading: 'lazy', draggable: false }) : h('span', { class: 'tpname' }, R.cardName(c)),
+      h('span', { class: 'tcap' }, (c.ctrl === KEY ? '' : nameOf(c.ctrl) + ' · ') + (c.zone === 'graveyard' ? 'graveyard' : c.zone === 'stack' ? 'spell' : pt ? pt.join('/') : '')));
   }
   function tlabel(t) {
     if (t.p) return t.p === KEY ? 'You' : nameOf(t.p);
@@ -580,12 +659,12 @@
     const got = p.picked[p.i];
     return h('div', { class: 'pickbar', role: 'dialog', 'aria-label': p.title },
       h('div', { class: 'pkhead' }, h('b', null, p.title), h('span', null, ` — choose ${CD.reqLabel(req)}${p.reqs.length > 1 ? `  (${p.i + 1} of ${p.reqs.length})` : ''}`)),
-      h('div', { class: 'pkchoices' }, choices.length ? choices.slice(0, 40).map(t => h('button', { class: 'chip' + (got.some(x => sameT(x, t)) ? ' set' : ''), onclick: () => pickTarget(t) }, tlabel(t)))
+      h('div', { class: 'pkchoices pics' }, choices.length ? choices.slice(0, 40).map(t => targetThumb(t, got.some(x => sameT(x, t)), () => pickTarget(t)))
         : h('span', { class: 'muted' }, 'Nothing can be chosen for this right now.')),
       h('div', { class: 'pkbtns' },
         (req.upTo || got.length) ? h('button', { class: 'primary', disabled: got.length < need, title: got.length < need ? `Choose ${need} different targets (601.2c)` : '', onclick: nextReq }, got.length ? (got.length < need ? `Choose ${need - got.length} more` : 'Done') : 'No target') : null,
         !choices.length && !req.upTo ? h('button', { onclick: () => { p.picked[p.i] = []; nextReq(); } }, 'Cast it without a target') : null,
-        h('button', { onclick: () => { const q = G.picking; G.picking = null; q.cancel(); render(); } }, 'Cancel'),
+        h('button', { onclick: () => { const q = G.picking; G.picking = null; q.cancel(); render(); } }, p.engine ? 'Let the table choose' : 'Cancel'),
         h('span', { class: 'muted small' }, COARSE ? 'Tap a highlighted card or a name above.' : 'Click a highlighted card or a name above. Esc cancels.')));
   }
   function chooseModes(card, md) {
@@ -617,13 +696,50 @@
     });
   }
   // Cast a card: choose its mode, X and targets if it needs them, then put it on the stack.
-  async function castFlow(c, from) {
+  // v6: every way to cast this card from where it is (normal cost, flashback, kicker, evoke, dash, warp, overload…).
+  const ALT_LABEL = { normal: 'Cast it', flashback: 'Flashback', escape: 'Escape', 'jump-start': 'Jump-start', retrace: 'Retrace', disturb: 'Disturb (back face)', harmonize: 'Harmonize',
+    kicker: 'Cast with kicker', multikicker: 'Cast with multikicker', buyback: 'Cast with buyback', bargain: 'Cast with bargain', evoke: 'Evoke', dash: 'Dash', blitz: 'Blitz', overload: 'Overload',
+    surge: 'Surge', spectacle: 'Spectacle', prowl: 'Prowl', emerge: 'Emerge', madness: 'Madness', foretell: 'Foretell', plot: 'Plot', warp: 'Warp', bestow: 'Bestow', mutate: 'Mutate', prototype: 'Prototype', cleave: 'Cleave', sneak: 'Sneak' };
+  function castOptions(card, zone) {
+    const m = window.Oracle && card.d ? Oracle.model(card) : null;
+    const out = [];
+    if (!m) return [{ kind: 'normal', cost: R.face(card) && R.face(card).mc || '' }];
+    for (const k of m.costs) {
+      if (k.ability || k.faceDown) continue;
+      if (k.kind === 'normal') { if (zone === 'hand' || zone === 'command' || zone === 'public') out.push(k); continue; }
+      const z = k.zone === 'hand' ? ['hand'] : [k.zone];
+      if (!z.includes(zone === 'command' ? 'command' : zone)) continue;
+      out.push(k);
+    }
+    return out;
+  }
+  function costText(k) { return String(k.cost || '').replace(/\s*—\s*.*$/, '') || '—'; }
+  function chooseCast(card, opts) {
+    return new Promise(res => choose(`Cast ${R.cardName(card)}`, 'How do you want to cast it?', opts.map(k => ({
+      label: k.kind === 'normal' ? `${ALT_LABEL.normal} — ${R.face(card).mc || 'free'}` : k.additional ? `${ALT_LABEL[k.kind] || k.kind} — ${R.face(card).mc} + ${costText(k)}` : `${ALT_LABEL[k.kind] || k.kind} — ${costText(k)}`,
+      primary: k.kind === 'normal', fn: () => res(k) })).concat([{ label: 'Cancel', fn: () => res(null) }])));
+  }
+  G.castOptions = castOptions;
+  async function castFlow(c, from, forced) {
     const card = from === 'hand' ? handCard(c) : c;
+    const zone = from === 'hand' ? 'hand' : c.zone === 'command' ? 'command' : c.zone === 'graveyard' ? 'graveyard' : c.zone === 'exile' ? 'exile' : 'public';
+    let alt = forced || null;
+    if (!alt) {
+      const opts = castOptions(card, zone);
+      if (opts.length > 1) { alt = await chooseCast(card, opts); if (!alt) return; }
+      else alt = opts[0] || null;
+    }
+    if (alt && alt.kind === 'normal') alt = null;
     let mode = null, x = 0;
-    const md = CD.modesOf(card);
+    const md = alt && alt.kind === 'overload' ? null : CD.modesOf(card);
     if (md) { mode = await chooseModes(card, md); if (!mode) return; }
-    if (CD.costOf(card).x) { x = await askX(card); if (x == null) return; }
-    const reqs = CD.targetReqs(card, mode);
+    // The cost being paid: the printed one, an alternative one, or printed + additional (kicker).
+    const altMana = alt ? (String(alt.cost || '').match(/\{[^}]+\}/g) || []).join('') : '';
+    const payCost = !alt ? CD.costOf(card) : alt.additional ? (() => { const a = CD.costOf(card), b = CD.parseCost(altMana); for (const k of ['g', 'W', 'U', 'B', 'R', 'G', 'C', 'x']) a[k] += b[k] || 0; a.hy = a.hy.concat(b.hy); a.ph = a.ph.concat(b.ph); return a; })() : CD.parseCost(altMana);
+    if (payCost.x) { x = await askX(card); if (x == null) return; }
+    const extra = alt && String(alt.cost || '').replace(/\{[^}]+\}/g, '').replace(/^[,\s—-]+|[,\s]+$/g, '');
+    if (extra && !/^\d+\/\d+$/.test(extra)) G.toast(`${ALT_LABEL[alt.kind] || alt.kind}: also ${extra.replace(/^./, m => m.toLowerCase())} — do that part with the card menus.`, 'info');
+    const reqs = alt && alt.kind === 'overload' ? [] : CD.targetReqs(card, mode);
     let tg;
     if (reqs.length) { tg = await pickTargets(`Casting ${R.cardName(card)}`, card, reqs, mode); if (!tg) return; }
     // Ward (702.21a): the spell is countered unless its controller also pays the ward cost.
@@ -638,9 +754,9 @@
       if (ans == null) return;
       wardPaid = ans;
     }
-    const opts = { tg, mode: mode || undefined, x: x || undefined, wardPaid: wardPaid || undefined };
-    if (wardPaid && wardMana) { const cst = CD.costOf(card); cst.g += wardMana; if (!(await autoPay(card, x, cst))) return; }
-    else if (!(await autoPay(card, x))) return;
+    const opts = { tg, mode: mode || undefined, x: x || undefined, wardPaid: wardPaid || undefined, alt: alt ? alt.kind : undefined };
+    if (wardPaid && wardMana) { const cst = JSON.parse(JSON.stringify(payCost)); cst.g += wardMana; if (!(await autoPay(card, x, cst))) return; }
+    else if (!(await autoPay(card, x, JSON.parse(JSON.stringify(payCost))))) return;
     opts.fromPool = G.lastFromPool;
     if (from === 'hand') await G.castFromHand(c.id, opts);
     else await G.castPublic(c.id, opts);
@@ -648,10 +764,18 @@
   // Optional: tap my untapped lands and mana permanents to pay the cost (setting under the hand).
   async function autoPay(card, x, cost) {
     G.lastFromPool = undefined;
-    if (!G.LS.get('kt:autopay', false)) return true;
     cost = cost || CD.costOf(card);
     if (card.zone === 'command' && card.cmdr) cost.g += 2 * ((S().tax || {})[card.id] || 0);
     if (!CD.costTotal(cost, x)) return true;
+    if (S().dev && S().hostPid === KEY) return true;     // developer debugging: no mana needed
+    if (!G.LS.get('kt:autopay', true)) {
+      // Paying by hand: the mana has to be in your pool already (tap your lands first). 601.2g–h
+      const pool = (G.me() && G.me().pool) || [];
+      const ids = CD.pay(cost, pool.map((u, i) => ({ id: 'pool:' + i, amount: 1, colors: u })), x);
+      if (!ids) { G.toast('Not enough mana in your pool — tap your lands for mana first (or turn on “Tap my lands for me”).', 'err'); return false; }
+      G.lastFromPool = ids.map(id => +id.slice(5));
+      return true;
+    }
     const srcs = Object.values(S().cards).filter(c => c.zone === 'battlefield' && c.ctrl === KEY && !c.tapped && !(R.isType(c, 'creature') && R.sick(S(), c) && !CD.keywords(c, S()).has('haste')))
       .map(c => { const m = CD.manaSource(c); return m && !m.sac ? { id: c.id, amount: m.amount, colors: m.colors, units: m.units } : null; }).filter(Boolean);
     const pool = (G.me() && G.me().pool) || [];
@@ -724,26 +848,148 @@
   }
   // Blockers are declared: one round of priority before combat damage (510.1). Players with nothing to cast pass automatically.
   function stepBar(s, P) {
-    const what = 'Blockers are set — combat damage is next';
+    const endStep = P.step === 'end';
+    const what = endStep ? `${nameOf(s.turn.active)} is ending their turn` : 'Blockers are set — combat damage is next';
     if (P.holder === KEY) {
       if (!canRespond()) {
         if (G._autoFor !== 'step:' + P.since) { G._autoFor = 'step:' + P.since; setTimeout(() => { const q = S().prio; if (q && q.step && q.holder === KEY && !R.stackTop(S())) G.pass(); }, 700); }
         return h('div', { class: 'prio' }, h('div', { class: 'ptext' }, what + '. ', h('span', { class: 'muted' }, 'You have no instants or abilities to use — moving on…')));
       }
       return h('div', { class: 'prio mine', role: 'alert' }, h('span', { class: 'pring' }),
-        h('div', { class: 'ptext' }, h('b', null, 'Any combat tricks? '), what + '. ', h('span', { class: 'muted' }, 'Cast an instant or use an ability now, or continue to damage.')),
-        h('button', { class: 'primary', onclick: () => G.pass() }, 'Continue to damage'));
+        h('div', { class: 'ptext' }, h('b', null, endStep ? 'Anything before end of turn? ' : 'Any combat tricks? '), what + '. ', h('span', { class: 'muted' }, endStep ? 'Cast an instant or use an ability now, or let the turn end.' : 'Cast an instant or use an ability now, or continue to damage.')),
+        h('button', { class: 'primary', onclick: () => G.pass() }, endStep ? 'Let it end' : 'Continue to damage'));
     }
     const hp = s.players[P.holder];
     const waited = Date.now() - (P.since || 0);
     return h('div', { class: 'prio' }, h('div', { class: 'ptext' }, what + '. ', h('b', null, `Waiting for ${nameOf(P.holder)}${hp && hp.ai ? ' (AI)' : ''}…`)),
-      s.turn.active === KEY && (waited > 30000 || (hp && !hp.online)) ? h('button', { onclick: () => G.act({ type: 'resolveNow' }) }, 'Go to damage') : null);
+      s.turn.active === KEY && !endStep && (waited > 30000 || (hp && !hp.online)) ? h('button', { onclick: () => G.act({ type: 'resolveNow' }) }, 'Go to damage') : null);
   }
   setInterval(() => { if (S() && S().prio && G.seated()) G.render(); }, 5000);
   // Could I do anything at instant speed? (an instant/flash card in hand, or an untapped permanent with an ability)
+  // v6: only things you could actually pay for count (an instant you can't afford isn't a reason to stop the game).
   function canRespond() {
-    if (G.P.hand.some(c => CD.instantSpeed(handCard(c)))) return true;
-    return Object.values(S().cards).some(c => c.zone === 'battlefield' && c.ctrl === KEY && !c.faceDown && CD.abilities(c).some(a => !a.equip && a.loyalty === undefined && !(a.tap && c.tapped)));
+    if (G.P.hand.some(c => { const hc = handCard(c); return CD.instantSpeed(hc) && affordable(hc); })) return true;
+    const pool = myMana();
+    return Object.values(S().cards).some(c => c.zone === 'battlefield' && c.ctrl === KEY && !c.faceDown && CD.abilities(c).some(a => !a.equip && a.loyalty === undefined && !(a.tap && c.tapped) && !CD.manaSource(c) && (!a.mana || !!CD.pay(a.mana, pool.filter(m => !(a.tap && m.id === c.id)), 0))));
+  }
+
+  // ======================= the rules engine asks you something =======================
+  // Triggered abilities: targets as they go on the stack, modes, the order of several at once, "use it?" when they
+  // resolve, and anything the table couldn't do by itself ("finish by hand").
+  G._askSeen = G._askSeen || {};
+  function myAsks() { const s = S(); return (s && s.ask || []).filter(a => a.pid === KEY); }
+  function engineAsks() {
+    if (!G.seated()) return;
+    for (const a of myAsks()) {
+      if (a.kind === 'manual' || G._askSeen[a.id]) continue;
+      if (a.kind === 'targets') { if (G.picking) continue; G._askSeen[a.id] = 1; askTargets(a); continue; }
+      if (a.kind === 'modes' || a.kind === 'order') { G._askSeen[a.id] = 1; ask(() => a.kind === 'modes' ? askModes(a) : askOrder(a)); continue; }
+      if (a.kind === 'assign') { G._askSeen[a.id] = 1; askNow(() => askAssign(a)); continue; }
+      if (a.kind === 'legend') { G._askSeen[a.id] = 1; ask(() => askLegend(a)); continue; }
+    }
+  }
+  const answer = (a, extra) => G.act(Object.assign({ type: 'answer', id: a.id }, extra)).then(r => { if (r && !r.ok && r.err) { G.toast(r.err, 'err'); delete G._askSeen[a.id]; } render(); return r; });
+  async function askTargets(a) {
+    const s = S();
+    const src = s.cards[a.src] || null;
+    const reqs = CD.targetsIn(a.text || '');
+    if (!reqs.length) return answer(a, { tg: a.reqs.map(r => r.choices.slice(0, r.upTo ? 0 : r.n)) });
+    const tg = await pickTargets(`${a.name} triggered — “${String(a.text).replace(/^this /i, a.name + ' ')}”`, src, reqs, null, src, { engine: a });
+    if (!tg) return answer(a, { tg: a.reqs.map(r => r.choices.slice(0, r.upTo ? 0 : Math.min(r.n, r.choices.length))) });
+    answer(a, { tg });
+  }
+  function askModes(a) {
+    const sel = [];
+    openModal(`${a.name} — choose ${a.min === a.max ? (a.min === 1 ? 'one' : a.min) : a.min + ' to ' + a.max}`, b => {
+      b.append(h('div', { class: 'modes' }, a.modes.map((m, i) => h('button', { class: 'mode' + (sel.includes(i) ? ' on' : ''), onclick: () => {
+        if (sel.includes(i)) sel.splice(sel.indexOf(i), 1); else if (sel.length < a.max) sel.push(i);
+        if (a.max === 1 && sel.length === 1) { closeModal(true); answer(a, { modes: sel.slice() }); setTimeout(pumpAsks, 50); return; }
+        refreshModal();
+      } }, m))));
+      if (a.max > 1) b.append(h('div', { class: 'row' }, h('button', { class: 'primary', disabled: sel.length < a.min, onclick: () => { closeModal(true); answer(a, { modes: sel.slice() }); setTimeout(pumpAsks, 50); } }, `Choose (${sel.length})`)));
+    }, { live: true, onClose: () => setTimeout(pumpAsks, 50) });
+  }
+  function askOrder(a) {
+    const order = a.items.map(x => x.id);
+    openModal('Several of your abilities triggered', b => {
+      b.append(h('p', { class: 'muted' }, 'They go on the stack together. The one at the top of this list resolves first — use the arrows to change the order (603.3b).'));
+      b.append(h('ol', { class: 'trigorder' }, order.map((id, i) => {
+        const it = a.items.find(x => x.id === id);
+        return h('li', null, h('span', null, h('b', null, it.name), ': ', it.text),
+          h('span', { class: 'row' }, h('button', { disabled: i === 0, onclick: () => { order.splice(i, 1); order.splice(i - 1, 0, id); refreshModal(); } }, '▲'), h('button', { disabled: i === order.length - 1, onclick: () => { order.splice(i, 1); order.splice(i + 1, 0, id); refreshModal(); } }, '▼')));
+      })));
+      b.append(h('div', { class: 'row' }, h('button', { class: 'primary', onclick: () => { closeModal(true); answer(a, { order: order.slice() }); setTimeout(pumpAsks, 50); } }, 'Put them on the stack')));
+    }, { live: true, onClose: () => { answer(a, { order: order.slice() }); setTimeout(pumpAsks, 50); } });
+  }
+  // Two or more blockers: you divide your attacker's combat damage (510.1c). Lethal to each in order first.
+  function askAssign(a) {
+    const plan = {}; let left = a.power;
+    for (const b of a.blockers) { const l = a.deathtouch ? 1 : b.lethal; plan[b.id] = Math.min(left, l); left -= plan[b.id]; }
+    if (left > 0) { if (a.trample) plan.player = left; else plan[a.blockers[a.blockers.length - 1].id] += left; }
+    const sum = () => Object.values(plan).reduce((t, n) => t + (n | 0), 0);
+    openModal(`${a.name} — assign combat damage`, b => {
+      b.append(h('p', { class: 'muted' }, `${a.name} has ${a.power} power and is blocked by ${a.blockers.length} creatures. Lethal damage must go to each blocker in order before the next one${a.trample ? '; with trample, the rest may go to the player' : ''}${a.deathtouch ? ' (deathtouch: 1 is lethal)' : ''}.`));
+      const row = (label, key, hint) => h('div', { class: 'row asgn' }, h('span', { class: 'an' }, label, hint ? h('span', { class: 'muted small' }, ' ' + hint) : null),
+        h('button', { onclick: () => { plan[key] = Math.max(0, (plan[key] | 0) - 1); refreshModal(); } }, '−'), h('b', null, String(plan[key] | 0)), h('button', { disabled: sum() >= a.power, onclick: () => { plan[key] = (plan[key] | 0) + 1; refreshModal(); } }, '+'));
+      for (const bl of a.blockers) b.append(row(bl.name, bl.id, `(lethal: ${a.deathtouch ? 1 : bl.lethal})`));
+      if (a.trample) b.append(row('The defending player', 'player'));
+      b.append(h('p', { class: 'muted small' }, `${sum()} of ${a.power} assigned`));
+      b.append(h('div', { class: 'row' }, h('button', { class: 'primary', onclick: async () => { const r = await answer(a, { assign: Object.assign({}, plan) }); if (r && r.ok) { closeModal(true); setTimeout(pumpAsks, 50); } } }, 'Deal the damage')));
+    }, { live: true, onClose: () => setTimeout(pumpAsks, 50) });
+  }
+  // Legend rule (704.5j): keep one, the rest go to the graveyard.
+  function askLegend(a) {
+    openModal(`Legend rule — ${a.name}`, b => {
+      b.append(h('p', { class: 'muted' }, `You control two or more legendary permanents named ${a.name}. Choose the one to keep; the others go to the graveyard (704.5j).`));
+      b.append(h('div', { class: 'pkchoices pics' }, a.ids.filter(id => S().cards[id]).map(id => targetThumb({ c: id }, false, () => { closeModal(true); answer(a, { keep: id }); setTimeout(pumpAsks, 50); }))));
+    }, { live: true, onClose: () => setTimeout(pumpAsks, 50) });
+  }
+  // "Use it?" for an optional triggered ability, right as it's about to resolve.
+  function askBar() {
+    const a = myAsks().find(x => x.kind === 'may');
+    if (!a) return null;
+    const left = Math.max(0, Math.ceil((120000 - (Date.now() - (a.since || 0))) / 1000));
+    return h('div', { class: 'prio mine', role: 'alert' }, h('span', { class: 'pring' }),
+      h('div', { class: 'ptext' }, h('b', null, `${a.name}: `), '“', String(a.text).replace(/^this /i, a.name + ' '), '”',
+        a.cond ? h('div', null, h('b', null, 'Is this true? '), 'if ' + a.cond) : null,
+        h('span', { class: 'muted small' }, ` (${left}s)`)),
+      h('button', { class: 'primary', onclick: () => answer(a, { yes: true, cond: true }) }, a.cond ? 'Yes — do it' : 'Use it'),
+      h('button', { onclick: () => answer(a, { yes: false, cond: false }) }, a.cond ? 'No' : 'Don’t'));
+  }
+  // What the table couldn't do by itself: the controller finishes it by hand (Move to, counters, tokens…).
+  function manualBar() {
+    const list = myAsks().filter(x => x.kind === 'manual');
+    if (!list.length) return null;
+    const a = list[0];
+    return h('div', { class: 'prio manual' },
+      h('div', { class: 'ptext' }, h('b', null, `${a.name} — finish by hand: `), a.text.map(t => t.replace(/\.$/, '')).join('. ') + '.', list.length > 1 ? h('span', { class: 'muted small' }, ` (+${list.length - 1} more)`) : null,
+        h('div', { class: 'muted small' }, 'The table did the rest. Use the card menus (Move to…, counters, tokens) to finish this part, then press Done.')),
+      h('button', { onclick: () => answer(a, {}) }, 'Done'));
+  }
+  G.engineAnswer = answer;
+
+  // ======================= developer debugging =======================
+  function devBanner() {
+    const s = S(); if (!s || !s.dev) return null;
+    const host = s.hostPid === KEY;
+    if (!host) return h('div', { class: 'devbanner' }, `Developer debugging is ON — ${nameOf(s.hostPid)} can move and use everyone’s cards to repair the game.`);
+    G.devAs = G.devAs && s.players[G.devAs] ? G.devAs : KEY;
+    return h('div', { class: 'devbanner' }, 'Developer debugging ON — act as: ',
+      ...s.seats.map(p => h('button', { class: 'chip' + (G.devAs === p ? ' set' : ''), onclick: () => { G.devAs = p; render(); } }, p === KEY ? 'Me' : nameOf(p))),
+      h('button', { class: 'chip', title: 'Edit this player’s life, poison and mana', onclick: () => devPlayerModal(G.devAs) }, 'Edit player…'),
+      R.stackTop(s) ? h('button', { class: 'chip', onclick: () => G.act({ type: 'resolveNow', as: R.stackTop(s).ctrl }) }, 'Resolve top of stack') : null,
+      R.stackTop(s) ? h('button', { class: 'chip', onclick: () => { const t = R.stackTop(s); if (t.ab || t.token) G.act({ type: 'removeToken', ids: [t.id], as: t.ctrl }); else G.act({ type: 'move', ids: [t.id], to: 'graveyard', as: t.ctrl }); } }, 'Remove top of stack') : null,
+      s.turn.active ? h('button', { class: 'chip', onclick: () => G.act({ type: 'phase', dir: 'pass', dev: true, as: s.turn.active }) }, 'Next turn') : null,
+      h('button', { class: 'chip', onclick: () => G.act({ type: 'dev', on: false }) }, 'Turn off'));
+  }
+  function devPlayerModal(pid) {
+    const s = S(), P = s.players[pid]; if (!P) return;
+    openModal(`${pid === KEY ? 'You' : nameOf(pid)} — developer edit`, b => {
+      const f = k => h('label', null, k + ' ', h('input', { type: 'number', class: 'num', value: String(P[k] || 0), onchange: e => G.act({ type: 'player', as: pid, patch: { [k]: +e.target.value } }) }));
+      b.append(h('div', { class: 'row wrap' }, f('life'), f('poison'), f('energy'), f('exp')));
+      b.append(h('div', { class: 'row wrap' }, h('button', { onclick: () => G.act({ type: 'pool', as: pid, add: ['WUBRG'] }) }, 'Add one mana of any color'), h('button', { onclick: () => G.act({ type: 'pool', as: pid, clear: true }) }, 'Empty mana pool')));
+      b.append(h('div', { class: 'row wrap' }, h('button', { onclick: () => G.act({ type: 'devActive', as: pid }) }, 'Make this the active player')));
+    }, { cls: 'small' });
   }
 
   // ======================= game over =======================
@@ -889,13 +1135,23 @@
       const K0 = s.combat, blkWait = !!(K0 && K0.n === T.n && !K0.done && !K0.blocked && K0.waiting.some(p => !K0.ok[p] && s.players[p] && s.players[p].online && !s.players[p].lost));
       const stepWait = !!(s.prio && s.prio.step);
       const hold = blkWait ? 'Waiting for blockers' : stepWait ? (s.prio.holder === KEY ? 'Continue to damage first' : 'Waiting for responses before damage') : '';
+      const dev = !!(s.dev && s.hostPid === KEY);
+      const busy = !!(R.stackTop(s) || (s.tq && s.tq.length) || (s.ask || []).some(a => a.kind !== 'manual'));
+      const ph = R.PHASES[T.phase];
+      const fought = !!(s.combat && s.combat.n === T.n);
+      const moving = !!T.goal;
+      const canCombat = canDrive && me && !fought && T.phase <= R.PI('Main 1') && window.Engine && Engine.canAttack(s, T.active);
+      const inCombat = T.phase >= R.PI('Beginning of combat') && T.phase <= R.PI('End of combat') && fought && !s.combat.done;
       turnBox.append(...[
         h('span', { class: 'tn' }, (COARSE ? 'T' : 'Turn ') + T.n),
         h('span', { class: 'who' + (active ? ' me' : '') }, active ? 'Your turn' : nameOf(T.active)),
-        h('button', { class: 'ph', disabled: !canDrive || !me, title: 'Previous step', onclick: () => G.act({ type: 'phase', dir: 'back' }) }, '◀'),
-        h('button', { class: 'phase', disabled: !canDrive || !me, title: 'Jump to a step', onclick: e => openMenu(e.currentTarget, R.PHASES.slice(1, -1).map((p, i) => ({ label: p, fn: () => G.act({ type: 'phase', to: i + 1 }) })), 'Steps') }, R.PHASES[T.phase]),
-        h('button', { class: 'ph', disabled: !canDrive || !me || (blkWait || (stepWait && s.prio.holder !== KEY)), title: hold || 'Next step', onclick: () => stepWait && s.prio.holder === KEY ? G.pass() : G.act({ type: 'phase' }) }, '▶'),
-        canDrive && me ? h('button', { class: 'pass primary', disabled: !!hold, title: hold || 'End your turn', onclick: passTurn }, 'Pass turn') : null
+        dev ? h('button', { class: 'ph', title: 'Previous step (developer debugging)', onclick: () => G.act({ type: 'phase', dir: 'back', dev: true }) }, '◀') : null,
+        dev ? h('button', { class: 'phase', title: 'Jump to a step (developer debugging)', onclick: e => openMenu(e.currentTarget, R.PHASES.slice(1, -1).map((p, i) => ({ label: p, fn: () => G.act({ type: 'phase', to: i + 1, dev: true }) })), 'Steps') }, ph)
+          : h('span', { class: 'phase steptext', title: 'The steps of the turn move on by themselves' }, moving && !busy ? ph + '…' : ph),
+        dev ? h('button', { class: 'ph', title: 'Next step (developer debugging)', onclick: () => G.act({ type: 'phase', dev: true }) }, '▶') : null,
+        canCombat && !busy && !moving && T.phase === R.PI('Main 1') ? h('button', { class: 'pass', disabled: !!hold, title: 'Go to combat and choose attackers', onclick: () => G.act({ type: 'advance', goal: 'combat' }) }, '⚔ Go to combat') : null,
+        canDrive && me && !inCombat && !(moving && T.goal === 'pass') ? h('button', { class: 'pass primary', disabled: !!hold || busy, title: hold || (busy ? 'Wait until the stack is empty' : 'End your turn (combat, main 2 and the end step still happen)'), onclick: passTurn }, 'End turn') : null,
+        moving && T.goal === 'pass' && canDrive ? h('span', { class: 'muted small' }, 'Ending turn…') : null
       ].filter(Boolean));
     } else if (me) {
       turnBox.append(h('button', { class: 'primary', onclick: () => G.act({ type: 'start' }), title: 'Randomizes the turn order and picks who goes first' }, 'Start game'));
@@ -958,16 +1214,14 @@
     const s = S(), notes = [];
     if (s.turn.active === KEY) {
       if (G.P.hand.length > 7) notes.push(`Discard down to 7 — you have ${G.P.hand.length} cards in hand.`);
-      if (s.table.monarch === KEY) notes.push('You’re the monarch: draw a card at your end step.');
     }
-    const go = () => G.act({ type: 'phase', dir: 'pass' });
+    const go = () => G.act({ type: 'advance', goal: 'end' });
     if (!notes.length) return go();
     openModal('Before you pass', b => {
       b.append(h('ul', { class: 'remind' }, notes.map(n => h('li', null, n))));
       b.append(h('div', { class: 'row wrap' },
         G.P.hand.length > 7 ? h('button', { onclick: () => { closeModal(); hidePreview(); } }, 'Let me discard first') : null,
-        s.table.monarch === KEY ? h('button', { onclick: () => { closeModal(); G.draw(1, 'drew a card for being the monarch'); } }, 'Draw for monarch') : null,
-        h('button', { class: 'primary', onclick: () => { closeModal(); go(); } }, 'Pass turn')));
+        h('button', { class: 'primary', onclick: () => { closeModal(); go(); } }, 'End turn')));
     }, { cls: 'small' });
   }
 
@@ -1004,6 +1258,7 @@
     const fit = G.topFit || 0;
     return [
       { label: 'Invite players…', fn: inviteModal },
+      me && s.hostPid === KEY ? { label: s.dev ? '✓ Developer debugging (turn off)' : 'Developer debugging…', fn: () => s.dev ? G.act({ type: 'dev', on: false }) : choose('Developer debugging', 'For repairing a game the table got wrong: you can move and use every player’s cards, step the turn back and forth, resolve or remove anything on the stack, and change life totals. Everyone sees a red banner while it’s on. It turns itself off when a new game starts.', [{ label: 'Turn it on', primary: true, fn: () => G.act({ type: 'dev', on: true }) }, { label: 'Cancel', fn: () => {} }]) } : null,
       me && fit >= 3 ? { label: 'New game ▸', sub: newGameMenu() } : null,
       fit >= 3 ? { label: 'Decks…', fn: () => deckManager() } : null,
       me && fit >= 2 ? { label: 'Tokens…', fn: () => tokenModal() } : null,
@@ -1016,7 +1271,7 @@
       me ? { label: 'Change my name…', fn: nameModal } : { label: 'Take a seat', fn: nameModal },
       me ? { label: 'Untap everything I control', fn: untapAll } : null,
       me ? { label: (G.LS.get('kt:autopass', false) ? '✓ ' : '') + 'Auto-pass when I can’t respond', fn: () => { G.LS.set('kt:autopass', !G.LS.get('kt:autopass', false)); G.toast(G.LS.get('kt:autopass', false) ? 'You’ll pass automatically when you have nothing to respond with.' : 'You’ll be asked every time.'); render(); } } : null,
-      me ? { label: (G.LS.get('kt:autopay', false) ? '✓ ' : '') + 'Tap my lands for me when I cast', fn: () => { G.LS.set('kt:autopay', !G.LS.get('kt:autopay', false)); G.toast(G.LS.get('kt:autopay', false) ? 'Casting taps your lands automatically.' : 'You’ll tap your own mana.'); render(); } } : null,
+      me ? { label: (G.LS.get('kt:autopay', true) ? '✓ ' : '') + 'Tap my lands for me when I cast', fn: () => { G.LS.set('kt:autopay', !G.LS.get('kt:autopay', true)); G.toast(G.LS.get('kt:autopay', true) ? 'Casting taps your lands automatically.' : 'You’ll tap your own mana.'); render(); } } : null,
       { sep: true },
       me && s.turn.active && !me.lost ? { label: 'Concede this game…', fn: () => choose('Concede', 'You’ll be out of this game (you can keep watching).', [{ label: 'Concede', primary: true, fn: () => G.act({ type: 'lose', why: 'concede' }) }, { label: 'Cancel', fn: () => {} }]) } : null,
       me ? { label: 'Leave my seat…', fn: () => choose('Leave seat', 'Your cards leave the table.', [{ label: 'Leave', primary: true, fn: () => G.act({ type: 'leave' }) }, { label: 'Cancel', fn: () => {} }]) } : null,
@@ -1191,7 +1446,14 @@
     const s = S();
     const tab = G.tab;
     if (tab === 'all') {
-      return h('div', { class: 'grid n' + s.seats.length }, s.seats.length ? s.seats.map(p => boardEl(p, true)) : h('div', { class: 'empty big' }, 'Nobody has sat down yet.'));
+      // Layout: automatic, a list, or a grid (2×2, 2×3, 3×2); other players' boards can be turned 180° like across a real table.
+      const lay = G.LS.get('kt:layout', 'auto'), rot = G.LS.get('kt:rotate', false);
+      const setL = v => { G.LS.set('kt:layout', v); render(); };
+      const bar = h('div', { class: 'layoutbar' }, h('span', { class: 'muted small' }, 'Layout:'),
+        ...[['auto', 'Auto'], ['list', 'List'], ['2x2', '2×2'], ['2x3', '2×3'], ['3x2', '3×2']].map(([v, l]) => h('button', { class: 'chip' + (lay === v ? ' set' : ''), onclick: () => setL(v) }, l)),
+        h('button', { class: 'chip' + (rot ? ' set' : ''), title: 'Turn the other players’ boards upside down, as if they sat across the table', onclick: () => { G.LS.set('kt:rotate', !rot); render(); } }, '↻ Turn others 180°'));
+      const order = s.seats.includes(KEY) ? R.rotateSeats ? R.rotateSeats(s, KEY) : s.seats : s.seats;
+      return h('div', { class: 'allwrap' }, bar, h('div', { class: 'grid n' + s.seats.length + (lay !== 'auto' ? ' lay-' + lay : '') }, s.seats.length ? order.map(p => { const b = boardEl(p, true); if (rot && p !== KEY) b.classList.add('rot180'); return b; }) : h('div', { class: 'empty big' }, 'Nobody has sat down yet.')));
     }
     if (tab === 'turn') {
       if (!s.turn.active) return h('div', { class: 'empty big' }, 'The game hasn’t started. Press “Start game” when everyone is seated.');
@@ -1214,14 +1476,14 @@
       if (!P.hand.length && P.phase !== 'kept') btns.append(h('button', { class: 'primary', onclick: G.openingHand }, 'Draw opening hand'));
       btns.append(h('button', { onclick: () => G.draw(1), disabled: !P.library.length }, 'Draw'));
       btns.append(h('button', { onclick: e => openMenu(e.currentTarget, libraryMenu(), 'Library'), disabled: !P.library.length }, 'Library ▾'));
-      btns.append(h('label', { class: 'autopay', title: 'When you cast a spell or use an ability, tap your untapped lands and mana rocks to pay for it' }, h('input', { type: 'checkbox', checked: G.LS.get('kt:autopay', false), onchange: e => { G.LS.set('kt:autopay', e.target.checked); G.toast(e.target.checked ? 'Your lands will be tapped automatically when you cast.' : 'Tap your own mana again.'); } }), ' Tap my lands for me'));
+      btns.append(h('label', { class: 'autopay', title: 'When you cast a spell or use an ability, tap your untapped lands and mana rocks to pay for it' }, h('input', { type: 'checkbox', checked: G.LS.get('kt:autopay', true), onchange: e => { G.LS.set('kt:autopay', e.target.checked); G.toast(e.target.checked ? 'Your lands will be tapped automatically when you cast.' : 'Tap your own mana again.'); } }), ' Tap my lands for me'));
       if (P.hand.length) btns.append(h('button', { onclick: e => openMenu(e.currentTarget, [
         { label: P.hand.every(c => G.isRevealed(c.id)) ? 'Stop revealing hand' : 'Reveal my hand to everyone', fn: G.revealHand },
         { label: 'Discard a card at random', fn: G.discardRandom },
         { label: 'Shuffle hand into library', fn: () => G.handToLibrary(P.hand.map(c => c.id), 'shuffle') }
       ], 'Hand') }, 'Hand ▾'));
     }
-    const hiddenOnPhone = G.phoneLinked && !P.handHere;
+    const hiddenOnPhone = G.phoneLinked && !P.handHere && G.LS.get('kt:phonePush', 'hand') !== 'chat';
     const strip = h('div', { class: 'strip handstrip', 'data-scroll': 'hand' });
     if (hiddenOnPhone) {
       strip.append(h('div', { class: 'onphone' }, h('div', { class: 'backs' }, P.hand.slice(0, 7).map(() => h('img', { src: sleeveOf(KEY), alt: '' }))),
@@ -1462,6 +1724,14 @@
       img.onload = () => { try { const cv = document.createElement('canvas'); cv.width = W; cv.height = H; const s = Math.max(W / img.width, H / img.height); const w = img.width * s, hh = img.height * s; cv.getContext('2d').drawImage(img, (W - w) / 2, (H - hh) / 2.6, w, hh); res(cv.toDataURL('image/jpeg', 0.82)); } catch (e) { rej(e); } };
       img.onerror = rej; img.src = url;
     });
+  }
+  function preconOf(d) { return d && d.src ? (window.KT_PRECONS || []).find(p => p.id === d.src) || null : null; }
+  const bracketBadge = p => h('span', { class: 'bbadge' + (p.test ? ' test' : '') }, p.test ? 'Test deck' : 'Bracket ' + p.bracket);
+  function deckBtn(d, p) {
+    p = p || preconOf(d);
+    return h('button', { class: 'dk' + (d.id === editing ? ' on' : '') + (p ? ' pre' : ''), onclick: () => { editing = d.id; refreshModal(); } },
+      d.sleeve ? h('img', { src: d.sleeve, alt: '' }) : h('img', { src: BACK, alt: '' }),
+      h('span', null, h('b', null, d.name), h('small', null, p ? bracketBadge(p) : null, p ? ' ' : '', `${d.cards.reduce((a, c) => a + c.qty, 0)} cards`)));
   }
   async function importPrecon(p, onMsg) {
     const have = G.decks().find(d => d.src === p.id); if (have) return have;
@@ -1755,6 +2025,8 @@
           h('p', null, h('b', null, 'This code is only for your own phone. '), 'Scan it with your phone’s camera; your phone shows your hand and the board stays here.'),
           h('p', { class: 'muted' }, 'This computer will ask you to allow the phone the first time. Swipe a card up to play it, or tap it to see it big and pick where it goes.'),
           h('p', null, G.phoneLinked ? h('b', { class: 'good' }, '✓ Your phone is linked') : h('span', { class: 'muted' }, 'Waiting for your phone…')),
+          h('div', { class: 'row wrap' }, h('span', { class: 'muted small' }, 'Send to the phone:'),
+            ...[['hand', 'My hand'], ['chat', 'AI chat'], ['both', 'Both (tabs)']].map(([v, l]) => h('button', { class: 'chip' + (G.LS.get('kt:phonePush', 'hand') === v ? ' set' : ''), onclick: () => { G.LS.set('kt:phonePush', v); if (G.phoneSync) G.phoneSync(); if (v === 'chat') { G.P.handHere = true; } refreshModal(); render(); } }, l))),
           h('p', { class: 'muted small' }, 'Friends joining the game should use Invite instead.'),
           h('div', { class: 'row wrap' },
             h('button', { onclick: () => copyText(url, 'Phone link copied') }, 'Copy phone link'),
@@ -1809,13 +2081,20 @@
         h('button', { class: 'primary', onclick: () => { const d = { id: G.R.rid(8), name: 'New deck', cards: [], sleeve: null }; saveDeck(d); editing = d.id; refreshModal(); } }, '+ New deck'),
         h('label', { class: 'import' }, 'Import from ManaBox (.txt or .csv)',
           h('input', { type: 'file', accept: '.csv,.txt,text/csv,text/plain', id: 'importfile', onchange: e => importFile(e.target.files[0]) })),
-        h('button', { class: 'ghost small preconbtn', onclick: () => { preOpen = !preOpen; refreshModal(); } }, preOpen ? 'Hide ready-made decks ▴' : 'Ready-made decks (brackets 1–4) ▾'),
-        preOpen ? preconPicker(d => { editing = d.id; refreshModal(); }, msg => { importMsg = msg; refreshModal(); }) : null,
         deckImporter(imp, d => { editing = d.id; importMsg = `Imported ${d.name}.`; refreshModal(); }, msg => { importMsg = msg; refreshModal(); }),
         importMsg ? h('p', { class: 'muted small immsg' }, importMsg) : null,
-        all.map(d => h('button', { class: 'dk' + (d.id === editing ? ' on' : ''), onclick: () => { editing = d.id; refreshModal(); } },
-          d.sleeve ? h('img', { src: d.sleeve, alt: '' }) : h('img', { src: BACK, alt: '' }),
-          h('span', null, h('b', null, d.name), h('small', null, `${d.cards.reduce((a, c) => a + c.qty, 0)} cards`)))));
+        // Your decks first, then every ready-made deck (they're always here; a click brings one in from Moxfield).
+        all.filter(d => !preconOf(d)).map(d => deckBtn(d)),
+        h('div', { class: 'prehead' }, 'Ready-made decks'),
+        (window.KT_PRECONS || []).slice().sort((a, b2) => (a.test ? 9 : a.bracket) - (b2.test ? 9 : b2.bracket)).map(p => {
+          const d = all.find(x => x.src === p.id);
+          if (d) return deckBtn(d, p);
+          return h('button', { class: 'dk pre', title: p.blurb, onclick: async e => {
+            const btn = e.currentTarget; if (btn.disabled) return; btn.disabled = true;
+            try { const nd = await importPrecon(p, msg => { importMsg = msg; refreshModal(); }); editing = nd.id; refreshModal(); } catch (err) { importMsg = err.message || 'Couldn’t add that deck.'; refreshModal(); }
+            btn.disabled = false;
+          } }, h('img', { src: BACK, alt: '' }), h('span', null, h('b', null, p.name), h('small', null, pips(p.ci), ' ', bracketBadge(p), ' ', p.blurb)));
+        }));
       const ed = h('div', { class: 'deckedit' });
       if (!deck) ed.append(h('div', { class: 'empty big' }, 'Make a new deck or import one from ManaBox. In ManaBox, open your deck, choose Export, and pick CSV.'));
       else {
@@ -1869,7 +2148,11 @@
             }));
         });
         const lands = deck.cards.filter(c => G.isLand(c)).reduce((a, c) => a + c.qty, 0);
+        const pre = preconOf(deck);
+        if (pre) { ed.classList.add('ro'); name.disabled = true; }
+        const copyDeck = () => { const c = JSON.parse(JSON.stringify(deck)); c.id = G.R.rid(8); c.name = deck.name + ' (my copy)'; delete c.src; delete c.bracket; saveDeck(c); editing = c.id; importMsg = `Made an editable copy of ${deck.name}.`; refreshModal(); };
         ed.append(
+          pre ? h('div', { class: 'rohead' }, bracketBadge(pre), h('span', { class: 'muted small' }, ' Ready-made decks can’t be changed or deleted. '), h('button', { onclick: copyDeck }, 'Make an editable copy')) : null,
           h('div', { class: 'row' }, name, h('button', { class: 'primary', disabled: !G.me() || !total, onclick: () => play(deck) }, G.P.deckId === deck.id ? 'Restart with this deck' : 'Play this deck')),
           h('p', { class: 'muted' }, `${total} cards · ${lands} lands · ${cmdN ? plural(cmdN, 'commander') : 'no commander picked — tap ☆ next to a card'}`),
           h('div', { class: 'acwrap' }, search, ac),
@@ -1894,7 +2177,7 @@
               }, h('span', { class: 'pdot' })))),
               h('span', { class: 'muted small' }, (PALETTES[deck.palette] || PALETTES.felt).name))),
           h('div', { class: 'dcards', 'data-scroll': 'deck' }, sections),
-          h('div', { class: 'row' }, h('button', { class: 'ghost danger', onclick: () => choose('Delete deck', `Delete “${deck.name}” from this device?`, [{ label: 'Delete', primary: true, fn: () => { G.saveDecks(G.decks().filter(d => d.id !== deck.id)); editing = null; deckManager(); } }, { label: 'Cancel', fn: deckManager }]) }, 'Delete deck'))
+          pre ? null : h('div', { class: 'row' }, h('button', { class: 'ghost danger', onclick: () => choose('Delete deck', `Delete “${deck.name}” from this device?`, [{ label: 'Delete', primary: true, fn: () => { G.saveDecks(G.decks().filter(d => d.id !== deck.id)); editing = null; deckManager(); } }, { label: 'Cancel', fn: deckManager }]) }, 'Delete deck'))
         );
       }
       b.append(h('div', { class: 'decks' }, list, ed));
@@ -2137,7 +2420,8 @@
     // keep scroll positions
     const scrolls = {};
     root.querySelectorAll('[data-scroll]').forEach(el => scrolls[el.dataset.scroll] = [el.scrollLeft, el.scrollTop]);
-    const bars = [winBar(), pickBar(), prioBar(), G.picking || S().winner ? null : combatBar()].filter(Boolean);
+    engineAsks();
+    const bars = [devBanner(), winBar(), pickBar(), askBar(), prioBar(), G.picking || S().winner ? null : combatBar(), manualBar()].filter(Boolean);
     const main = h('main', { id: 'main' }, bars.length ? h('div', { class: 'bars-top' }, bars) : null, stackStrip(), mainView());
     const view = h('div', { class: 'app' + (G.logOpen || G.aiOpen ? ' withlog' : '') + (COARSE ? ' touch' : '') },
       topBar(), tabsBar(),

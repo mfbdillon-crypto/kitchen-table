@@ -91,6 +91,21 @@
         else if (/(?:equipped|enchanted) (?:creature|permanent) can't block/i.test(t)) out.kws.add("can't block");
         if (/(?:equipped|enchanted) creature can't be blocked\b/i.test(t)) out.kws.add('unblockable');
       }
+      // v6: anthems and keyword grants read from the card model ("Other Elves you control get +1/+1", "Creatures your opponents control get -1/-1", "Dragons you control have flying").
+      const M = root.Oracle ? root.Oracle.model(o) : null;
+      if (M) {
+        for (const a of M.abilities) {
+          if (a.kind !== 'static' || (a.sub !== 'anthem' && a.sub !== 'grant')) continue;
+          if (a.who === 'you' && o.ctrl !== c.ctrl) continue;
+          if (a.who === 'opp' && o.ctrl === c.ctrl) continue;
+          if (a.other && o.id === c.id) continue;
+          const f = String(a.filter || 'creatures').toLowerCase().replace(/\bcreatures\b/, 'creature');
+          if (f !== 'creature' && !matchesWhat(c, f.replace(/ves$/, 'f').replace(/ies$/, 'y').replace(/s$/, ''))) continue;
+          if (a.sub === 'anthem') { const n = v => /x/i.test(v) ? 0 : parseInt(v, 10) || 0; out.p += n(a.p); out.t += n(a.t); if (a.kws) addKws(out.kws, a.kws); }
+          else addKws(out.kws, a.kws);
+        }
+        continue;
+      }
       if (o.ctrl !== c.ctrl) continue;
       for (const line of t.split('\n')) {
         let m = line.match(/^(other )?(?:([a-z]+) )?creatures you control get ([+-]\d+)\/([+-]\d+)(?: and have ([a-z ,]+))?\.?$/i);
@@ -233,7 +248,7 @@
       let w = words[i].replace(/[.,;:]$/, '').replace(/'s$/, '');
       const endsHere = /[.,;:]$/.test(words[i]);
       if (w === 'or' && i > 0) { i++; continue; }
-      if (/^non-?/.test(w) && w.length > 4) { req.non.push(w.replace(/^non-?/, '').replace(/s$/, '')); i++; if (endsHere) break; continue; }
+      if (/^non-?/.test(w) && w.length > 4) { req.non.push(w.replace(/^non-?/, '').replace(/s$/, '')); i++; if (endsHere && !/^(non-?[a-z]+|[a-z]+)$/.test((words[i] || '').replace(/[.,;:]$/, '')) ) break; if (endsHere && /[.;:]$/.test(words[i - 1])) break; continue; }
       if ((w === 'attacking' || w === 'blocking') && (words[i + 1] === 'or') && /^(attacking|blocking)$/.test(words[i + 2] || '')) { req.flags.combat = true; i += 3; continue; }
       if (w === 'attacking' || w === 'blocking' || w === 'tapped' || w === 'untapped' || w === 'legendary') { req.flags[w] = true; i++; continue; }
       const base = w === 'sorceries' ? 'sorcery' : w.replace(/s$/, '');
@@ -453,14 +468,20 @@
     return null;
   }
   // Does a permanent fit "nonland permanent", "nontoken creature", "creature or planeswalker"…?
+  const MW_SKIP = new Set(['you', 'control', 'controls', 'your', 'opponent', 'opponents', 'the', 'with', 'card', 'spell', 'attacking', 'blocking', 'tapped', 'untapped', 'that', 'this', 'and', 'from', 'graveyard', 'hand', 'library', 'battlefield', 'player', 'each', 'another', 'target', 'power', 'toughness', 'mana', 'value', 'less', 'greater', 'equal', 'than', 'or', 'any', 'number', 'other', 'face-down', 'face-up', 'nontoken', 'non', 'don\'t', 'doesn\'t', 'without', 'flying', 'reach', 'trample', 'haste', 'counter', 'counters', 'on', 'it', 'its', 'of', 'in', 'under', 'commander', 'historic', 'outlaw', 'party', 'enter', 'enters', 'die', 'dies']);
   function matchesWhat(c, what) {
     const alts = String(what || 'permanent').toLowerCase().replace(/\b(a|an|one|two|other)\b/g, ' ').split(/\s+or\s+|,\s*/);
     const is = k => k === 'permanent' ? true : k === 'token' ? !!c.token : (k === 'creature' && c.faceDown) || isType(c, k);
     return alts.some(alt => alt.trim().split(/\s+/).filter(Boolean).every(w0 => {
-      const w = w0.replace(/ies$/, 'y').replace(/s$/, '');
+      const w = w0.replace(/(elv|dwarv|wolv)es$/, m => m.slice(0, -3) + 'f').replace(/ies$/, 'y').replace(/s$/, '');
       const neg = /^non-?/.test(w) && w.length > 4; const k = neg ? w.replace(/^non-?/, '') : w;
-      if (!['permanent', 'token', 'creature', 'artifact', 'enchantment', 'land', 'planeswalker', 'battle', 'legendary', 'basic', 'snow'].includes(k)) return true;
-      return neg ? !is(k) : is(k);
+      if (['permanent', 'token', 'creature', 'artifact', 'enchantment', 'land', 'planeswalker', 'battle', 'legendary', 'basic', 'snow', 'instant', 'sorcery', 'kindred'].includes(k)) return neg ? !is(k) : is(k);
+      if (['white', 'blue', 'black', 'red', 'green', 'colorless', 'multicolored'].includes(k)) return neg ? !sameColor(c, k) : sameColor(c, k);
+      // Words that aren't about the card itself.
+      if (MW_SKIP.has(k) || k.length < 3 || !/^[a-z'-]+$/.test(k)) return true;
+      // Anything else is a subtype: "Dragon", "Elf", "Equipment", "Aura"… (205.3)
+      const sub = new RegExp('\\b' + k + '(?:s|es)?\\b', 'i').test((typeLine(c).split(/[—-]/)[1] || '')) || (k === 'aura' || k === 'equipment' || k === 'vehicle' ? new RegExp('\\b' + k + '\\b', 'i').test(typeLine(c)) : false) || (c.d && c.faces === undefined && /changeling/i.test(text(c)) && isType(c, 'creature'));
+      return neg ? !sub : sub;
     }));
   }
   // Ward's cost (702.21): "Ward {2}", "Ward—Pay 4 life", "Ward—Discard a card", "Ward—{3}, Pay 3 life", "Ward—Sacrifice a …".

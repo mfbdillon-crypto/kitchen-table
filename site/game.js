@@ -90,6 +90,13 @@
 
   async function act(a) {
     if (!G.table) return { ok: false, err: 'Not connected.' };
+    // Developer debugging: actions on someone else's card are sent as that card's controller (or owner); others as the chosen player.
+    if (G.S && G.S.dev && G.S.hostPid === G.KEY && !a.as && a.type !== 'dev' && !['enter', 'counts', 'deck', 'inboxAck', 'todoAck', 'reveal', 'identify', 'log', 'aiSay'].includes(a.type)) {
+      const id = a.id || (Array.isArray(a.ids) && a.ids[0]);
+      const c = id && G.S.cards[id];
+      const as = c ? (c.zone === 'battlefield' || c.zone === 'stack' ? c.ctrl : c.owner) : a.type === 'pass' && G.S.prio && G.S.prio.holder ? G.S.prio.holder : a.type === 'answer' ? ((G.S.ask || []).find(x => x.id === a.id) || {}).pid : G.devAs;
+      if (as && as !== G.KEY && G.S.players[as]) a = Object.assign({}, a, { as });
+    }
     const r = await G.table.act(a);
     if (!r.ok && r.err) { G.toast(r.err, 'err'); if (G.phoneLinked) phoneBanner(r.err); }
     return r;
@@ -220,7 +227,7 @@
     P.hand.push(...got);
     if (P.phase === 'none') P.phase = 'kept';
     savePriv();
-    if (got.length) log(why || `drew ${plural(got.length, 'card')}`);
+    if (got.length) act({ type: 'log', text: why || `drew ${plural(got.length, 'card')}`, drew: got.length });
     // 704.5b: drawing from an empty library loses the game.
     if (got.length < n) act({ type: 'lose', why: 'empty library' });
   };
@@ -270,7 +277,7 @@
     });
     savePriv();
     const land = cards.every(isLand);
-    const r = await act({ type: 'enter', zone, cards: send, tapped: !!opts.tapped, pos: opts.pos, row: opts.row, land: !!opts.playLand, tg: opts.tg, mode: opts.mode, x: opts.x, wardPaid: !!opts.wardPaid, fromPool: opts.fromPool, cast: !!opts.cast, msg: msgFor(zone, Object.assign({ land }, opts), from) });
+    const r = await act({ type: 'enter', zone, from, cards: send, tapped: !!opts.tapped, pos: opts.pos, row: opts.row, land: !!opts.playLand, tg: opts.tg, mode: opts.mode, x: opts.x, wardPaid: !!opts.wardPaid, fromPool: opts.fromPool, cast: !!opts.cast, alt: opts.alt, msg: msgFor(zone, Object.assign({ land }, opts), from) });
     if (r.ok) lastAct = { zone, ids, t: Date.now() };
     if (!r.ok) {
       // Only put the cards back if the table really refused. If we just never heard back, look at the board:
@@ -623,9 +630,14 @@
   function phoneSync() {
     if (!G.phone || !G.phone.linked) return;
     const m = me(), T = G.S && G.S.turn;
+    // What the phone shows: the hand, the AI chat box, or both (tabs). Chosen on the computer.
+    const push = G.LS.get('kt:phonePush', 'hand');
+    const ais = G.S ? G.S.seats.filter(p => G.S.players[p] && G.S.players[p].ai) : [];
+    const chat = push === 'hand' ? null : { ais: ais.map(p => ({ id: p, name: R.nameOf(G.S, p) })), lines: ((G.S && G.S.aichat) || []).slice(-40).map(x => ({ id: x.id, who: x.pid === KEY ? 'You' : (x.name || R.nameOf(G.S, x.pid)), to: x.to ? (x.to === KEY ? 'you' : (x.toName || R.nameOf(G.S, x.to))) : '', text: String(x.text || '').slice(0, 400), mine: x.pid === KEY })) };
     G.phone.send({
       t: 'hand',
-      cards: P.hand.map(c => ({ id: c.id, d: c.d, land: isLand(c), rev: G.isRevealed(c.id) })),
+      push, chat,
+      cards: push === 'chat' ? [] : P.hand.map(c => ({ id: c.id, d: c.d, land: isLand(c), rev: G.isRevealed(c.id) })),
       info: {
         prio: phonePrio(),
         name: m ? m.name : '', life: m ? m.life : 0, lib: P.library.length,
@@ -706,7 +718,7 @@
     }
     const cst = CD.costOf(card); if (wardPaid) cst.g += wardMana;
     if (G.autoPay && !(await G.autoPay(card, x, cst))) { phoneBanner('Not enough untapped mana to pay for it automatically.'); return; }
-    await G.castFromHand(id, { tg: reqs.length ? tg : undefined, mode: mode || undefined, x: x || undefined, wardPaid: wardPaid || undefined, fromPool: G.LS.get('kt:autopay', false) ? G.lastFromPool : undefined });
+    await G.castFromHand(id, { tg: reqs.length ? tg : undefined, mode: mode || undefined, x: x || undefined, wardPaid: wardPaid || undefined, fromPool: G.lastFromPool });
   }
   G.phoneSync = phoneSync;
 
@@ -731,6 +743,7 @@
       else if (h === 'reveal') G.toggleReveal(id);
     }
     if (m.t === 'draw') G.draw(1);
+    if (m.t === 'chat' && typeof m.text === 'string' && m.text.trim()) { const ais = G.S.seats.filter(p => G.S.players[p] && G.S.players[p].ai); const to = ais.includes(m.to) ? m.to : ais[0]; if (to) act({ type: 'aiAsk', to, text: m.text.trim().slice(0, 300) }); }
     if (m.t === 'opening') G.openingHand();
     if (m.t === 'keep') G.keep();
     if (m.t === 'mulligan') G.mulligan();

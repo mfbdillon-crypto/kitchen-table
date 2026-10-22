@@ -1,0 +1,822 @@
+// Kitchen Table — the rules engine for triggered abilities, temporary effects and turn flow (v6).
+// rules.js reports what happens (cards changing zones, spells cast, attacks, blocks, combat damage, life
+// changes, steps of the turn) and this file:
+//   • finds every triggered ability that triggers (603.2), checks intervening "if" conditions (603.4),
+//   • puts them on the stack the next time a player would get priority, active player's first (APNAP, 603.3b),
+//     choosing targets as they go on the stack (603.3d) — the controller is asked when there is a real choice,
+//   • asks "use it?" for optional ("you may") abilities when they resolve,
+//   • carries out what the ability says (effects.js), and hands anything it can't do to the controller by name,
+//   • keeps "until end of turn" changes as badges/counters on the card and removes them in the cleanup step (514.2),
+//   • moves the turn along by itself: untap → upkeep → draw → main 1, then "Go to combat" or "End turn".
+(function (root) {
+  'use strict';
+  const I = () => root.Rules && root.Rules._int;
+  const Cd = () => root.Cards;
+  const O = () => root.Oracle;
+  const ASK_MS = 120000;                 // 2 minutes, then the table decides
+  let EV = [];
+  const META = new WeakMap();
+  const STEP_KEY = { 'Upkeep': 'upkeep', 'Draw': 'draw', 'Main 1': 'main1', 'Beginning of combat': 'combat', 'End of combat': 'endCombat', 'Main 2': 'main2', 'End step': 'end' };
+
+  function emit(e) { if (EV.length < 400) EV.push(e); }
+  function lifeMap(s) { const o = {}; for (const p of s.seats || []) if (s.players[p]) o[p] = s.players[p].life; return o; }
+  function meta(s) {
+    let m = META.get(s);
+    if (!m) { m = { life: lifeMap(s), turn: s.turn ? { n: s.turn.n, phase: s.turn.phase } : null }; META.set(s, m); }
+    return m;
+  }
+  function begin(s) { meta(s); }
+  function stats(s) { const T = s.turn; T.stats = T.stats || { attacked: {}, died: 0, gained: {}, lost: {}, spells: {}, drew: {} }; return T.stats; }
+  // A copy of a card as it was (for "leaves the battlefield" abilities, which look back in time — 603.10).
+  function snap(c) { return Object.assign({}, c, { counters: Object.assign({}, c.counters || {}), wasCre: !!(c.faceDown || (I() && I().isType(c, 'creature'))), pw: (Cd() && Cd().pt(null, c) || [0, 0])[0] }); }
+  function cardName(c) { return I().cardName(c); }
+  function nameOf(s, p) { return I().nameOf(s, p); }
+  const isAI = (s, p) => !!(s.players[p] && s.players[p].ai);
+  const norm = t => String(t || '').toLowerCase().replace(/[^a-z0-9+/]+/g, ' ').trim();
+
+  // ======================= finding triggers =======================
+  // Turn the raw reports into trigger events, then look at every permanent's triggered abilities.
+  function check(s, notes) {
+    const R = I(); if (!R || !s.turn || !s.turn.active || !O()) { EV = []; return 0; }
+    const m = meta(s), T = s.turn, st = stats(s);
+    const raw = EV.splice(0);
+    const evs = [];
+    // Life totals that changed (119.9 "gains life", "loses life").
+    for (const pid of s.seats) {
+      const P = s.players[pid]; if (!P) continue;
+      const was = m.life[pid];
+      if (was != null && P.life !== was) {
+        const d = P.life - was;
+        evs.push({ type: d > 0 ? 'gainLife' : 'loseLife', player: pid, n: Math.abs(d) });
+        (d > 0 ? st.gained : st.lost)[pid] = (((d > 0 ? st.gained : st.lost)[pid]) || 0) + Math.abs(d);
+      }
+    }
+    m.life = lifeMap(s);
+    // Steps of the turn that began since the last look.
+    if (m.turn) {
+      const steps = [];
+      if (T.n === m.turn.n) { for (let i = m.turn.phase + 1; i <= T.phase; i++) steps.push(i); }
+      else if (T.n > m.turn.n) { for (let i = 1; i <= T.phase; i++) steps.push(i); }
+      for (const i of steps) {
+        const k = STEP_KEY[R.PHASES[i]]; if (!k) continue;
+        evs.push({ type: 'step', step: k, player: T.active });
+        if (k === 'main1') loreUp(s, T.active, evs, notes);
+        // 724.2: the monarch draws a card at the beginning of their end step.
+        if (k === 'end' && s.table && s.table.monarch === T.active) { R.todo(s, T.active, { k: 'draw', n: 1, src: 'the monarch' }); notes.push(`${nameOf(s, T.active)} draws a card for being the monarch`); }
+      }
+    }
+    m.turn = { n: T.n, phase: T.phase };
+    // Zone changes.
+    const left = [];
+    for (const e of raw) {
+      // 724.2: combat damage to the monarch makes the attacking creature's controller the monarch.
+      if (e.type === 'combatDamage' && e.to === 'player' && s.table && s.table.monarch === e.player && e.card && e.card.ctrl !== e.player) { s.table.monarch = e.card.ctrl; notes.push(`${nameOf(s, e.card.ctrl)} became the monarch (combat damage to the monarch)`); }
+      if (e.type !== 'zone') { evs.push(e); continue; }
+      const c = e.card, now = s.cards[c.id];
+      if (e.to === 'battlefield' && e.from !== 'battlefield' && now) {
+        evs.push({ type: 'enter', card: now, player: now.ctrl, from: e.from });
+        // Evoke (702.74a): "When it enters, if its evoke cost was paid, its controller sacrifices it."
+        if (now.alt === 'evoke') { s.tq = s.tq || []; s.tq.push({ id: 'q' + (++s.seq), src: now.id, name: cardName(now), d: now.d, face: now.face || 0, ctrl: now.ctrl, i: -1, text: 'Evoke', effect: 'sacrifice this.', fixed: [{ op: 'sacrifice', what: { k: 'self' } }], optional: false, ctx: ctxOf(s, { card: now }), t: Date.now() }); }
+        // Blitz: "When this creature dies, draw a card."
+        if (now.alt === 'blitz') now.blitzed = true;
+        if (now.zone === 'battlefield' && /\bsaga\b/i.test(R.typeLine(now)) && !now.faceDown) { now.counters.lore = (now.counters.lore || 0) + 1; evs.push({ type: 'chapter', card: now, n: now.counters.lore }); }
+      }
+      if (e.from === 'battlefield' && e.to !== 'battlefield') {
+        left.push(c);
+        if (e.to === 'graveyard' && c.wasCre) { evs.push({ type: 'die', card: c, ctrl: c.ctrl, player: c.ctrl }); st.died++; if (c.blitzed) { R.todo(s, c.ctrl, { k: 'draw', n: 1, src: cardName(c) + ' (blitz)' }); notes.push(`${nameOf(s, c.ctrl)} draws a card — ${cardName(c)} was blitzed and died`); } }
+        evs.push({ type: 'leave', card: c, to: e.to });
+        if (e.sac) evs.push({ type: 'sacrifice', card: c, player: c.ctrl });
+      }
+      if (e.to === 'graveyard') evs.push({ type: 'toGraveyard', card: now || c, from: e.from });
+    }
+    if (!evs.length) return place(s, notes);
+    const onBf = Object.values(s.cards).filter(c => c.zone === 'battlefield' && !c.faceDown && c.d);
+    const leftIds = new Set(left.map(c => c.id));
+    const manyDone = new Set();
+    let found = 0;
+    for (const ev of evs) {
+      const pool = onBf.slice();
+      if (ev.type === 'die' || ev.type === 'leave') for (const c of left) if (!pool.some(x => x.id === c.id)) pool.push(c);
+      if (ev.type === 'toGraveyard' && ev.card && ev.card.zone === 'graveyard' && !pool.includes(ev.card)) pool.push(ev.card);
+      for (const src of pool) {
+        if (!src.d || src.faceDown) continue;
+        const M = O().model(src); if (!M) continue;
+        M.abilities.forEach((a, i) => {
+          if (a.kind !== 'triggered' || !a.event || a.event.type === 'other') return;
+          const isLeave = a.event.type === 'die' || a.event.type === 'leave';
+          if (leftIds.has(src.id) && !isLeave && !(ev.type === 'toGraveyard' && a.event.type === 'toGraveyard')) return;
+          if (src.zone === 'graveyard' && a.event.type !== 'toGraveyard') return;
+          let ok = false; try { ok = O().fires(s, src, a, ev); } catch (e) { ok = false; }
+          if (!ok) return;
+          if (/\bone or more\b/.test(a.eventText || '') || a.event.many) { const k = src.id + '#' + i + '#' + (ev.player || ''); if (manyDone.has(k)) return; manyDone.add(k); }
+          if (a.oncePerTurn) { T.once = T.once || {}; const k = src.id + '#' + i; if (T.once[k] === T.n) return; T.once[k] = T.n; }
+          const cond = a.condition ? O().conditionHolds(s, src, a.condition) : true;
+          if (cond === false) return;
+          queue(s, src, a, i, ev, cond === null);
+          found++;
+        });
+      }
+    }
+    return place(s, notes);
+  }
+  // Sagas: a lore counter as your precombat main phase begins (714.3b).
+  function loreUp(s, pid, evs) {
+    for (const c of Object.values(s.cards)) {
+      if (c.zone !== 'battlefield' || c.ctrl !== pid || c.faceDown || !/\bsaga\b/i.test(I().typeLine(c))) continue;
+      c.counters.lore = (c.counters.lore || 0) + 1;
+      evs.push({ type: 'chapter', card: c, n: c.counters.lore });
+    }
+  }
+  function ctxOf(s, ev) {
+    const c = ev.card || null;
+    let mv = 0, pw = null, tg = null;
+    if (c && c.d) { mv = +c.d.cmc || 0; const p = Cd().pt(s, c) || (c.pw != null ? [c.pw, 0] : null); pw = p ? p[0] : null; tg = p ? p[1] : null; }
+    return { c: c ? c.id : null, cName: c ? cardName(c) : null, ctrl: c ? c.ctrl : null, p: ev.player || (c && c.ctrl) || null, n: ev.n || null, mv, pw, tg, step: ev.step || null, type: ev.type };
+  }
+  function queue(s, src, a, i, ev, askCond) {
+    s.tq = s.tq || [];
+    const ops = a.ops || [];
+    const anyOptional = a.optional || ops.some(o => o.optional) || (ops.find(o => o.op === 'modes') || { modes: [] }).modes.some(md => md.ops.some(o => o.optional));
+    s.tq.push({
+      id: 'q' + (++s.seq), src: src.id, name: cardName(src), d: src.d, face: src.face || 0, ctrl: src.ctrl, i,
+      text: a.text, effect: a.effect, optional: !!anyOptional, cond: a.condition || null, askCond: !!askCond,
+      ctx: ctxOf(s, ev), modal: !!(a.modes && a.modes.length), t: Date.now()
+    });
+  }
+  function abilityOf(item) {
+    if (item.fixed) return { ops: item.fixed, kind: 'triggered', text: item.text, effect: item.effect };
+    const m = O().model({ d: item.d, face: item.face || 0 });
+    return m && m.abilities[item.i];
+  }
+
+  // ======================= putting triggers on the stack =======================
+  function place(s, notes) {
+    if (!s.tq || !s.tq.length) return 0;
+    const R = I(), T = s.turn;
+    if ((s.ask || []).some(x => x.kind === 'targets' || x.kind === 'modes' || x.kind === 'order')) return 0;
+    const order = R.rotate(s, T.active || s.seats[0]);
+    s.tq.sort((a, b) => (order.indexOf(a.ctrl) - order.indexOf(b.ctrl)) || (a.ord != null && b.ord != null ? a.ord - b.ord : 0));
+    // Several triggers of one human player at once: they may pick the order (603.3b). Ask once.
+    const mine = {};
+    for (const q of s.tq) if (!q.ordered) (mine[q.ctrl] = mine[q.ctrl] || []).push(q);
+    for (const [pid, list] of Object.entries(mine)) {
+      if (list.length > 1 && !isAI(s, pid) && R.live(s, pid) && new Set(list.map(q => q.effect)).size > 1) {
+        list.forEach((q, k) => { q.ordered = true; q.ord = k; });
+        s.ask = (s.ask || []).concat([{ id: 'a' + (++s.seq), kind: 'order', pid, items: list.map(q => ({ id: q.id, name: q.name, text: q.effect })), since: Date.now() }]);
+        return 0;
+      }
+      for (const q of list) q.ordered = true;
+    }
+    let placed = 0;
+    while (s.tq.length) {
+      const q = s.tq[0];
+      if (!R.alive(s, q.ctrl)) { s.tq.shift(); continue; }
+      const prep = prepare(s, q);
+      if (prep === 'ask') break;
+      s.tq.shift();
+      if (prep === 'drop') { notes.push(`${q.name}’s triggered ability was removed from the stack — it has no legal target (603.3d)`); continue; }
+      pushStack(s, q, prep, notes); placed++;
+    }
+    if (placed) R.startPrio(s, null, notes);
+    return placed;
+  }
+  // Targets (and modes) are chosen as the ability is put on the stack.
+  function prepare(s, q) {
+    const R = I(), C = Cd();
+    const a = abilityOf(q); if (!a) return 'drop';
+    const ops = a.ops || [];
+    const mo = ops.find(o => o.op === 'modes');
+    if (mo && q.mode == null) {
+      const max = typeof mo.choose === 'number' ? mo.choose : mo.choose.max;
+      const min = typeof mo.choose === 'number' ? mo.choose : mo.choose.min;
+      if (isAI(s, q.ctrl) || q.timeout) {
+        // Pick the first mode(s) that can actually do something.
+        const okModes = mo.modes.map((md, k) => k).filter(k => { const reqs = C.targetsIn(mo.modes[k].text); return reqs.every(r => r.upTo || C.targetChoices(s, r, q.ctrl).length); });
+        q.mode = (okModes.length ? okModes : [0]).slice(0, Math.max(1, min));
+      } else {
+        s.ask = (s.ask || []).concat([{ id: 'a' + (++s.seq), kind: 'modes', pid: q.ctrl, q: q.id, name: q.name, modes: mo.modes.map(md => md.text), min, max, since: Date.now() }]);
+        return 'ask';
+      }
+    }
+    const text = mo ? q.mode.map(k => mo.modes[k] && mo.modes[k].text).filter(Boolean).join('. ') : q.effect;
+    const reqs = C.targetsIn(text || '');
+    if (!reqs.length) return { tg: [], reqs: [] };
+    const srcCard = s.cards[q.src] || { d: q.d, face: q.face, ctrl: q.ctrl, id: q.src };
+    const choices = reqs.map(r => C.targetChoices(s, r, q.ctrl).filter(t => !(t.c && r.other && t.c === q.src) && !(t.c && s.cards[t.c] && C.protectedFrom(s.cards[t.c], srcCard, s))));
+    if (reqs.some((r, k) => !r.upTo && !choices[k].length)) return 'drop';
+    if (q.tg) return { tg: q.tg, reqs };
+    const forced = reqs.every((r, k) => r.upTo ? !choices[k].length : choices[k].length <= r.n);
+    if (forced) return { tg: choices.map((l, k) => l.slice(0, reqs[k].n)), reqs };
+    if (isAI(s, q.ctrl) || q.timeout || !I().live(s, q.ctrl)) return { tg: autoTargets(s, q, reqs, choices, ops, mo), reqs };
+    s.ask = (s.ask || []).concat([{ id: 'a' + (++s.seq), kind: 'targets', pid: q.ctrl, q: q.id, name: q.name, text: text, src: q.src,
+      reqs: reqs.map((r, k) => ({ label: C.reqLabel ? C.reqLabel(r) : r.text, n: r.n, upTo: r.upTo, choices: choices[k].slice(0, 60), helpful: helpfulIdx(ops, mo, q, k) })), since: Date.now() }]);
+    return 'ask';
+  }
+  // Is target number k something the ability helps (a pump, counters…) or hurts (damage, destroy…)?
+  const HELP = { pump: o => !/^-/.test(String(o.p)) && !/^-/.test(String(o.t)), grant: () => true, untap: () => true, counters: o => o.kind !== '-1/-1' && !(o.n < 0), copyToken: () => true, attach: () => true, flicker: () => true, regen: () => true };
+  function helpfulIdx(ops, mo, q, k) {
+    let list = ops;
+    if (mo && q.mode) { list = []; let off = 0; for (const mi of q.mode) { const md = mo.modes[mi]; if (!md) continue; for (const o of md.ops) list.push(shiftOp(o, off)); off += md.nTargets || 0; } }
+    for (const o of list) {
+      const refs = [o.what, o.to, o.on, o.who, o.a, o.b].filter(Boolean);
+      if (refs.some(r => r.k === 't' && r.i === k)) {
+        if (o.op === 'move') return o.to === 'battlefield' || (o.to === 'hand' && /graveyard/.test(String(o.what && o.what.what)));
+        if (o.op === 'fight') return o.a && o.a.i === k;
+        return HELP[o.op] ? !!HELP[o.op](o) : false;
+      }
+    }
+    return false;
+  }
+  function autoTargets(s, q, reqs, choices, ops, mo) {
+    const C = Cd();
+    return reqs.map((r, k) => {
+      const helpful = helpfulIdx(ops, mo, q, k);
+      let list = C.orderChoices(s, choices[k], q.ctrl, helpful);
+      // Among the right side, the biggest threat (or best friend) first.
+      const score = t => t.p ? (helpful ? 0 : 100 - (s.players[t.p].life || 0) / 10) : ((C.pt(s, s.cards[t.c]) || [0])[0] * 2 + (+((s.cards[t.c].d || {}).cmc) || 0));
+      const mineT = t => t.p ? t.p === q.ctrl : s.cards[t.c] && (s.cards[t.c].zone === 'graveyard' ? s.cards[t.c].owner : s.cards[t.c].ctrl) === q.ctrl;
+      list = list.filter(t => mineT(t) === helpful).sort((a, b) => score(b) - score(a)).concat(list.filter(t => mineT(t) !== helpful));
+      if (r.upTo && list.length && mineT(list[0]) !== helpful) return [];
+      return list.slice(0, Math.min(r.n, 20));
+    });
+  }
+  function pushStack(s, q, prep, notes) {
+    const R = I();
+    const a = abilityOf(q) || {};
+    const id = 'tr' + (++s.seq) + '-' + String(q.src).slice(0, 12);
+    const it = s.cards[id] = {
+      id, owner: q.ctrl, ctrl: q.ctrl, d: q.d, face: q.face || 0, faceDown: false, token: true, cmdr: false, tapped: false, counters: {}, mod: null,
+      attachedTo: null, row: null, zone: 'stack', seq: ++s.seq,
+      ab: { src: q.src, text: String(q.effect || '').slice(0, 600), name: q.name, trig: true, eng: true, i: q.i, fixed: q.fixed || undefined, optional: q.optional, cond: q.cond, askCond: q.askCond, ctx: q.ctx, mode: q.mode || null, ev: a.eventText || '' },
+      tg: prep.tg, reqs: prep.reqs, x: 0
+    };
+    R.wardFor(s, q.ctrl, it, null);
+    const what = String(q.effect || '').replace(/^this /i, q.name + ' ');
+    R.log(s, q.ctrl, `${q.name} triggered${a.eventText ? ' (' + a.eventText.replace(/\bthis\b/g, q.name) + ')' : ''}: “${what}”${R.targetText(s, it)}`, 'trig');
+  }
+
+  // ======================= resolving =======================
+  // Before an engine ability resolves: "use it?" for optional abilities; unknown "if" conditions.
+  function hold(s, notes) {
+    const R = I(); const top = R.stackTop(s);
+    if (!top || !top.ab || !top.ab.eng) return false;
+    const ab = top.ab;
+    const need = (ab.optional && ab.may === undefined) || (ab.askCond && ab.condOk === undefined);
+    if (!need) return false;
+    if (isAI(s, top.ctrl) || !R.live(s, top.ctrl)) { if (ab.may === undefined) ab.may = true; if (ab.condOk === undefined) ab.condOk = true; return false; }
+    if ((s.ask || []).some(x => x.kind === 'may' && x.item === top.id)) { if (s.prio) s.prio.holder = null; return true; }
+    s.ask = (s.ask || []).concat([{ id: 'a' + (++s.seq), kind: 'may', pid: top.ctrl, item: top.id, name: ab.name, text: ab.text, cond: ab.askCond ? ab.cond : null, since: Date.now() }]);
+    if (s.prio) s.prio.holder = null;
+    return true;
+  }
+  function resolve(s, item, notes) {
+    const R = I(), C = Cd();
+    const ab = item.ab, by = item.ctrl;
+    delete s.cards[item.id];
+    if (ab.optional && ab.may === false) { notes.push(`${nameOf(s, by)} chose not to use ${ab.name}’s ability`); return; }
+    if (ab.askCond && ab.condOk === false) { notes.push(`${ab.name}’s ability did nothing — “if ${ab.cond}” wasn’t true (603.4)`); return; }
+    // 603.4: an intervening "if" is checked again on resolution.
+    if (ab.cond && !ab.askCond) { const src = s.cards[ab.src] || { ctrl: by, id: ab.src }; if (O().conditionHolds(s, src, ab.cond) === false) { notes.push(`${ab.name}’s ability did nothing — “if ${ab.cond}” is no longer true (603.4)`); return; } }
+    const reqs = item.reqs || [], tg = item.tg || [];
+    const legal = reqs.map((r, i) => (tg[i] || []).filter(t => C.legalTarget(s, r, t, by)));
+    if (tg.some(l => l && l.length) && legal.every(l => !l.length)) { notes.push(`${ab.name}’s ability didn’t resolve — its target${[].concat(...tg).length > 1 ? 's are' : ' is'} no longer legal (608.2b)`); return; }
+    const a = abilityOf({ d: item.d, face: item.face, i: ab.i, fixed: ab.fixed, text: ab.text, effect: ab.text });
+    let ops = a ? a.ops || [] : (root.Effects ? root.Effects.parse(ab.text).ops : []);
+    run(s, item, ops, legal, notes, { mode: ab.mode });
+  }
+  // The operations of a spell (or of an activated ability on the stack).
+  function spellOps(s, c) {
+    if (!root.Effects || !c.d) return null;
+    if (c.ab) { const r = root.Effects.parse(O().selfRef(c.ab.text, c.ab.name)); return { ops: r.ops, understood: r.understood && r.ops.every(o => o.op !== 'manual') }; }
+    if (c.alt === 'overload') { const r = root.Effects.parse(Cd().spellText(c).replace(/\btarget\b/gi, 'each').replace(/\beach (creatures?|permanents?|artifacts?|[a-z]+) you don't control\b/gi, 'each $1 your opponents control')); return { ops: r.ops, understood: r.understood && r.ops.every(o => o.op !== 'manual') }; }
+    const M = O().model(c); if (!M) return null;
+    const sp = M.abilities.filter(a => a.kind === 'spell' && a.ops);
+    if (!sp.length) return null;
+    const ops = []; let off = 0, und = true;
+    for (const a of sp) {
+      for (const o of a.ops) ops.push(o.op === 'modes' ? o : shiftOp(o, off));
+      off += a.nTargets || 0;
+      und = und && a.understood !== false;
+    }
+    return { ops, understood: und && ops.every(o => o.op !== 'manual') };
+  }
+  // Spells and activated abilities whose whole text the engine understands also resolve here.
+  function canRun(text) { if (!root.Effects) return false; const r = root.Effects.parse(text); return r.understood && r.ops.length > 0 && r.ops.every(o => o.op !== 'manual'); }
+
+  function shiftOp(o, off) {
+    if (!off) return o;
+    const c = JSON.parse(JSON.stringify(o));
+    for (const k of ['what', 'to', 'on', 'who', 'a', 'b', 'of']) if (c[k] && c[k].k === 't') c[k].i += off;
+    return c;
+  }
+  // Carry out a list of operations. legal[i] = the still-legal targets for target number i.
+  function run(s, item, ops, legal, notes, opt) {
+    const R = I(), C = Cd();
+    opt = opt || {};
+    const by = item.ctrl, ab = item.ab || {}, ctx = ab.ctx || {};
+    const srcId = ab.src || item.id;
+    const src = s.cards[srcId] || item;
+    const srcName = ab.name || cardName(item);
+    const X = item.x || 0;
+    const st = { did: true, last: 0, manual: [] };
+    const tcard = t => t && t.c && s.cards[t.c];
+    const players = w => {
+      if (!w) return [by];
+      switch (w.k) {
+        case 'you': return [by];
+        case 'eachOpp': return s.seats.filter(p => p !== by && R.alive(s, p));
+        case 'eachPlayer': return s.seats.filter(p => R.alive(s, p));
+        case 'eachOther': return s.seats.filter(p => p !== by && R.alive(s, p));
+        case 'evPlayer': return ctx.p ? [ctx.p] : [];
+        case 'controllerOf': { if (w.of && w.of.k === 'attached') { const at = s.cards[src.attachedTo]; return at ? [at.ctrl] : []; } const c = s.cards[ctx.c]; return c ? [c.zone === 'battlefield' ? c.ctrl : c.owner] : ctx.ctrl ? [ctx.ctrl] : []; }
+        case 'ownerOf': { const c = s.cards[ctx.c]; return c ? [c.owner] : []; }
+        case 't': return (legal[w.i] || []).filter(t => t.p).map(t => t.p);
+      }
+      return [];
+    };
+    const count = v => {
+      const w = String(v.what || '').replace(/ (?:you control|on the battlefield|your opponents control|an opponent controls)$/, '');
+      const list = Object.values(s.cards).filter(c => c.zone === 'battlefield' && (v.ctrl === 'you' ? c.ctrl === by : v.ctrl === 'opp' ? c.ctrl !== by : true));
+      return list.filter(c => C.matchesWhat(c, w.replace(/s$/, '').replace(/ies$/, 'y'))).length * (v.times || 1);
+    };
+    const val = n => {
+      if (n == null) return 1;
+      if (typeof n === 'number') return n;
+      switch (n.v) {
+        case 'X': return X;
+        case 'thatMany': return ctx.n || st.last || 0;
+        case 'lastAmount': return st.last || ctx.n || 0;
+        case 'count': return count(n);
+        case 'hand': return (s.players[by] || {}).handCount || 0;
+        case 'gy': return Object.values(s.cards).filter(c => c.zone === 'graveyard' && c.owner === by && (!n.what || n.what === 'card' || C.matchesWhat(c, n.what.replace(/ cards?$/, '')))).length;
+        case 'evMV': return ctx.mv || 0;
+        case 'evPower': return ctx.pw || 0;
+        case 'evToughness': return ctx.tg || 0;
+        case 'selfPower': return (C.pt(s, src) || [0])[0];
+        case 'selfToughness': return (C.pt(s, src) || [0, 0])[1];
+        case 'maxPower': return Math.max(0, ...Object.values(s.cards).filter(c => c.zone === 'battlefield' && c.ctrl === by && (c.faceDown || R.isType(c, 'creature'))).map(c => (C.pt(s, c) || [0])[0]));
+        case 'opponents': return s.seats.filter(p => p !== by && R.alive(s, p)).length;
+        case 'selfCounters': return (src.counters || {})[n.kind] || 0;
+      }
+      return 0;
+    };
+    const cards = w => {
+      if (!w) return [];
+      switch (w.k) {
+        case 'self': return src && s.cards[src.id] ? [s.cards[src.id]] : [];
+        case 'ev': { const c = s.cards[ctx.c]; return c ? [c] : []; }
+        case 'attached': { const c = s.cards[src.attachedTo]; return c ? [c] : []; }
+        case 't': return (legal[w.i] || []).map(tcard).filter(Boolean);
+        case 'each': case 'eachOppAndCreatures': case 'everything': {
+          const what = w.k === 'each' ? String(w.what || 'permanent').replace(/s$/, '').replace(/^creature$/, 'creature') : 'creature';
+          return Object.values(s.cards).filter(c => c.zone === 'battlefield' && !(w.other && c.id === srcId) &&
+            (w.ctrl === 'you' ? c.ctrl === by : w.ctrl === 'opp' ? c.ctrl !== by : w.ctrl === 'evPlayer' ? c.ctrl === ctx.p : true) &&
+            (what === 'attacking creature' ? !!(s.combat && s.combat.att && s.combat.att[c.id]) : C.matchesWhat(c, what.replace(/ies$/, 'y'))) &&
+            (!w.with || C.has(c, w.with, s)) && (!w.without || !C.has(c, w.without, s)));
+        }
+      }
+      return [];
+    };
+    const both = w => {
+      if (!w) return { ps: [], cs: [] };
+      if (w.k === 't') { const l = legal[w.i] || []; return { ps: l.filter(t => t.p).map(t => t.p), cs: l.map(tcard).filter(Boolean) }; }
+      if (w.k === 'eachOppAndCreatures') return { ps: players({ k: 'eachOpp' }), cs: cards(w) };
+      if (w.k === 'everything') return { ps: players({ k: 'eachPlayer' }), cs: cards(w) };
+      if (['you', 'eachOpp', 'eachPlayer', 'eachOther', 'evPlayer', 'controllerOf', 'ownerOf'].includes(w.k)) return { ps: players(w), cs: [] };
+      return { ps: [], cs: cards(w) };
+    };
+    const hurt = (target, n, from) => {
+      if (n <= 0) return;
+      from = from || src;
+      const kws = C.keywords(from, s);
+      if (target.p) {
+        const P = s.players[target.p]; if (!P) return;
+        if (kws.has('infect')) P.poison += n; else P.life -= n;
+        R.alertChecks(s, target.p);
+      } else {
+        const c = target.c; if (!c || c.zone !== 'battlefield') return;
+        if (C.protectedFrom(c, from, s)) { notes.push(`${cardName(c)}’s protection prevented ${n} damage`); return; }
+        if (R.isType(c, 'planeswalker') && !R.isType(c, 'creature')) c.counters.loyalty = Math.max(0, (c.counters.loyalty || 0) - n);
+        else if (R.isType(c, 'battle') && !R.isType(c, 'creature')) c.counters.defense = Math.max(0, (c.counters.defense || 0) - n);
+        else if (kws.has('infect') || kws.has('wither')) c.counters['-1/-1'] = (c.counters['-1/-1'] || 0) + n;
+        else c.dmg = (c.dmg || 0) + n;
+        if (kws.has('deathtouch')) c.dtd = true;
+      }
+      if (kws.has('lifelink') && s.players[from.ctrl]) s.players[from.ctrl].life += n;
+      st.last += n;
+    };
+    const badge = (c, b) => { c.eot = (c.eot || []).concat([b]).slice(-20); };
+    const addCounter = (c, kind, n) => {
+      kind = String(kind).toLowerCase();
+      if (kind === 'any') { const k = Object.keys(c.counters || {})[0]; if (!k) return; kind = k; }
+      const cur = c.counters[kind] || 0, next = Math.max(0, cur + n);
+      if (next) c.counters[kind] = next; else delete c.counters[kind];
+      const plus = c.counters['+1/+1'] || 0, minus = c.counters['-1/-1'] || 0;
+      if (plus && minus) { const m = Math.min(plus, minus); if (plus - m) c.counters['+1/+1'] = plus - m; else delete c.counters['+1/+1']; if (minus - m) c.counters['-1/-1'] = minus - m; else delete c.counters['-1/-1']; }
+      if (n > 0) emit({ type: 'counter', kind, card: c, n });
+    };
+    const KW = (C.KEYWORDS || []);
+    const grantTo = (c, kwText, untilNext) => {
+      const list = String(kwText || '').toLowerCase().replace(/\.$/, '').split(/,\s*(?:and\s+)?|\s+and\s+(?!from)/).map(x => x.trim()).filter(Boolean);
+      const got = [];
+      for (let k of list) {
+        if (/^protection from /.test(k) || KW.includes(k)) { addCounter(c, k, 1); badge(c, { counter: k, until: untilNext ? by : 'eot', label: k }); got.push(k); }
+        else if (k === 'unblockable' || k === "can't block" || /^can't be blocked/.test(k)) { c.grant = [...new Set((c.grant || []).concat([k === 'unblockable' || /^can't be blocked/.test(k) ? 'unblockable' : k]))]; badge(c, { label: k === "can't block" ? "can't block" : 'unblockable', until: 'eot' }); got.push(k); }
+      }
+      return got;
+    };
+    const pay = cost => {
+      const P = s.players[by]; if (!P) return false;
+      const life = String(cost).match(/^(\d+|x) life$/);
+      if (life) { const n = life[1] === 'x' ? X : +life[1]; if (P.life < n) return false; P.life -= n; return true; }
+      return payMana(s, by, String(cost), notes);
+    };
+    const condOk = cond => { const r = O().conditionHolds(s, Object.assign({}, src, { ctrl: by }), cond); if (r === null) { st.manual.push(`Check: if ${cond}`); return false; } return r; };
+    const runList = (list, off) => {
+      for (let k = 0; k < list.length; k++) {
+        const o = shiftOp(list[k], off || 0);
+        if (o.op === 'if') { if (condOk(o.cond)) runList(o.ops, off); continue; }
+        if (o.op === 'instead') continue;
+        const nx = list[k + 1];
+        if (nx && nx.op === 'instead' && condOk(nx.cond)) { runList(nx.ops, off); continue; }
+        if (o.ifDid && !st.did) continue;
+        if (o.optional && ab.may === false) { st.did = false; continue; }
+        try { one(o); } catch (e) { st.manual.push(String(o.text || o.op)); }
+      }
+    };
+    const one = o => {
+      switch (o.op) {
+        case 'dmg': {
+          const n = val(o.n); const { ps, cs } = both(o.to);
+          for (const p of ps) hurt({ p }, n); for (const c of cs) hurt({ c }, n);
+          notes.push(`${srcName} dealt ${n} damage to ${R.listNames(ps.map(p => nameOf(s, p)).concat(cs.map(cardName))) || 'nothing'}`);
+          break;
+        }
+        case 'draw': for (const p of players(o.who)) R.todo(s, p, { k: 'draw', n: val(o.n), src: srcName }); break;
+        case 'discard': for (const p of players(o.who)) { R.todo(s, p, { k: 'discard', n: o.all ? 99 : val(o.n), random: !!o.random, src: srcName }); notes.push(`${nameOf(s, p)} must discard ${o.all ? 'their hand' : val(o.n)} (${srcName})`); } break;
+        case 'mill': for (const p of players(o.who)) R.todo(s, p, { k: 'mill', n: val(o.n), src: srcName }); break;
+        case 'life': {
+          const n = val(o.n); const ps = players(o.who);
+          for (const p of ps) { const P = s.players[p]; if (!P) continue; P.life += o.sign * n; R.alertChecks(s, p); }
+          st.last = n;
+          notes.push(`${R.listNames(ps.map(p => nameOf(s, p)))} ${o.sign > 0 ? 'gained' : 'lost'} ${n} life (${srcName})`);
+          break;
+        }
+        case 'sacrifice': {
+          if (o.what && typeof o.what === 'object') { for (const c of cards(o.what)) { R.moveOne(s, c, 'graveyard', 'top', { sac: true }, notes); notes.push(`${nameOf(s, c.ctrl)} sacrificed ${cardName(c)}`); } break; }
+          for (const p of players(o.who)) { R.todo(s, p, { k: 'sacrifice', n: val(o.n), what: String(o.what || 'permanent'), src: srcName }); notes.push(`${nameOf(s, p)} must sacrifice ${o.what} (${srcName})`); }
+          break;
+        }
+        case 'scry': R.todo(s, by, { k: 'scry', n: val(o.n), src: srcName }); break;
+        case 'surveil': R.todo(s, by, { k: 'surveil', n: val(o.n), src: srcName }); break;
+        case 'monarch': { const p = players(o.who)[0]; if (p) { s.table.monarch = p; notes.push(`${nameOf(s, p)} became the monarch`); } break; }
+        case 'initiative': { const p = players(o.who)[0]; if (p) { s.table.initiative = p; notes.push(`${nameOf(s, p)} took the initiative`); } break; }
+        case 'token': {
+          const sp = o.spec, n = val(sp.n);
+          const d = R.tokenD({ what: sp.named || sp.desc, p: sp.p === 'x' ? String(val(sp.x || { v: 'X' })) : sp.p || '', t: sp.t === 'x' ? String(val(sp.x || { v: 'X' })) : sp.t || '', kws: sp.kws });
+          for (const p of players(o.who)) {
+            const before = new Set(Object.keys(s.cards));
+            R.makeToken(s, p, d, n, sp.tapped || sp.attacking, notes);
+            emit({ type: 'token', player: p });
+            if (sp.attacking && s.combat && s.combat.att) {
+              const myAtt = Object.values(s.combat.att)[0];
+              for (const id of Object.keys(s.cards)) if (!before.has(id) && myAtt) s.combat.att[id] = { def: myAtt.def, blk: [] };
+            }
+            notes.push(`${nameOf(s, p)} created ${n > 1 ? n + ' ' : 'a '}${d.n} token${n > 1 ? 's' : ''} (${srcName})`);
+          }
+          break;
+        }
+        case 'copyToken': for (const c of cards(o.of)) { if (!c.d) continue; R.makeToken(s, by, JSON.parse(JSON.stringify(c.d)), 1, false, notes); notes.push(`${nameOf(s, by)} created a token copy of ${cardName(c)}`); } break;
+        case 'proliferate': {
+          const got = [];
+          for (const c of Object.values(s.cards)) {
+            if (c.zone !== 'battlefield' || !c.counters) continue;
+            const ks = Object.keys(c.counters).filter(k => c.ctrl === by ? !['-1/-1', 'stun'].includes(k) : ['-1/-1', 'stun'].includes(k));
+            for (const k of ks) addCounter(c, k, 1);
+            if (ks.length) got.push(cardName(c));
+          }
+          for (const p of s.seats) { const P = s.players[p]; if (!P) continue; if (p !== by && P.poison > 0) { P.poison++; got.push(nameOf(s, p)); } if (p === by && P.energy > 0) P.energy++; if (p === by && P.exp > 0) P.exp++; }
+          notes.push(`${nameOf(s, by)} proliferated${got.length ? ': ' + R.listNames(got) : ''}`);
+          break;
+        }
+        case 'amass': {
+          let army = Object.values(s.cards).find(c => c.zone === 'battlefield' && c.ctrl === by && /\barmy\b/i.test(R.typeLine(c)));
+          if (!army) {
+            const t = o.type[0].toUpperCase() + o.type.slice(1);
+            const before = new Set(Object.keys(s.cards));
+            R.makeToken(s, by, { n: t + ' Army', col: ['B'], faces: [{ n: t + ' Army', t: 'Token Creature — ' + t + ' Army', img: '', p: '0', tg: '0', mc: '', o: '' }] }, 1, false, notes);
+            army = Object.values(s.cards).find(c => !before.has(c.id));
+          }
+          if (army) { addCounter(army, '+1/+1', val(o.n)); notes.push(`${nameOf(s, by)} amassed ${val(o.n)} (${cardName(army)})`); }
+          break;
+        }
+        case 'untap': {
+          if (o.what && o.what.k === 'chooseUntap') { let n = o.what.n; for (const c of Object.values(s.cards)) if (n > 0 && c.zone === 'battlefield' && c.ctrl === by && c.tapped && R.isType(c, 'land')) { c.tapped = false; c.manaAt = null; n--; } notes.push(`${nameOf(s, by)} untapped ${o.what.n - n} land${o.what.n - n === 1 ? '' : 's'}`); break; }
+          const cs = cards(o.what); for (const c of cs) { c.tapped = false; c.manaAt = null; }
+          if (cs.length) notes.push(`${srcName} untapped ${R.listNames(cs.map(cardName))}`); break;
+        }
+        case 'tap': { const cs = cards(o.what); for (const c of cs) c.tapped = true; if (cs.length) notes.push(`${srcName} tapped ${R.listNames(cs.map(cardName))}`); break; }
+        case 'addMana': {
+          let units = Array.isArray(o.units) ? o.units : [];
+          if (o.units && o.units.v) units = Array(val(o.n)).fill(o.units.each || 'WUBRG');
+          R.addPool(s, by, units);
+          notes.push(`${nameOf(s, by)} added ${units.map(u => '{' + (u.length > 1 ? (u === 'WUBRG' ? 'any' : u.split('').join('/')) : u) + '}').join('')} (${srcName})`);
+          break;
+        }
+        case 'counters': {
+          const n = val(typeof o.n === 'number' && o.n < 0 ? -o.n : o.n) * (typeof o.n === 'number' && o.n < 0 ? -1 : 1);
+          const { ps, cs } = both(o.on);
+          for (const c of cs) addCounter(c, o.kind, n);
+          for (const p of ps) { const P = s.players[p]; if (P && /poison/.test(o.kind)) P.poison = Math.max(0, P.poison + n); }
+          if (cs.length || ps.length) notes.push(`${srcName} ${n > 0 ? 'put' : 'removed'} ${Math.abs(n)} ${o.kind === 'any' ? '' : o.kind + ' '}counter${Math.abs(n) > 1 ? 's' : ''} ${n > 0 ? 'on' : 'from'} ${R.listNames(cs.map(cardName).concat(ps.map(p => nameOf(s, p))))}`);
+          break;
+        }
+        case 'doubleCounters': for (const c of cards(o.on)) { const k = String(o.kind).toLowerCase(); if (c.counters[k]) addCounter(c, k, c.counters[k]); } break;
+        case 'pump': {
+          const cs = cards(o.what);
+          const mult = o.per ? val({ v: 'count', what: o.per, ctrl: /you control/.test(o.per) ? 'you' : 'any' }) : 1;
+          const num = v => /x/.test(v) ? Math.sign(parseInt(v.replace(/x/, '1'), 10)) * X : parseInt(v, 10) * mult;
+          const p = num(o.p), t = num(o.t);
+          for (const c of cs) { c.mod = [(c.mod ? c.mod[0] : 0) + p, (c.mod ? c.mod[1] : 0) + t]; badge(c, { label: `${p >= 0 ? '+' : ''}${p}/${t >= 0 ? '+' : ''}${t}`, until: 'eot' }); if (o.kws) grantTo(c, o.kws); }
+          if (cs.length) notes.push(`${R.listNames(cs.map(cardName))} got ${p >= 0 ? '+' : ''}${p}/${t >= 0 ? '+' : ''}${t}${o.kws ? ' and ' + o.kws : ''} until end of turn (${srcName})`);
+          break;
+        }
+        case 'grant': {
+          const cs = cards(o.what); const got = [];
+          for (const c of cs) got.push(...grantTo(c, o.kws, o.untilNext));
+          if (cs.length) notes.push(`${R.listNames(cs.map(cardName))} gained ${o.kws} ${o.untilNext ? 'until ' + nameOf(s, by) + '’s next turn' : 'until end of turn'} (${srcName})`);
+          if (!got.length) st.manual.push(`Give ${o.kws}`);
+          break;
+        }
+        case 'destroy': for (const c of cards(o.what)) { if (C.has(c, 'indestructible', s)) { notes.push(`${cardName(c)} is indestructible`); continue; } const nm = cardName(c); R.moveOne(s, c, 'graveyard', 'top', null, notes); notes.push(`${srcName} destroyed ${nm}`); } break;
+        case 'flicker': for (const c of cards(o.what)) { const owner = c.owner, nm = cardName(c); R.moveOne(s, c, 'exile', 'top', null, notes); const again = s.cards[c.id]; if (again) R.moveOne(s, again, 'battlefield', 'top', { by: o.control === 'you' ? by : owner }, notes); notes.push(`${srcName} exiled ${nm} and returned it to the battlefield`); } break;
+        case 'move': {
+          const cs = cards(o.what);
+          for (const c of cs) {
+            const nm = cardName(c);
+            if (o.delayed) { s.delayed = (s.delayed || []).concat([{ step: 'end', id: c.id, to: o.to, by: o.control === 'you' ? by : c.owner, tapped: o.tapped, src: srcName, n: s.turn.n }]); notes.push(`${nm} will return at the beginning of the next end step (${srcName})`); continue; }
+            R.moveOne(s, c, o.to, 'top', o.to === 'battlefield' ? { by: o.control === 'owner' ? c.owner : by, tapped: o.tapped } : null, notes);
+            notes.push(`${srcName} ${o.to === 'exile' ? 'exiled' : o.to === 'hand' ? 'returned' : 'put'} ${nm}${o.to === 'hand' ? ' to its owner’s hand' : o.to === 'battlefield' ? ' onto the battlefield' : ''}`);
+          }
+          break;
+        }
+        case 'counterSpell': for (const c of cards(o.what)) { if (c.zone !== 'stack') continue; const nm = cardName(c); if (c.ab || (c.token && !c.d)) delete s.cards[c.id]; else R.moveOne(s, c, 'graveyard', 'top', null, notes); notes.push(`${srcName} countered ${nm}`); } break;
+        case 'fight': {
+          const a = cards(o.a)[0], b = cards(o.b)[0];
+          if (a && b && a.zone === 'battlefield' && b.zone === 'battlefield') { const pa = (C.pt(s, a) || [0])[0], pb = (C.pt(s, b) || [0])[0]; hurt({ c: b }, pa, a); hurt({ c: a }, pb, b); notes.push(`${cardName(a)} fought ${cardName(b)}`); }
+          break;
+        }
+        case 'transform': { const c = src && s.cards[src.id]; if (c && c.d && c.d.faces.length > 1) { const nm = cardName(c); c.face = c.face ? 0 : 1; c.row = R.rowFor(c); notes.push(`${nm} transformed into ${cardName(c)}`); } break; }
+        case 'search': {
+          if (/^basic (?:land|plains|island|swamp|mountain|forest)/.test(o.filter) || o.filter === 'basic land') R.todo(s, by, { k: 'fetch', n: o.n, dest: o.dest, tapped: o.tapped, split: o.split, filter: o.filter, src: srcName });
+          else R.todo(s, by, { k: 'search', n: o.n, upTo: o.upTo, dest: o.dest, tapped: o.tapped, filter: o.filter, src: srcName });
+          break;
+        }
+        case 'attach': { const at = src && s.cards[src.id], t = cards(o.to)[0]; if (at && t && at.zone === 'battlefield') { at.attachedTo = t.id; notes.push(`${cardName(at)} is now attached to ${cardName(t)}`); } break; }
+        case 'extraLand': { const T = s.turn; T.extraLand = T.extraLand || {}; T.extraLand[by] = (T.extraLand[by] || 0) + (o.n || 1); notes.push(`${nameOf(s, by)} may play an additional land this turn`); break; }
+        case 'roll': { const r = 1 + Math.floor(Math.random() * o.d); st.last = r; notes.push(`${nameOf(s, by)} rolled a d${o.d}: ${r} (${srcName})`); break; }
+        case 'bounceOwn': R.todo(s, by, { k: 'returnOwn', n: 1, what: o.what, src: srcName }); break;
+        case 'pay': { st.did = pay(o.cost); notes.push(st.did ? `${nameOf(s, by)} paid ${o.cost} (${srcName})` : `${nameOf(s, by)} couldn’t pay ${o.cost} (${srcName})`); break; }
+        case 'modes': { let off = 0; for (const mi of (opt.mode || [0])) { const md = o.modes[mi]; if (!md) continue; runList(md.ops, off); off += md.nTargets || 0; } break; }
+        case 'look': R.todo(s, by, { k: 'look', n: val(o.n), reveal: !!o.reveal, text: o.text, src: srcName }); break;
+        case 'addlCost': case 'altCost': case 'choose': case 'rest': break;
+        case 'manual': st.manual.push(o.text); break;
+        default: st.manual.push(o.text || o.op);
+      }
+    };
+    runList(ops, 0);
+    if (st.manual.length) {
+      s.ask = (s.ask || []).concat([{ id: 'a' + (++s.seq), kind: 'manual', pid: by, name: srcName, text: st.manual.slice(0, 6), since: Date.now() }]);
+      notes.push(`${srcName}: ${nameOf(s, by)} finishes by hand — “${st.manual.join('. ')}”`);
+    } else if (!opt.spell) notes.push(`${srcName}’s ability resolved`);
+  }
+  // Pay a mana cost for an optional "you may pay {N}" — from the pool first, then untapped lands (auto-pay).
+  function payMana(s, pid, cost, notes) {
+    const R = I(), C = Cd();
+    const need = C.parseCost ? C.parseCost(cost) : null; if (!need) return false;
+    const total = need.g + need.W + need.U + need.B + need.R + need.G + need.C;
+    const P = s.players[pid];
+    const units = (P.pool || []).map((u, i) => ({ u, pool: i }));
+    const lands = Object.values(s.cards).filter(c => c.zone === 'battlefield' && c.ctrl === pid && !c.tapped && R.isType(c, 'land') && R.unitsOf(c).length);
+    for (const l of lands) for (const u of R.unitsOf(l)) units.push({ u, land: l });
+    const used = new Set(), take = ok => { const i = units.findIndex((x, k) => !used.has(k) && ok(x.u)); if (i < 0) return false; used.add(i); return true; };
+    for (const col of ['W', 'U', 'B', 'R', 'G', 'C']) for (let k = 0; k < need[col]; k++) if (!take(u => u.includes(col))) return false;
+    for (let k = 0; k < need.g; k++) if (!take(() => true)) return false;
+    if (used.size < total) return false;
+    const poolDrop = new Set(), tapped = new Set();
+    for (const k of used) { const x = units[k]; if (x.pool != null) poolDrop.add(x.pool); else tapped.add(x.land); }
+    P.pool = (P.pool || []).filter((u, i) => !poolDrop.has(i));
+    // A land that makes more than one mana gives the rest to the pool.
+    for (const l of tapped) { l.tapped = true; l.manaAt = s.turn.n; const all = R.unitsOf(l); const spent = [...used].filter(k => units[k].land === l).length; if (all.length > spent) R.addPool(s, pid, all.slice(spent)); }
+    return true;
+  }
+
+  // ======================= answers from players =======================
+  function answer(s, pid, a, notes) {
+    const R = I(), C = Cd();
+    const list = s.ask || [];
+    const ask = list.find(x => x.id === a.id);
+    if (!ask) return { ok: true, stale: true };
+    if (ask.pid !== pid && !a.dev) return { ok: false, err: 'That choice belongs to ' + nameOf(s, ask.pid) + '.' };
+    s.ask = list.filter(x => x !== ask);
+    if (ask.kind === 'manual') return { ok: true };
+    if (ask.kind === 'order') {
+      const ids = Array.isArray(a.order) ? a.order : ask.items.map(x => x.id);
+      // The last one listed goes on the stack first? No — the player lists them in the order they should RESOLVE.
+      const rank = {}; ids.forEach((id, k) => { rank[id] = ids.length - k; });
+      for (const q of s.tq || []) if (rank[q.id] != null) q.ord = rank[q.id];
+      place(s, notes); return { ok: true };
+    }
+    if (ask.kind === 'modes') {
+      const q = (s.tq || []).find(x => x.id === ask.q); if (!q) return { ok: true };
+      const pick = [...new Set((Array.isArray(a.modes) ? a.modes : [0]).map(x => x | 0).filter(x => x >= 0 && x < ask.modes.length))];
+      if (pick.length < ask.min || pick.length > ask.max) { s.ask.push(ask); return { ok: false, err: `Choose ${ask.min === ask.max ? ask.min : ask.min + '–' + ask.max} mode${ask.max > 1 ? 's' : ''}.` }; }
+      q.mode = pick;
+      place(s, notes); return { ok: true };
+    }
+    if (ask.kind === 'targets') {
+      const q = (s.tq || []).find(x => x.id === ask.q); if (!q) return { ok: true };
+      const tg = R.cleanTargets(a.tg, ask.reqs.length);
+      for (let k = 0; k < ask.reqs.length; k++) {
+        const r = ask.reqs[k];
+        const okSet = new Set(r.choices.map(t => t.p ? 'p' + t.p : 'c' + t.c));
+        if (tg[k].some(t => !okSet.has(t.p ? 'p' + t.p : 'c' + t.c))) { s.ask.push(ask); return { ok: false, err: 'That isn’t a legal target for this ability.' }; }
+        if (tg[k].length > r.n || (!r.upTo && tg[k].length < Math.min(r.n, r.choices.length))) { s.ask.push(ask); return { ok: false, err: `Choose ${r.upTo ? 'up to ' : ''}${r.n} for “${r.label}”.` }; }
+      }
+      q.tg = tg;
+      place(s, notes); return { ok: true };
+    }
+    if (ask.kind === 'assign') {
+      const K = s.combat; if (!K || K.done) return { ok: true };
+      const plan = {}; let total = 0;
+      for (const b of ask.blockers) { const n = Math.max(0, (a.assign && a.assign[b.id]) | 0); plan[b.id] = n; total += n; }
+      const toPlayer = Math.max(0, (a.assign && a.assign.player) | 0);
+      if (total + toPlayer > ask.power) { s.ask.push(ask); return { ok: false, err: `${ask.name} has only ${ask.power} power to assign.` }; }
+      // 510.1c: lethal damage must be assigned to each blocker in order before the next one (deathtouch: 1 is lethal).
+      let ok = true;
+      ask.blockers.forEach((b, k) => { const lethal = ask.deathtouch ? 1 : b.lethal; if (plan[b.id] < lethal && ask.blockers.slice(k + 1).some(x => plan[x.id] > 0)) ok = false; });
+      if (toPlayer && (!ask.trample || ask.blockers.some(b => plan[b.id] < (ask.deathtouch ? 1 : b.lethal)))) ok = false;
+      if (!ok) { s.ask.push(ask); return { ok: false, err: 'Assign lethal damage to each blocker in order before the next one (and before the player, with trample) — 510.1c.' }; }
+      if (toPlayer) plan.player = toPlayer;
+      K.assign = K.assign || {}; K.assign[ask.att] = plan;
+      I().combatDamage(s, notes);
+      return { ok: true };
+    }
+    if (ask.kind === 'legend') {
+      const keep = ask.ids.includes(a.keep) ? a.keep : ask.ids[ask.ids.length - 1];
+      for (const id of ask.ids) if (id !== keep && s.cards[id] && s.cards[id].zone === 'battlefield') { const nm = cardName(s.cards[id]); I().moveOne(s, s.cards[id], 'graveyard', 'top', null, notes); notes.push(`${nameOf(s, ask.pid)} kept one ${nm} and put the other into the graveyard (legend rule, 704.5j)`); }
+      return { ok: true };
+    }
+    if (ask.kind === 'may') {
+      const it = s.cards[ask.item];
+      if (it && it.ab) { it.ab.may = !!a.yes; if (ask.cond) it.ab.condOk = a.cond === undefined ? !!a.yes : !!a.cond; }
+      if (s.prio) { s.prio.holder = null; R.nextHolder(s, notes); }
+      return { ok: true };
+    }
+    return { ok: true };
+  }
+  // 2 minutes without an answer: the table decides (no, first mode, best targets, default order).
+  function timeouts(s, notes) {
+    const R = I(); let changed = false;
+    const now = Date.now();
+    for (const ask of (s.ask || []).slice()) {
+      const stale = now - (ask.since || 0) > ASK_MS || !R.live(s, ask.pid);
+      if (!stale) continue;
+      if (ask.kind === 'manual') { if (now - ask.since > 10 * 60000) { s.ask = s.ask.filter(x => x !== ask); changed = true; } continue; }
+      s.ask = s.ask.filter(x => x !== ask); changed = true;
+      if (ask.kind === 'assign') { const K = s.combat; if (K && !K.done) { K.assign = K.assign || {}; K.assign[ask.att] = 'auto'; I().combatDamage(s, notes); } continue; }
+      if (ask.kind === 'legend') { s.ask.push(ask); answer(s, ask.pid, { id: ask.id, keep: ask.ids[ask.ids.length - 1] }, notes); continue; }
+      if (ask.kind === 'may') { const it = s.cards[ask.item]; if (it && it.ab) { it.ab.may = false; it.ab.condOk = false; } notes.push(`${ask.name}: no answer in time, so it wasn’t used`); if (s.prio) { s.prio.holder = null; R.nextHolder(s, notes); } }
+      else { const q = (s.tq || []).find(x => x.id === ask.q); if (q) q.timeout = true; for (const q2 of s.tq || []) if (ask.kind === 'order') q2.ordered = true; place(s, notes); }
+    }
+    // Priority held for 2 minutes: they pass.
+    const P = s.prio;
+    if (P && P.holder && now - (P.since || 0) > ASK_MS) { if (!P.passed.includes(P.holder)) P.passed.push(P.holder); notes.push(`${nameOf(s, P.holder)} didn’t answer in 2 minutes, so they passed`); R.nextHolder(s, notes); changed = true; }
+    return changed;
+  }
+
+  // ======================= temporary effects =======================
+  // Cleanup step (514.2): "until end of turn" effects end; badges and the counters they stood for go away.
+  function endOfTurn(s) {
+    for (const c of Object.values(s.cards)) {
+      if (!c.eot) continue;
+      const keep = [];
+      for (const b of c.eot) {
+        if (b.until && b.until !== 'eot') { keep.push(b); continue; }
+        if (b.counter && c.counters && c.counters[b.counter]) { c.counters[b.counter]--; if (!c.counters[b.counter]) delete c.counters[b.counter]; }
+      }
+      c.eot = keep.length ? keep : null;
+    }
+  }
+  // "Until your next turn" ends as that player's turn begins (611.2b).
+  function turnBegins(s, pid) {
+    for (const c of Object.values(s.cards)) {
+      if (!c.eot) continue;
+      const keep = [];
+      for (const b of c.eot) {
+        if (b.until === pid) { if (b.counter && c.counters && c.counters[b.counter]) { c.counters[b.counter]--; if (!c.counters[b.counter]) delete c.counters[b.counter]; } continue; }
+        keep.push(b);
+      }
+      c.eot = keep.length ? keep : null;
+    }
+    s.turn.stats = { attacked: {}, died: 0, gained: {}, lost: {}, spells: {}, drew: {} };
+    s.turn.extraLand = {};
+  }
+  // Delayed triggers ("return it at the beginning of the next end step").
+  function delayed(s, step, notes) {
+    if (!s.delayed || !s.delayed.length) return;
+    const R = I(), keep = [];
+    for (const d of s.delayed) {
+      if (d.step !== step) { keep.push(d); continue; }
+      const c = s.cards[d.id];
+      if (c && c.zone !== 'battlefield') { R.moveOne(s, c, d.to, 'top', d.to === 'battlefield' ? { by: d.by, tapped: d.tapped } : null, notes); notes.push(`${cardName(c)} returned (${d.src})`); }
+      else if (c && c.zone === 'battlefield' && d.to !== 'battlefield') { const nm = cardName(c); R.moveOne(s, c, d.to, 'top', { sac: !!d.sac }, notes); if (d.src === 'warp' && s.cards[c.id]) s.cards[c.id].warpedOut = true; notes.push(`${nm} ${d.to === 'hand' ? 'returned to its owner’s hand' : d.to === 'exile' ? 'was exiled' : 'was sacrificed'} (${d.src})`); }
+    }
+    s.delayed = keep;
+  }
+
+  // ======================= turn flow =======================
+  // The active player only says "Go to combat" or "End turn"; the steps in between happen by themselves,
+  // stopping whenever something is on the stack, a choice is pending, or blockers are being declared.
+  function canAttack(s, pid) {
+    const R = I(), C = Cd();
+    return Object.values(s.cards).some(c => c.zone === 'battlefield' && c.ctrl === pid && (c.faceDown || R.isType(c, 'creature')) && !c.tapped &&
+      (!R.sick(s, c) || C.has(c, 'haste', s)) && !C.has(c, 'defender', s) && !C.has(c, "can't attack", s));
+  }
+  function busy(s) {
+    const R = I();
+    return !!(R.stackTop(s) || s.prio || (s.tq && s.tq.length) || (s.ask || []).some(x => x.kind !== 'manual') || s.winner);
+  }
+  function flow(s, notes) {
+    const R = I(), T = s.turn;
+    if (!T || !T.active || s.winner) return;
+    for (let guard = 0; guard < 30; guard++) {
+      if (!T.goal || busy(s)) return;
+      const PI = R.PI, ph = T.phase;
+      if (T.goal === 'main1' && ph >= PI('Main 1')) { T.goal = null; return; }
+      if (T.goal === 'combat' && ph >= PI('Declare attackers')) { T.goal = null; if (!canAttack(s, T.active)) { T.goal = 'main2'; noCombat(s); continue; } return; }
+      if (T.goal === 'main2' && ph >= PI('Main 2')) { T.goal = null; return; }
+      const K = s.combat;
+      if (K && K.n === T.n && !K.done && Object.keys(K.att || {}).length) return;   // combat in progress
+      if (ph >= PI('Cleanup')) { R.passTurn(s, T.active, notes, () => ({ ok: true }), true); check(s, notes); continue; }
+      let next = ph + 1;
+      if (R.PHASES[next] === 'Declare attackers' && T.goal === 'pass') noCombat(s);
+      // 508.8: with no attackers, the declare blockers and combat damage steps are skipped.
+      if ((R.PHASES[next] === 'Declare blockers' || R.PHASES[next] === 'Combat damage') && !(K && K.n === T.n && Object.keys(K.att || {}).length)) next = PI('End of combat');
+      T.phase = next;
+      if (R.PHASES[next] === 'Cleanup') { R.clearMods(s); endOfTurn(s); }
+      if (R.PHASES[next] === 'End step') delayed(s, 'end', notes);
+      check(s, notes);
+      // Before the turn ends, the other players get a chance to act in the end step — but only humans who can respond;
+      // their screens pass by themselves when they have nothing to do (117.3).
+      if (R.PHASES[next] === 'End step' && T.goal === 'pass' && !busy(s)) {
+        const order = R.rotate(s, T.active).slice(1).filter(p => R.live(s, p) && !isAI(s, p));
+        if (order.length) { s.prio = { order, passed: [], holder: null, since: Date.now(), top: null, step: 'end' }; R.nextHolder(s, notes); }
+      }
+    }
+  }
+  function noCombat(s) { const T = s.turn; if (!s.combat || s.combat.n !== T.n) s.combat = { n: T.n, att: {}, waiting: [], ok: {}, done: true }; }
+
+  // After every action (and on the host's timer): look for triggers, put them on the stack, move the turn along.
+  function after(s, notes) {
+    const R = I(); if (!R || !s.turn) return;
+    check(s, notes);
+    place(s, notes);
+    // Sagas whose last chapter has resolved are sacrificed (714.4).
+    for (const c of Object.values(s.cards)) {
+      if (c.zone !== 'battlefield' || c.faceDown || !c.counters || !c.counters.lore) continue;
+      const M = O().model(c); if (!M) continue;
+      const last = Math.max(0, ...M.abilities.filter(a => a.chapter).map(a => Math.max(...a.chapter)));
+      if (!last || c.counters.lore < last) continue;
+      if (Object.values(s.cards).some(x => x.zone === 'stack' && x.ab && x.ab.src === c.id) || (s.tq || []).some(q => q.src === c.id)) continue;
+      R.moveOne(s, c, 'graveyard', 'top', { sac: true }, notes); notes.push(`${cardName(c)} was sacrificed after its last chapter (714.4)`);
+    }
+    legendRule(s, notes);
+    flow(s, notes);
+    check(s, notes);
+  }
+  // 704.5j: two or more legendary permanents with the same name — their controller chooses one to keep.
+  function legendRule(s, notes) {
+    const R = I(), groups = {};
+    for (const c of Object.values(s.cards)) {
+      if (c.zone !== 'battlefield' || c.faceDown || !/\blegendary\b/i.test(R.typeLine(c))) continue;
+      const k = c.ctrl + '|' + cardName(c); (groups[k] = groups[k] || []).push(c);
+    }
+    for (const list of Object.values(groups)) {
+      if (list.length < 2) continue;
+      const pid = list[0].ctrl, ids = list.sort((a, b) => a.seq - b.seq).map(c => c.id);
+      if ((s.ask || []).some(x => x.kind === 'legend' && x.ids.join() === ids.join())) continue;
+      const ask = { id: 'a' + (++s.seq), kind: 'legend', pid, ids, name: cardName(list[0]), since: Date.now() };
+      s.ask = (s.ask || []).concat([ask]);
+      if (isAI(s, pid) || !R.live(s, pid)) answer(s, pid, { id: ask.id, keep: ids[ids.length - 1] }, notes);
+    }
+  }
+  // Is this (cards.js) triggered ability one the engine already puts on the stack by itself?
+  function handles(c, text) {
+    const M = c && c.d && O() ? O().model(c) : null; if (!M) return false;
+    const t = norm(text);
+    return M.abilities.some(a => a.kind === 'triggered' && a.event && a.event.type !== 'other' && (norm(a.text) === t || norm(a.effect) === t || t.includes(norm(a.effect)) || norm(a.text).includes(t)));
+  }
+
+  root.Engine = { spellOps, emit, begin, check, place, hold, resolve, run, answer, timeouts, endOfTurn, turnBegins, flow, after, handles, canRun, canAttack, snap, payMana, _ev: () => EV };
+})(typeof window !== 'undefined' ? window : globalThis);

@@ -111,7 +111,7 @@
   function leaveBattlefield(s, c, notes) {
     c.loySeen = false; c.defSeen = false; c.noUntap = false; c.zeroT = false; c.zeroOk = false;
     c.counters = {}; c.tapped = false; c.mod = null; c.attachedTo = null; c.ctrl = c.owner; c.row = null;
-    c.dmg = 0; c.dtd = false; c.grant = null; c.ctlT = null;
+    c.dmg = 0; c.dtd = false; c.grant = null; c.ctlT = null; c.alt = null; c.eot = null;
     if (s.combat && s.combat.att) { delete s.combat.att[c.id]; for (const a of Object.values(s.combat.att)) a.blk = (a.blk || []).filter(x => x !== c.id); }
     for (const o of Object.values(s.cards)) {
       if (o.attachedTo === c.id) {
@@ -128,6 +128,10 @@
   function moveOne(s, c, to, pos, opts, notes) {
     opts = opts || {};
     const from = c.zone;
+    // 702.34a and friends: a spell cast with flashback (jump-start, escape, harmonize) is exiled instead of going anywhere else.
+    if (from === 'stack' && to !== 'battlefield' && to !== 'stack' && ['flashback', 'jump-start', 'harmonize'].includes(c.alt)) to = 'exile';
+    if (from === 'stack' && to !== 'battlefield' && c.alt === 'escape' && !isType(c, 'creature') && !isType(c, 'artifact') && !isType(c, 'enchantment') && !isType(c, 'planeswalker')) to = 'exile';
+    if (root.Engine && from !== to) root.Engine.emit({ type: 'zone', from, to, card: root.Engine.snap(c), sac: !!opts.sac, fromPriv: opts.fromPriv || null });
     if (from === 'battlefield' && to !== 'battlefield') leaveBattlefield(s, c, notes);
 
     // 111.7 / 111.8: a token that leaves the battlefield ceases to exist.
@@ -173,6 +177,7 @@
     }
     if ((to === 'exile' || to === 'stack') && keepDown && !c.faceDown) { c.faceDown = true; c.d = null; }
     if (opts.row && ROWS.includes(opts.row) && to === 'battlefield') c.row = opts.row;
+    if (from === 'stack' && to !== 'battlefield') c.alt = null;
     if (pos === 'bottom') {
       const min = Math.min(0, ...zoneCards(s, to, c.owner, 'owner').map(x => x.seq));
       c.seq = min - 1;
@@ -206,7 +211,15 @@
   function apply(s, pid, a) {
     if (root.Cards && root.Cards.setState) root.Cards.setState(s);
     const before = s.turn ? s.turn.n + ':' + s.turn.phase : '';
+    if (root.Engine) root.Engine.begin(s);
     const r = apply0(s, pid, a);
+    if (r && r.ok && !r.dup && root.Engine && s.turn && s.turn.active) {
+      const notes = [];
+      try { root.Engine.after(s, notes); } catch (e) { notes.push('Rules engine problem: ' + (e && e.message)); if (typeof console !== 'undefined') console.error(e); }
+      for (const n of notes) log(s, null, n, 'auto');
+      sba(s, []);
+      s.rev++;
+    } else if (root.Engine && !(r && r.ok)) root.Engine._ev().length = 0;
     if (r && r.ok && s.turn && before !== s.turn.n + ':' + s.turn.phase) emptyPools(s);
     return r;
   }
@@ -232,6 +245,16 @@
   }
   function apply0(s, pid, a) {
     if (!a || typeof a !== 'object') return { ok: false, err: 'bad action' };
+    // Developer debugging (host only): the host may act as any player to repair the game.
+    if (a.type === 'dev') {
+      if (pid !== s.hostPid) return { ok: false, err: 'Only the host can turn on developer debugging.' };
+      s.dev = !!a.on; log(s, pid, s.dev ? 'turned ON developer debugging — the host can move and use everyone’s cards' : 'turned off developer debugging', 'alert'); s.rev++; return { ok: true };
+    }
+    {
+      const hostDev = !!(s.dev && pid === s.hostPid);
+      if (a.as && hostDev && s.players[a.as]) { const as = a.as; a = Object.assign({}, a, { as: undefined, dev: true }); pid = as; }
+      else if (a.dev && !hostDev) a = Object.assign({}, a, { dev: false });
+    }
     const me = s.players[pid];
     const need = () => { if (!me) throw new Error('Take a seat first.'); };
     const notes = [];
@@ -340,6 +363,7 @@
             moveOne(s, c, to, a.pos, { by: pid, tapped: a.tapped, faceDown: c.faceDown, row: a.row, backFace: c.face === 1 }, notes);
             names.push(cardName(c));
             if (to === 'stack') onCast(s, pid, c, a);
+            if (root.Engine && a.from === 'hand' && to === 'graveyard') root.Engine.emit({ type: 'discard', player: pid, card: c });
           }
           // a.msg is a phrase like "cast {cards}"; the host fills in the card names (face-down cards stay hidden).
           const tmpl = typeof a.msg === 'string' && a.msg.includes('{cards}') ? a.msg.slice(0, 160)
@@ -599,7 +623,7 @@
           const order = s.seats.slice();
           for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
           s.seats = order;
-          s.turn = { active: order[0], phase: 1, n: 1, first: order[0], lands: {}, starts: { [order[0]]: 1 } };
+          s.turn = { active: order[0], phase: 1, n: 1, first: order[0], lands: {}, starts: { [order[0]]: 1 }, goal: 'main1' };
           return done(`randomized the turn order: ${order.map(x => nameOf(s, x)).join(' → ')}. ${nameOf(s, order[0])} goes first.`);
         }
         case 'phase': {
@@ -615,21 +639,57 @@
             const pend = K0 && K0.n === T.n && !K0.done && !K0.blocked ? K0.waiting.filter(p => !K0.ok[p] && live(s, p)) : [];
             if (pend.length && Date.now() - (K0.since || 0) < 90000) return { ok: false, err: `Wait for ${listNames(pend.map(p => nameOf(s, p)))} to declare blockers (509.1).` };
           }
+          const dev = !!(a.dev && s.dev);
+          if (a.dir === 'back' && !dev) return { ok: false, err: 'The game doesn’t go backwards (only in developer debugging).' };
+          if (typeof a.to === 'number' && (a.to | 0) <= T.phase && !dev) return { ok: true, stale: true };
           if (a.dir === 'pass' || T.phase >= PHASES.length - 1 && a.dir !== 'back') {
+            // Ending the turn still goes through the end step (and its triggers) first (513).
+            if (root.Engine && !dev && T.phase < PI('End step')) { T.goal = 'pass'; return done(''); }
             return passTurn(s, pid, notes, done);
           }
           const was = T.phase;
           if (a.dir === 'back') T.phase = Math.max(1, T.phase - 1);
           else if (typeof a.to === 'number') T.phase = Math.max(1, Math.min(PHASES.length - 1, a.to | 0));
           else T.phase++;
+          if (T.phase > was) T.goal = null;
+          if (root.Engine && PHASES[T.phase] === 'Declare blockers' && !(s.combat && s.combat.n === T.n)) { s.combat = { n: T.n, att: {}, waiting: [], ok: {}, done: true }; }
           const K = s.combat;
           // Moving into combat damage deals it (blockers not declared in time count as no blocks).
           if (K && K.n === T.n && !K.done && T.phase >= PI('Combat damage') && was < PI('Combat damage') && Object.keys(K.att).length) { if (s.prio && s.prio.step) s.prio = null; combatDamage(s, notes); for (const x of notes) log(s, null, x, 'auto'); s.rev++; return { ok: true }; }
-          if (PHASES[T.phase] === 'Cleanup') clearMods(s);
+          if (PHASES[T.phase] === 'Cleanup') { clearMods(s); if (root.Engine) root.Engine.endOfTurn(s); }
           s.rev++; return { ok: true };
+        }
+        case 'advance': {
+          // The turn buttons: "Go to combat" or "End turn" (the steps in between happen by themselves).
+          need();
+          const T = s.turn;
+          if (!T.active) return { ok: false, err: 'Start the game first.' };
+          if (T.active !== pid && s.players[T.active] && s.players[T.active].online) return { ok: false, err: 'It isn’t your turn.' };
+          if (a.goal === 'combat') {
+            if (T.phase >= PI('Declare attackers') || (s.combat && s.combat.n === T.n)) return { ok: false, err: 'Combat already happened this turn.' };
+            if (stackCards(s).length) return { ok: false, err: 'Wait until everything on the stack has resolved.' };
+            T.goal = 'combat';
+            return done('');
+          }
+          if (a.goal === 'end') {
+            if (stackCards(s).length) return { ok: false, err: 'Wait until everything on the stack has resolved.' };
+            const K = s.combat;
+            if (K && K.n === T.n && !K.done && Object.keys(K.att || {}).length) return { ok: false, err: 'Finish combat first.' };
+            T.goal = 'pass';
+            return done('');
+          }
+          return { ok: false, err: 'bad goal' };
+        }
+        case 'answer': {
+          need();
+          if (!root.Engine) return { ok: true };
+          const r = root.Engine.answer(s, pid, Object.assign({}, a, { dev: !!(a.dev && s.dev) }), notes);
+          if (!r.ok) return r;
+          return done('');
         }
         case 'log': {
           need();
+          if (root.Engine && a.drew > 0) { const T = s.turn; if (T && T.active) { T.stats = T.stats || { attacked: {}, died: 0, gained: {}, lost: {}, spells: {}, drew: {} }; for (let i = 0; i < Math.min(20, a.drew | 0); i++) { T.stats.drew[pid] = (T.stats.drew[pid] || 0) + 1; root.Engine.emit({ type: 'draw', player: pid, nth: T.stats.drew[pid], step: PHASES[T.phase] === 'Draw' && T.active === pid }); } } }
           if (a.alert) { log(s, pid, String(a.text || '').slice(0, 200), 'alert'); s.rev++; return { ok: true }; }
           return done(String(a.text || '').slice(0, 200));
         }
@@ -669,7 +729,7 @@
             const order = keep.slice();
             for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
             ns.seats = order;
-            ns.turn = { active: order[0], phase: 1, n: 1, first: order[0], lands: {}, starts: { [order[0]]: 1 } };
+            ns.turn = { active: order[0], phase: 1, n: 1, first: order[0], lands: {}, starts: { [order[0]]: 1 }, goal: 'main1' };
           }
           Object.keys(s).forEach(k => delete s[k]);
           Object.assign(s, ns);
@@ -746,7 +806,7 @@
           s.cards[id] = { id, owner: pid, ctrl: pid, d: src.d, face: src.face || 0, faceDown: false, token: true, cmdr: false, tapped: false, counters: {}, mod: null,
             attachedTo: null, row: null, zone: 'stack', seq: ++s.seq, ab: { src: src.id, text: String(ab.text).slice(0, 400), name: cardName(src) }, tg, reqs, x: num(a.x, 0, 99) || 0 };
           wardFor(s, pid, s.cards[id], a);
-          if (ab.sac) moveOne(s, src, 'graveyard', 'top', null, notes);
+          if (ab.sac) moveOne(s, src, 'graveyard', 'top', { sac: true }, notes);
           startPrio(s, pid, notes);
           return done(`activated ${cardName(src)}: “${String(ab.text).replace(/^this /i, cardName(src) + ' ')}”${targetText(s, s.cards[id])}`);
         }
@@ -758,6 +818,7 @@
           const C = root.Cards;
           const tr = C.triggers(src)[a.i | 0];
           if (!tr) return { ok: false, err: 'That card has no such triggered ability.' };
+          if (root.Engine && root.Engine.handles(src, tr.text) && !a.force) return { ok: false, err: 'The table puts this triggered ability on the stack by itself when it triggers.', auto: true };
           const reqs = C.targetsIn(tr.text);
           const tg = cleanTargets(a.tg, reqs.length);
           for (let i = 0; i < reqs.length; i++) for (const t of tg[i] || []) if (!C.legalTarget(s, reqs[i], t, pid)) return { ok: false, err: 'That isn’t a legal target for this ability.' };
@@ -796,12 +857,19 @@
           }
           if (!names.length) {
             s.combat = { n: T.n, att: {}, waiting: [], ok: {}, done: true };
-            T.phase = PI('Main 2');
+            if (T.phase < PI('Declare attackers')) T.phase = PI('Declare attackers');
+            T.goal = 'main2';
             return done('didn’t attack');
           }
           for (const id of Object.keys(att)) { const c = s.cards[id]; if (!C.keywords(c, s).has('vigilance')) c.tapped = true; }
           s.combat = { n: T.n, att, waiting: [...defs], ok: {}, done: false, since: Date.now() };
           T.phase = PI('Declare blockers');
+          T.goal = null;
+          if (root.Engine) {
+            T.stats = T.stats || { attacked: {}, died: 0, gained: {}, lost: {}, spells: {}, drew: {} }; T.stats.attacked[pid] = true;
+            root.Engine.emit({ type: 'youAttack', player: pid });
+            for (const [id, x] of Object.entries(att)) root.Engine.emit({ type: 'attack', card: s.cards[id], player: pid, def: x.def.p || (s.cards[x.def.c] && s.cards[x.def.c].ctrl) });
+          }
           const byDef = {};
           for (const [id, x] of Object.entries(att)) { const k = x.def.p ? nameOf(s, x.def.p) : cardName(s.cards[x.def.c]); (byDef[k] = byDef[k] || []).push(cardName(s.cards[id])); }
           log(s, pid, 'attacked ' + Object.entries(byDef).map(([k, v]) => `${k} with ${listNames(v)}`).join('; '));
@@ -832,6 +900,7 @@
           const count = {}; for (const [, at] of pairs) count[at.id] = (count[at.id] || 0) + 1;
           for (const [id, n] of Object.entries(count)) if (n === 1 && C.keywords(s.cards[id], s).has('menace')) return { ok: false, err: `${cardName(s.cards[id])} has menace — it can’t be blocked except by two or more creatures (702.110b).` };
           for (const [b, at] of pairs) K.att[at.id].blk.push(b.id);
+          if (root.Engine) { for (const [b, at] of pairs) root.Engine.emit({ type: 'block', card: b, player: pid, att: at.id }); for (const id of Object.keys(count)) root.Engine.emit({ type: 'blocked', card: s.cards[id], player: s.cards[id].ctrl }); }
           K.ok[pid] = true;
           if (pairs.length) log(s, pid, 'blocked ' + pairs.map(([b, at]) => `${cardName(at)} with ${cardName(b)}`).join(', '));
           else log(s, pid, 'didn’t block');
@@ -877,6 +946,12 @@
           c.wardDue = null;
           checkLoss(s, notes); for (const n of notes) log(s, null, n, 'auto');
           return done(`paid the ward cost for ${cardName(c)}`);
+        }
+        case 'devActive': {
+          need();
+          if (!a.dev) return { ok: false, err: 'Developer debugging only.' };
+          s.turn.active = pid; s.turn.starts = s.turn.starts || {}; s.prio = null;
+          return done(`was made the active player (developer debugging)`);
         }
         case 'pool': {
           // Clear your own pool by hand, or add mana a card made ("Add {R}{R}{R}").
@@ -965,7 +1040,7 @@
     const now = {};
     for (const [key, list] of Object.entries(seen)) if (list.length > 1) {
       now[key] = true;
-      if (!s.legend[key]) log(s, list[0].ctrl, `controls two copies of the legendary ${cardName(list[0])} — keep one and put the other into the graveyard (legend rule)`, 'alert');
+      if (!s.legend[key] && !root.Engine) log(s, list[0].ctrl, `controls two copies of the legendary ${cardName(list[0])} — keep one and put the other into the graveyard (legend rule)`, 'alert');
     }
     s.legend = now;
     checkLoss(s, notes);
@@ -1078,6 +1153,8 @@
     c.reqs = C && !c.faceDown ? C.targetReqs(c, c.mode) : [];
     c.tg = cleanTargets(a && a.tg, c.reqs.length);
     c.castBy = pid;
+    c.alt = a && typeof a.alt === 'string' && /^[a-z-]{3,20}$/.test(a.alt) ? a.alt : null;
+    if (s.turn && s.turn.active) { const T = s.turn; T.stats = T.stats || { attacked: {}, died: 0, gained: {}, lost: {}, spells: {}, drew: {} }; T.stats.spells[pid] = (T.stats.spells[pid] || 0) + 1; if (root.Engine) root.Engine.emit({ type: 'cast', player: pid, card: c, nth: T.stats.spells[pid] }); }
     if (C && !c.faceDown) spendPool(s, pid, C.costOf(c), c.x, a && a.fromPool);
     wardFor(s, pid, c, a);
   }
@@ -1123,8 +1200,10 @@
       const cand = P.order.find(p => !P.passed.includes(p) && live(s, p));
       if (cand) { P.holder = cand; P.since = Date.now(); return; }
       if (P.step) { s.prio = null; if (P.step === 'damage' && combatWaiting(s)) combatDamage(s, notes); return; }
+      if (root.Engine && root.Engine.hold(s, notes)) return;
       resolveTop(s, notes);
       sba(s, notes);
+      if (root.Engine) { root.Engine.check(s, notes); if (s.prio && s.prio !== P) continue; }
       const top = stackTop(s);
       if (!top) { s.prio = null; if (combatWaiting(s)) startStep(s, notes); return; }
       s.prio = { order: rotate(s, s.turn.active || s.seats[0]), passed: [], holder: null, since: Date.now(), top: top.id };
@@ -1144,7 +1223,7 @@
     if (K && !K.done && !K.blocked && K.n === s.turn.n && Object.keys(K.att).length && K.waiting.every(p => K.ok[p] || !live(s, p))) { K.blocked = true; if (!s.prio && !stackTop(s)) startStep(s, notes); }
   }
   // After blockers are declared, players may cast tricks before combat damage (510.1 / 117.3).
-  function combatWaiting(s) { const K = s.combat; return !!(K && !K.done && K.blocked && K.n === s.turn.n && !stackTop(s)); }
+  function combatWaiting(s) { const K = s.combat; return !!(K && !K.done && K.blocked && !K.waitAssign && K.n === s.turn.n && !stackTop(s)); }
   function startStep(s, notes) {
     s.prio = { order: rotate(s, s.turn.active || s.seats[0]), passed: [], holder: null, since: Date.now(), top: null, step: 'damage' };
     nextHolder(s, notes);
@@ -1160,6 +1239,7 @@
       if (c.ab || c.token) delete s.cards[c.id]; else moveOne(s, c, 'graveyard', 'top', null, notes);
       return;
     }
+    if (c.ab && c.ab.eng && root.Engine) { root.Engine.resolve(s, c, notes); return; }
     const reqs = c.reqs || [];
     const tg = c.tg || [];
     const chose = tg.some(l => l && l.length);
@@ -1173,7 +1253,13 @@
     const perm = !c.ab && !c.faceDown ? C && C.isPermanentCard(c) : !c.ab;
     let eff = { effects: [], understood: true };
     if (C && !c.faceDown) eff = C.effectsOf(c, c.mode);
-    if (eff.effects.length) applyEffects(s, c, legal, eff.effects, notes);
+    // v6: the new effect engine does spells and activated abilities whenever it understands them (or the old one doesn't).
+    const E = root.Engine && !c.faceDown && !perm ? root.Engine.spellOps(s, c) : null;
+    if (E && (E.understood || !eff.understood || !eff.effects.length)) {
+      if (c.ab) { delete s.cards[c.id]; root.Engine.run(s, Object.assign({}, c, { ab: Object.assign({ ctx: {} }, c.ab) }), E.ops, legal, notes, { mode: c.mode, spell: true }); return; }
+      root.Engine.run(s, c, E.ops, legal, notes, { mode: c.mode, spell: true });
+      eff = { effects: [1], understood: true };
+    } else if (eff.effects.length) applyEffects(s, c, legal, eff.effects, notes);
     if (c.ab) {
       delete s.cards[c.id];
       notes.push(`${c.ab.name}’s ability resolved${eff.understood && eff.effects.length ? '' : ' — apply its effect by hand'}`);
@@ -1189,6 +1275,13 @@
       const em = C && s.cards[c.id] && C.text(s.cards[c.id]).match(/this (?:creature )?enters(?: the battlefield)? with (x|a|an|one|two|three|four|five|six|\d+) (\+1\/\+1|-1\/-1|loyalty|charge|oil) counters? on it/i);
       if (em) { const n = /^x$/i.test(em[1]) ? x : C.toNum(em[1]) || 0; const k = em[2].toLowerCase(); if (n > 0) s.cards[c.id].counters[k] = (s.cards[c.id].counters[k] || 0) + n; }
       notes.push(`${nm} resolved and entered the battlefield${aura && aura.c && s.cards[aura.c] ? ' attached to ' + cardName(s.cards[aura.c]) : ''}`);
+      const e2 = s.cards[c.id];
+      if (e2 && e2.alt) {
+        const later = (to, why) => { s.delayed = (s.delayed || []).concat([{ step: 'end', id: e2.id, to, by: e2.owner, src: why, n: s.turn.n, sac: to === 'graveyard' }]); };
+        if (e2.alt === 'dash') { e2.grant = ['haste']; later('hand', 'dash'); notes.push(`${nm} was dashed: it has haste and returns to its owner’s hand at the beginning of the next end step (702.109)`); }
+        if (e2.alt === 'blitz') { e2.grant = ['haste']; later('graveyard', 'blitz'); notes.push(`${nm} was blitzed: it has haste, “when it dies, draw a card”, and is sacrificed at the beginning of the next end step (702.152)`); }
+        if (e2.alt === 'warp') { later('exile', 'warp'); e2.warped = true; notes.push(`${nm} was warped: it’s exiled at the beginning of the next end step, and its owner may cast it from exile later (702.185)`); }
+      }
       return;
     }
     if (c.token) { delete s.cards[c.id]; notes.push(`${nm} (a copy) resolved`); return; }
@@ -1344,6 +1437,24 @@
   function combatDamage(s, notes) {
     const C = root.Cards, K = s.combat;
     if (!K || K.done) return;
+    // 510.1c-d: an attacker blocked by two or more creatures — its controller divides its damage among them. Ask first.
+    if (root.Engine) {
+      K.assign = K.assign || {};
+      const need = Object.entries(K.att).filter(([id, x]) => s.cards[id] && s.cards[id].zone === 'battlefield' && (x.blk || []).filter(b => s.cards[b] && s.cards[b].zone === 'battlefield').length >= 2 && !K.assign[id]);
+      let waiting = false;
+      for (const [id, x] of need) {
+        const a = s.cards[id], who = a.ctrl;
+        if (s.players[who] && s.players[who].ai || !live(s, who)) { K.assign[id] = 'auto'; continue; }
+        if (!(s.ask || []).some(q => q.kind === 'assign' && q.att === id)) {
+          const pw = Math.max(0, (C.pt(s, a) || [0])[0]);
+          s.ask = (s.ask || []).concat([{ id: 'a' + (++s.seq), kind: 'assign', pid: who, att: id, name: cardName(a), power: pw, trample: C.keywords(a, s).has('trample'), deathtouch: C.keywords(a, s).has('deathtouch'),
+            blockers: x.blk.filter(b => s.cards[b] && s.cards[b].zone === 'battlefield').map(b => ({ id: b, name: cardName(s.cards[b]), lethal: Math.max(0, ((C.pt(s, s.cards[b]) || [0, 0])[1]) - (s.cards[b].dmg || 0)) })), since: Date.now() }]);
+        }
+        waiting = true;
+      }
+      if (waiting) { K.waitAssign = true; return; }
+      K.waitAssign = false;
+    }
     K.done = true;
     s.turn.phase = PI('Combat damage');
     const kwOf = c => C.keywords(c, s);
@@ -1363,7 +1474,13 @@
           const ka = kwOf(a);
           let power = Math.max(0, (C.pt(s, a) || [0])[0]);
           const toDef = n => { if (n <= 0) return; if (x.def.p) ev.push({ src: a, p: x.def.p, n }); else if (alive(x.def.c)) ev.push({ src: a, c: x.def.c, n }); };
-          if ((x.blk || []).length) {
+          const plan = K.assign && K.assign[id] && K.assign[id] !== 'auto' ? K.assign[id] : null;
+          if ((x.blk || []).length && plan && blockers.length) {
+            // The attacking player's own division of damage (510.1c).
+            let left = power;
+            for (const b of blockers) { const give = Math.max(0, Math.min(left, plan[b.id] | 0)); if (give > 0) ev.push({ src: a, c: b.id, n: give }); left -= give; }
+            if (left > 0) { if (ka.has('trample') && plan.player) toDef(left); else if (blockers.length) ev.push({ src: a, c: blockers[blockers.length - 1].id, n: left }); }
+          } else if ((x.blk || []).length) {
             if (!blockers.length) { if (ka.has('trample')) toDef(power); }
             else {
               blockers.forEach((b, i) => {
@@ -1390,6 +1507,7 @@
           const P = s.players[e.p]; if (!P) continue;
           if (k.has('infect')) P.poison += e.n; else P.life -= e.n;
           if (e.src.cmdr) P.cmdDmg[e.src.id] = (P.cmdDmg[e.src.id] || 0) + e.n;
+          if (root.Engine) root.Engine.emit({ type: 'combatDamage', card: e.src, to: 'player', player: e.p, n: e.n });
           summary.push(`${cardName(e.src)} dealt ${e.n} ${k.has('infect') ? 'poison ' : ''}damage to ${nameOf(s, e.p)}`);
         } else {
           const t = s.cards[e.c]; if (!t) continue;
@@ -1397,6 +1515,7 @@
           else if (isType(t, 'battle') && !isType(t, 'creature')) { t.counters.defense = Math.max(0, (t.counters.defense || 0) - e.n); }
           else if (k.has('infect') || k.has('wither')) { t.counters['-1/-1'] = (t.counters['-1/-1'] || 0) + e.n; if (k.has('deathtouch')) t.dtd = true; summary.push(`${cardName(e.src)} put ${e.n} −1/−1 counter${e.n > 1 ? 's' : ''} on ${cardName(t)}`); }
           else { t.dmg = (t.dmg || 0) + e.n; if (k.has('deathtouch')) t.dtd = true; summary.push(`${cardName(e.src)} dealt ${e.n} damage to ${cardName(t)}`); }
+          if (root.Engine) root.Engine.emit({ type: 'combatDamage', card: e.src, to: 'creature', target: t.id, player: e.src.ctrl, n: e.n });
         }
         if (k.has('lifelink') && s.players[e.src.ctrl]) s.players[e.src.ctrl].life += e.n;
       }
@@ -1407,7 +1526,8 @@
     step(false);
     if (summary.length) notes.push('Combat: ' + summary.join('; '));
     else notes.push('Combat: no damage was dealt');
-    s.turn.phase = PI('Main 2');
+    // After combat damage the turn moves on by itself: end of combat (triggers), then main phase 2.
+    if (root.Engine) s.turn.goal = 'main2'; else s.turn.phase = PI('Main 2');
   }
 
   function chat(s, m) {
@@ -1422,6 +1542,7 @@
     const T = s.turn;
     if (stackCards(s).length && alive(s, T.active)) return { ok: false, err: 'Wait until everything on the stack has resolved.' };
     clearMods(s);
+    if (root.Engine) root.Engine.endOfTurn(s);
     // 514.2: damage wears off and "until end of turn" effects end.
     for (const c of Object.values(s.cards)) { c.dmg = 0; c.dtd = false; c.grant = null; }
     s.combat = null; s.prio = null; T.lands = {};
@@ -1440,6 +1561,8 @@
     }
     T.starts = T.starts || {}; T.starts[next] = T.n;
     T.phase = 1; // untap step has no priority, move straight to upkeep
+    T.goal = 'main1'; // upkeep → draw → main 1 by themselves unless something triggers
+    if (root.Engine) root.Engine.turnBegins(s, next);
     log(s, pid, `passed the turn to ${nameOf(s, next)}`);
     if (n) log(s, next, `untapped ${n} permanent${n > 1 ? 's' : ''}`, 'auto');
     for (const x of notes) log(s, pid, x, 'auto');
@@ -1472,7 +1595,10 @@
     return [p, t];
   }
 
-  root.Rules = { PHASES, ROWS, PUBLIC_ZONES, KEYWORD_COUNTERS, SUGGESTED_COUNTERS, MAX_SEATS, START_LIFE,
+  const _int = { moveOne, makeToken, tokenD, todo, log, cardName, nameOf, stackCards, stackTop, startPrio, nextHolder: (s, n) => nextHolder(s, n), PHASES, PI: n => PHASES.indexOf(n),
+    isType, typeLine, alive: (s, p) => alive(s, p), live: (s, p) => live(s, p), addPool, unitsOf, passTurn, sba, alertChecks, rotate, face, rowFor, listNames,
+    clearMods, cleanTargets, wardFor, targetText, sick, combatDamage: (s, n) => combatDamage(s, n) };
+  root.Rules = { _int, PHASES, ROWS, PUBLIC_ZONES, KEYWORD_COUNTERS, SUGGESTED_COUNTERS, MAX_SEATS, START_LIFE,
     newState, apply, canAct, zoneCards, cardName, typeLine, isType, face, rowFor, ptOf, rid, listNames, nameOf,
-    stackCards, stackTop, sick, alive, fixUp: (s) => { const key = () => JSON.stringify([s.prio && [s.prio.holder, s.prio.top, s.prio.passed.length], s.combat && s.combat.done, stackCards(s).length]); const before = key(); const notes = []; fixUp(s, notes); for (const n of notes) log(s, null, n, 'auto'); return notes.length > 0 || key() !== before; }, landCheck: (s, pid) => landCheck(JSON.parse(JSON.stringify(s)), pid), PI };
+    stackCards, stackTop, sick, alive, fixUp: (s) => { const key = () => JSON.stringify([s.prio && [s.prio.holder, s.prio.top, s.prio.passed.length], s.combat && s.combat.done, stackCards(s).length, (s.ask || []).length, (s.tq || []).length, s.turn && [s.turn.phase, s.turn.n]]); const before = key(); const notes = []; if (root.Engine && s.turn && s.turn.active) { root.Engine.begin(s); try { root.Engine.timeouts(s, notes); } catch (e) {} } fixUp(s, notes); if (root.Engine && s.turn && s.turn.active) { try { root.Engine.after(s, notes); } catch (e) { if (typeof console !== 'undefined') console.error(e); } } for (const n of notes) log(s, null, n, 'auto'); return notes.length > 0 || key() !== before; }, landCheck: (s, pid) => landCheck(JSON.parse(JSON.stringify(s)), pid), PI };
 })(typeof window !== 'undefined' ? window : globalThis);
