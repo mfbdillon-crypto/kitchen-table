@@ -69,12 +69,14 @@
     const named = /^(treasure|clue|food|blood|map|gold|powerstone|incubator|shard|junk|lander|mutagen|eldrazi spawn|eldrazi scion)/.exec(desc);
     const colors = []; for (const [w, c] of Object.entries({ white: 'W', blue: 'U', black: 'B', red: 'R', green: 'G' })) if (new RegExp('\\b' + w + '\\b').test(desc)) colors.push(c);
     const types = desc.replace(/\b(white|blue|black|red|green|colorless|and)\b/g, ' ').replace(/\s+/g, ' ').trim();
-    return { n: amt(m[1]) || 1, tapped: !!m[2], p: m[3] || null, t: m[4] || null, desc, colors, types, kws, named: named ? named[1] : null, attacking: !!m[7] };
+    return { n: amt(m[1]) || 1, tapped: !!m[2] || /^tapped/.test(m[7] || ''), p: m[3] || null, t: m[4] || null, desc, colors, types, kws, named: named ? named[1] : null, attacking: !!m[7] };
   }
 
   // ---------------- one clause ----------------
   function clause(raw, st) {
     let s = raw.trim().replace(/\.$/, '').replace(/^then,? /, '').trim();
+    { const u = s.match(/^until end of turn, (.+)$/); if (u) s = u[1] + ' until end of turn'; }
+    s = s.replace(/^(?:he|she) /, 'it ').replace(/ (?:him|her) /g, ' it ');
     let optional = false, ifDid = false, m;
     if ((m = s.match(/^if you do,? (.+)$/))) { ifDid = true; s = m[1]; }
     if ((m = s.match(/^you may (.+)$/))) { optional = true; s = m[1]; }
@@ -188,7 +190,7 @@
     // Attach / animate.
     if ((m = s.match(/^attach (this|it) to (.+)$/))) return [wrap({ op: 'attach', what: obj(m[1]), to: targetOf(m[2], st) })];
     if ((m = s.match(/^tap untapped creatures with total power (\d+) or more: this becomes an artifact creature until end of turn$/))) return [wrap({ op: 'crew', n: +m[1] })];
-    if ((m = s.match(/^(this|target .+?|it) becomes an? (?:(\d+|x)\/(\d+|x) )?(.+?)(?: with (.+?))?(?: in addition to its other types)? until end of turn$/))) return [wrap({ op: 'animate', what: targetOf(m[1], st), p: m[2] || null, t: m[3] || null, types: m[4], kws: m[5] || '', eot: true })];
+    if ((m = s.match(/^(.+?) (?:becomes an?|become) (?:(\d+|x)\/(\d+|x) )?(.+?)(?: with (.+?))?(?: in addition to (?:its|their) other types)? until end of turn$/)) && /creature/.test(m[4])) { const what = targetOf(m[1], st); if (what) return [wrap({ op: 'animate', what, p: m[2] || null, t: m[3] || null, types: m[4].replace(/creatures$/, 'creature'), kws: m[5] || '', eot: true })]; }
     // Hand to battlefield.
     if ((m = s.match(/^put (?:an? |up to (\w+) )?(.+?) cards? from your hand onto the battlefield( tapped)?$/))) return [wrap({ op: 'fromHand', filter: m[2], n: amt(m[1]) || 1, tapped: !!m[3] })];
     if ((m = s.match(/^put (?:an? )?(.+?) cards? from your graveyard onto the battlefield( tapped)?$/))) return [wrap({ op: 'fromGy', filter: m[1], dest: 'battlefield', tapped: !!m[2] })];
@@ -255,6 +257,9 @@
     let understood = true;
     for (let sent of sentences) {
       // "If you're the monarch, it deals 7 damage instead." / "If it's an artifact, draw a card."
+      // Reflexive triggers (603.12): "When you do, ..." is a new ability whose targets are chosen then.
+      const rf = sent.replace(/\.$/, '').match(/^when you do, (.+)$/);
+      if (rf) { const inner = parse(rf[1] + '.', opts); ops.push({ op: 'reflexive', text: rf[1], ops: inner.ops }); if (!inner.understood) understood = false; continue; }
       const cm = sent.replace(/\.$/, '').match(/^if (?!you do\b|they do\b|a player does\b)([^,]+), (.+?)( instead)?$/);
       if (cm) {
         const inner = parse(cm[2] + '.', opts, st);

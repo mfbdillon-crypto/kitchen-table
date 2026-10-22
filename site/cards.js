@@ -360,7 +360,8 @@
 
   function targetsIn(str) {
     const reqs = [];
-    const s = str.replace(/\n/g, ' ');
+    // A reflexive "When you do, …" ability picks its own targets later (603.12).
+    const s = str.replace(/\n/g, ' ').replace(/\bwhen you do\b.*$/i, '');
     const re = /\b(?:(up to )(one|two|three|four|five|\d+) |(one|two|three|four|five|\d+) |(any number of) )?(?:(other|another) )?target ((?:(?!\btarget\b)[^.;:])*)|\bany target\b/gi;
     let m;
     while ((m = re.exec(s))) {

@@ -651,6 +651,7 @@
         case 'start': {
           need();
           if (!s.seats.length) return { ok: false, err: 'Nobody is seated.' };
+          if (s.turn && s.turn.active && !s.winner) return { ok: false, err: 'The game has already started. Use New game to start over.' };
           // Random seating order and starting player (103.1 / 103.2).
           const order = s.seats.slice();
           for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
@@ -942,6 +943,8 @@
           if (!K || K.done || K.n !== s.turn.n) return { ok: false, err: 'Nothing is attacking right now.' };
           if (!K.waiting.includes(pid)) return { ok: false, err: 'Nobody is attacking you.' };
           if (K.ok[pid]) return { ok: false, err: 'You already declared your blockers.' };
+          // Attack triggers resolve in the declare attackers step, before blockers are declared (508.2, 509.1).
+          if (stackCards(s).length || (s.tq && s.tq.length)) return { ok: false, err: 'Wait — the attack triggers resolve before blockers are declared (508.2).' };
           const C = root.Cards;
           const used = new Set(), pairs = [];
           for (const it of (a.list || []).slice(0, 80)) {
@@ -1598,7 +1601,7 @@
       }
       for (const p of s.seats) alertChecks(s, p);
       // The damage line first, then what died from it (state-based actions, 704.3).
-      if (summary.length) { notes.push((first ? 'First-strike damage: ' : 'Combat: ') + summary.join('; ')); anyDmg = true; summary.length = 0; }
+      if (summary.length) { for (const n of notes.splice(0)) log(s, null, n, 'auto'); log(s, null, (first ? 'First-strike damage: ' : 'Combat: ') + summary.join('; '), 'auto'); anyDmg = true; summary.length = 0; }
       sba(s, notes);
     };
     let anyDmg = false;

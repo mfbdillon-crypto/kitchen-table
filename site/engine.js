@@ -522,10 +522,10 @@
           const d = R.tokenD({ what: sp.named || sp.desc, p: sp.p === 'x' ? String(val(sp.x || { v: 'X' })) : sp.p || '', t: sp.t === 'x' ? String(val(sp.x || { v: 'X' })) : sp.t || '', kws: sp.kws });
           for (const p of players(o.who)) {
             const before = new Set(Object.keys(s.cards));
-            R.makeToken(s, p, d, n, sp.tapped || sp.attacking, notes);
+            R.makeToken(s, p, d, n, sp.tapped, notes);   // "that are attacking" isn't tapped (508.4)
             emit({ type: 'token', player: p });
             if (sp.attacking && s.combat && s.combat.att) {
-              const myAtt = Object.values(s.combat.att)[0];
+              const myAtt = s.combat.att[srcId] || Object.values(s.combat.att).find(x => x) || null;
               for (const id of Object.keys(s.cards)) if (!before.has(id) && myAtt) s.combat.att[id] = { def: myAtt.def, blk: [] };
             }
             notes.push(`${nameOf(s, p)} created ${n > 1 ? n + ' ' : 'a '}${d.n} token${n > 1 ? 's' : ''} (${srcName})`);
@@ -615,6 +615,12 @@
             notes.push(`${cardName(c)} became ${c.animPT ? c.animPT.join('/') + ' ' : 'an '}${c.animated} until end of turn`);
             emit({ type: 'crewed', card: c });
           }
+          break;
+        }
+        case 'reflexive': {
+          if (!st.did) break;
+          s.tq = s.tq || [];
+          s.tq.push({ id: 'q' + (++s.seq), src: srcId, name: srcName, d: item.d, face: item.face || 0, ctrl: by, i: -1, text: o.text, effect: o.text, fixed: o.ops, optional: false, ctx, t: Date.now(), ordered: true });
           break;
         }
         case 'cascade': R.todo(s, by, { k: 'cascade', mv: ctx.mv || (+((item.d || {}).cmc) || 0), src: srcName }); notes.push(`${srcName}: cascade (${nameOf(s, by)} reveals until a cheaper nonland card)`); break;
@@ -855,7 +861,7 @@
       if (T.goal === 'main2' && ph >= PI('Main 2')) { T.goal = null; return; }
       const K = s.combat;
       if (K && K.n === T.n && !K.done && Object.keys(K.att || {}).length) return;   // combat in progress
-      if (ph >= PI('Cleanup')) { R.passTurn(s, T.active, notes, () => ({ ok: true }), true); check(s, notes); continue; }
+      if (ph >= PI('Cleanup')) { R.passTurn(s, T.active, [], () => ({ ok: true }), true); check(s, notes); continue; }
       let next = ph + 1;
       if (R.PHASES[next] === 'Declare attackers' && T.goal === 'pass') noCombat(s);
       // 508.8: with no attackers, the declare blockers and combat damage steps are skipped.
