@@ -253,6 +253,7 @@
     if (!c || !G.seated()) return false;
     if (c.zone === 'hand' || c.zone === 'library') return c.owner === KEY;
     if (S().dev && S().hostPid === KEY) return true;     // developer debugging: every public card
+    if ((c.zone === 'battlefield' || c.zone === 'graveyard') && (S().ask || []).some(a => a.kind === 'manual' && a.pid === KEY)) return true;   // finishing an effect by hand
     return R.canAct(S(), KEY, c);
   }
 
@@ -309,6 +310,7 @@
     if (G.picking && c.zone !== 'hand' && c.zone !== 'library') { const st = pickState({ c: c.id }); if (st) el.classList.add(st); }
     if (G.combatPick && c.zone === 'battlefield') { const st = combatState(c); if (st) el.classList.add(st); }
     if (c.ab) el.append(h('div', { class: 'abtext' }, h('b', null, 'Ability'), ' ', c.ab.text));
+    if (c.chosen && c.zone === 'battlefield') el.append(h('div', { class: 'tag chosen', title: 'Chosen as it entered' }, 'Chosen: ' + (S().players[c.chosen] ? nameOf(c.chosen) : c.chosen)));
     if (c.noUntap && c.zone === 'battlefield') el.append(h('div', { class: 'tag nou' }, 'Doesn’t untap'));
     if (c.zeroT && c.zone === 'battlefield') el.append(h('div', { class: 'tag zero' }, '0 toughness'));
     if (c.owner && c.ctrl && c.owner !== c.ctrl && c.zone === 'battlefield') el.append(h('div', { class: 'tag own', title: 'Owner' }, 'Owner: ' + nameOf(c.owner)));
@@ -784,6 +786,10 @@
     G.lastFromPool = ids.filter(id => /^pool:/.test(id)).map(id => +id.slice(5));
     const real = ids.filter(id => !/^pool:/.test(id));
     if (real.length) await G.tap([...new Set(real)], true, true);
+    // A source that makes more mana than this needed (Sol Ring for a 1-mana cost): the rest goes into your pool (106.4).
+    const extra = [];
+    for (const src of srcs) { const used = real.filter(id => id === src.id).length; if (used && src.amount > used) for (let i = used; i < src.amount; i++) extra.push((src.units && src.units[i]) || src.colors); }
+    if (extra.length) await G.act({ type: 'pool', add: extra.map(u => String(u || 'C')) });
     return true;
   }
   G.castFlow = castFlow;
@@ -831,7 +837,7 @@
     if (!P || !G.seated()) return null;
     if (!top && P.step) return stepBar(s, P);
     if (!top) return null;
-    const what = `${top.ctrl === KEY ? 'You' : nameOf(top.ctrl)} ${top.ab ? 'activated ' + top.ab.name : 'cast ' + R.cardName(top)}${targetsTxt(top)}`;
+    const what = top.ab && top.ab.trig ? `${top.ab.name}${top.ctrl === KEY ? ' (yours)' : ' (' + nameOf(top.ctrl) + '’s)'} triggered: “${String(top.ab.text).replace(/^this /i, top.ab.name + ' ')}”${targetsTxt(top)}` : `${top.ctrl === KEY ? 'You' : nameOf(top.ctrl)} ${top.ab ? 'activated ' + top.ab.name : 'cast ' + R.cardName(top)}${targetsTxt(top)}`;
     if (P.holder === KEY) {
       const auto = G.LS.get('kt:autopass', false);
       if (auto && !canRespond()) { if (G._autoFor !== P.top + ':' + P.since) { G._autoFor = P.top + ':' + P.since; setTimeout(() => { const q = S().prio; if (q && q.holder === KEY && q.top === P.top) G.pass(); }, 900); } }
@@ -878,14 +884,20 @@
   // resolve, and anything the table couldn't do by itself ("finish by hand").
   G._askSeen = G._askSeen || {};
   function myAsks() { const s = S(); return (s && s.ask || []).filter(a => a.pid === KEY); }
+  function openAskModal(a, title, build, opts) { openModal(title, build, opts); G._askModal = a.id; G._askModalEl = modal; }
   function engineAsks() {
     if (!G.seated()) return;
+    // A question answered elsewhere (phone, timeout, another window): close its window.
+    const live = new Set((S().ask || []).map(a => a.id));
+    if (G._askModal && !live.has(G._askModal)) { const el = G._askModalEl; G._askModal = null; G._askModalEl = null; if (modal && modal === el) { closeModal(true); setTimeout(pumpAsks, 30); } }
+    if (G.picking && G.picking.engine && !live.has(G.picking.engine.id)) { const q = G.picking; G.picking = null; if (q.prevTab && G.tab === 'all') G.tab = q.prevTab; }
     for (const a of myAsks()) {
       if (a.kind === 'manual' || G._askSeen[a.id]) continue;
       if (a.kind === 'targets') { if (G.picking) continue; G._askSeen[a.id] = 1; askTargets(a); continue; }
       if (a.kind === 'modes' || a.kind === 'order') { G._askSeen[a.id] = 1; ask(() => a.kind === 'modes' ? askModes(a) : askOrder(a)); continue; }
       if (a.kind === 'assign') { G._askSeen[a.id] = 1; askNow(() => askAssign(a)); continue; }
       if (a.kind === 'legend') { G._askSeen[a.id] = 1; ask(() => askLegend(a)); continue; }
+      if (a.kind === 'choose') { G._askSeen[a.id] = 1; ask(() => askChoose(a)); continue; }
     }
   }
   const answer = (a, extra) => G.act(Object.assign({ type: 'answer', id: a.id }, extra)).then(r => { if (r && !r.ok && r.err) { G.toast(r.err, 'err'); delete G._askSeen[a.id]; } render(); return r; });
@@ -900,7 +912,7 @@
   }
   function askModes(a) {
     const sel = [];
-    openModal(`${a.name} — choose ${a.min === a.max ? (a.min === 1 ? 'one' : a.min) : a.min + ' to ' + a.max}`, b => {
+    openAskModal(a, `${a.name} — choose ${a.min === a.max ? (a.min === 1 ? 'one' : a.min) : a.min + ' to ' + a.max}`, b => {
       b.append(h('div', { class: 'modes' }, a.modes.map((m, i) => h('button', { class: 'mode' + (sel.includes(i) ? ' on' : ''), onclick: () => {
         if (sel.includes(i)) sel.splice(sel.indexOf(i), 1); else if (sel.length < a.max) sel.push(i);
         if (a.max === 1 && sel.length === 1) { closeModal(true); answer(a, { modes: sel.slice() }); setTimeout(pumpAsks, 50); return; }
@@ -911,7 +923,7 @@
   }
   function askOrder(a) {
     const order = a.items.map(x => x.id);
-    openModal('Several of your abilities triggered', b => {
+    openAskModal(a, 'Several of your abilities triggered', b => {
       b.append(h('p', { class: 'muted' }, 'They go on the stack together. The one at the top of this list resolves first — use the arrows to change the order (603.3b).'));
       b.append(h('ol', { class: 'trigorder' }, order.map((id, i) => {
         const it = a.items.find(x => x.id === id);
@@ -927,8 +939,8 @@
     for (const b of a.blockers) { const l = a.deathtouch ? 1 : b.lethal; plan[b.id] = Math.min(left, l); left -= plan[b.id]; }
     if (left > 0) { if (a.trample) plan.player = left; else plan[a.blockers[a.blockers.length - 1].id] += left; }
     const sum = () => Object.values(plan).reduce((t, n) => t + (n | 0), 0);
-    openModal(`${a.name} — assign combat damage`, b => {
-      b.append(h('p', { class: 'muted' }, `${a.name} has ${a.power} power and is blocked by ${a.blockers.length} creatures. Lethal damage must go to each blocker in order before the next one${a.trample ? '; with trample, the rest may go to the player' : ''}${a.deathtouch ? ' (deathtouch: 1 is lethal)' : ''}.`));
+    openAskModal(a, `${a.name} — assign combat damage`, b => {
+      b.append(h('p', { class: 'muted' }, `${a.name} has ${a.power} power and is blocked by ${a.blockers.length} creatures. Divide its damage among them however you like${a.trample ? '; with trample, once every blocker has lethal damage the rest may go to the player' : ''}${a.deathtouch ? ' (deathtouch: 1 is lethal)' : ''}.`));
       const row = (label, key, hint) => h('div', { class: 'row asgn' }, h('span', { class: 'an' }, label, hint ? h('span', { class: 'muted small' }, ' ' + hint) : null),
         h('button', { onclick: () => { plan[key] = Math.max(0, (plan[key] | 0) - 1); refreshModal(); } }, '−'), h('b', null, String(plan[key] | 0)), h('button', { disabled: sum() >= a.power, onclick: () => { plan[key] = (plan[key] | 0) + 1; refreshModal(); } }, '+'));
       for (const bl of a.blockers) b.append(row(bl.name, bl.id, `(lethal: ${a.deathtouch ? 1 : bl.lethal})`));
@@ -937,15 +949,34 @@
       b.append(h('div', { class: 'row' }, h('button', { class: 'primary', onclick: async () => { const r = await answer(a, { assign: Object.assign({}, plan) }); if (r && r.ok) { closeModal(true); setTimeout(pumpAsks, 50); } } }, 'Deal the damage')));
     }, { live: true, onClose: () => setTimeout(pumpAsks, 50) });
   }
+  // "As this enters, choose…" (614.12): a color, a creature type, a player, a card name.
+  const CREATURE_TYPES = ['Angel', 'Human', 'Elf', 'Goblin', 'Zombie', 'Vampire', 'Dragon', 'Wizard', 'Warrior', 'Soldier', 'Knight', 'Cleric', 'Rogue', 'Spirit', 'Beast', 'Merfolk', 'Dinosaur', 'Cat', 'Elemental', 'Sliver', 'Faerie', 'Demon', 'Rat', 'Squirrel', 'Treefolk', 'Hydra'];
+  function askChoose(a) {
+    let val = '';
+    openAskModal(a, `${a.name} — choose ${/^[aeiou]/.test(a.what) ? 'an' : 'a'} ${a.what}`, b => {
+      const done = v => { closeModal(true); answer(a, { value: v }); setTimeout(pumpAsks, 50); };
+      if (a.what === 'color') b.append(h('div', { class: 'row wrap' }, ['white', 'blue', 'black', 'red', 'green'].map(c => h('button', { onclick: () => done(c) }, c[0].toUpperCase() + c.slice(1)))));
+      else if (a.players) b.append(h('div', { class: 'row wrap' }, a.players.map(p => h('button', { onclick: () => done(p) }, p === KEY ? 'You' : nameOf(p)))));
+      else {
+        const sugg = a.what === 'creature type' ? CREATURE_TYPES : a.what === 'basic land type' ? ['Plains', 'Island', 'Swamp', 'Mountain', 'Forest'] : a.what === 'card type' ? ['Artifact', 'Creature', 'Enchantment', 'Instant', 'Land', 'Planeswalker', 'Sorcery', 'Battle'] : [];
+        const inp = h('input', { type: 'text', placeholder: a.what, oninput: e => { val = e.target.value; }, onkeydown: e => { if (e.key === 'Enter' && val.trim()) done(val.trim()); } });
+        b.append(h('div', { class: 'row' }, inp, h('button', { class: 'primary', onclick: () => val.trim() && done(val.trim()) }, 'Choose')));
+        if (sugg.length) b.append(h('div', { class: 'chips' }, sugg.map(x => h('button', { class: 'chip', onclick: () => done(x) }, x))));
+      }
+    }, { live: true, onClose: () => setTimeout(pumpAsks, 50) });
+  }
   // Legend rule (704.5j): keep one, the rest go to the graveyard.
   function askLegend(a) {
-    openModal(`Legend rule — ${a.name}`, b => {
+    openAskModal(a, `Legend rule — ${a.name}`, b => {
       b.append(h('p', { class: 'muted' }, `You control two or more legendary permanents named ${a.name}. Choose the one to keep; the others go to the graveyard (704.5j).`));
       b.append(h('div', { class: 'pkchoices pics' }, a.ids.filter(id => S().cards[id]).map(id => targetThumb({ c: id }, false, () => { closeModal(true); answer(a, { keep: id }); setTimeout(pumpAsks, 50); }))));
     }, { live: true, onClose: () => setTimeout(pumpAsks, 50) });
   }
   // "Use it?" for an optional triggered ability, right as it's about to resolve.
   function askBar() {
+    const e = myAsks().find(x => x.kind === 'enterOpt');
+    if (e) return h('div', { class: 'prio mine', role: 'alert' }, h('span', { class: 'pring' }), h('div', { class: 'ptext' }, h('b', null, `${e.name}: `), e.text),
+      h('button', { class: 'primary', onclick: () => answer(e, { yes: true }) }, e.life ? `Pay ${e.life} life` : 'I reveal one'), h('button', { onclick: () => answer(e, { yes: false }) }, 'Let it enter tapped'));
     const a = myAsks().find(x => x.kind === 'may');
     if (!a) return null;
     const left = Math.max(0, Math.ceil((120000 - (Date.now() - (a.since || 0))) / 1000));
@@ -1662,13 +1693,34 @@
       const sel = [];
       let done = false;
       const finish = async ids => { if (done) return; done = true; closeModal(true); await G.fetchLands(ids, t); ack(); setTimeout(pumpAsks, 50); };
-      openModal(`${t.src}: search for ${t.n > 1 ? 'up to ' + t.n + ' basic lands' : 'a basic land'}`, b => {
-        const lands = G.basicLands();
+      openModal(`${t.src}: search for ${t.filter && t.filter !== 'basic land' ? (t.n > 1 ? 'up to ' + t.n + ' × ' : 'a ') + t.filter + ' card' : t.n > 1 ? 'up to ' + t.n + ' basic lands' : 'a basic land'}`, b => {
+        const wantT = ['plains', 'island', 'swamp', 'mountain', 'forest'].filter(w => String(t.filter || '').toLowerCase().includes(w));
+        const lands = G.basicLands().filter(c => !wantT.length || wantT.some(w => new RegExp('\\b' + w + '\\b', 'i').test(c.d.faces[0].t)));
         b.append(h('p', { class: 'muted' }, t.split ? 'The first one you pick goes onto the battlefield tapped, the second into your hand.' : t.dest === 'hand' ? 'They go into your hand.' : `They go onto the battlefield${t.tapped ? ' tapped' : ''}.`));
         const uniq = []; const seen = new Set(); for (const c of lands) if (!seen.has(c.d.n) || sel.includes(c.id)) { seen.add(c.d.n); uniq.push(c); }
         b.append(h('div', { class: 'strip pick' }, uniq.length ? uniq.map(c => cardEl(Object.assign({ zone: 'library', owner: KEY, counters: {} }, c), { noMenu: true, cls: sel.includes(c.id) ? 'sel' : '', badge: sel.includes(c.id) ? '#' + (sel.indexOf(c.id) + 1) : null, onClick: () => { const i = sel.indexOf(c.id); if (i >= 0) sel.splice(i, 1); else if (sel.length < (t.n || 1)) { const other = lands.find(x => x.d.n === c.d.n && !sel.includes(x.id)); sel.push(other ? other.id : c.id); } refreshModal(); } })) : h('p', { class: 'muted' }, 'There are no basic lands left in your library.')));
         b.append(h('div', { class: 'row' }, h('button', { class: 'primary', onclick: () => finish(sel.slice()) }, sel.length ? `Take ${sel.length}` : 'Find nothing'), h('span', { class: 'muted small' }, 'Your library is shuffled afterwards.')));
       }, { live: true, cls: 'wide', sticky: true, noEsc: true });
+      return;
+    }
+    // v6: "Search your library for a creature card…" — any kind of card, not just basic lands.
+    if (t.k === 'search') {
+      const sel = []; let done = false;
+      const want = String(t.filter || 'card').replace(/ cards?$/, '').replace(/ with .*$/, '').trim();
+      const fits = c => want === 'card' || CD.matchesWhat(Object.assign({ zone: 'library', owner: KEY, counters: {}, face: 0 }, c), want);
+      const finish = async ids => { if (done) return; done = true; closeModal(true); await G.fetchLands(ids, t); ack(); setTimeout(pumpAsks, 50); };
+      openModal(`${t.src}: search your library for ${t.n > 1 ? (t.upTo ? 'up to ' : '') + t.n + ' × ' : 'a '}${t.filter || 'card'}`, b => {
+        const pool = G.P.library.filter(fits);
+        b.append(h('p', { class: 'muted' }, `${t.dest === 'battlefield' ? 'It goes onto the battlefield' + (t.tapped ? ' tapped' : '') : 'It goes into your hand'}. ${String(t.filter || '').includes('with') ? 'Check the “' + t.filter + '” part yourself.' : ''}`));
+        b.append(h('div', { class: 'strip pick' }, pool.length ? pool.map(c => cardEl(Object.assign({ zone: 'library', owner: KEY, counters: {} }, c), { noMenu: true, cls: sel.includes(c.id) ? 'sel' : '', onClick: () => { const i = sel.indexOf(c.id); if (i >= 0) sel.splice(i, 1); else if (sel.length < (t.n || 1)) sel.push(c.id); refreshModal(); } })) : h('p', { class: 'muted' }, 'Nothing in your library fits.')));
+        b.append(h('div', { class: 'row' }, h('button', { class: 'primary', onclick: () => finish(sel.slice()) }, sel.length ? `Take ${sel.length}` : 'Find nothing'), h('span', { class: 'muted small' }, 'Your library is shuffled afterwards.')));
+      }, { live: true, cls: 'wide', sticky: true, noEsc: true });
+      return;
+    }
+    // "Look at the top N cards…": the look window, with the card's instructions on top.
+    if (t.k === 'look') {
+      G.toast(`${t.src}: ${String(t.text || '').replace(/^./, m => m.toUpperCase())}`, 'info');
+      lookModal('look', t.n || 1, () => { ack(); setTimeout(pumpAsks, 50); });
       return;
     }
     if (t.k === 'discard' || t.k === 'sacrifice' || t.k === 'returnOwn') {
@@ -1678,9 +1730,10 @@
       if (!need) { ack(); return pumpAsks(); }
       let done = false;
       const verb = t.k === 'discard' ? 'discard' : t.k === 'returnOwn' ? 'return to your hand' : 'sacrifice';
-      openModal(`${t.src}: ${verb} ${need === 1 ? (t.k === 'discard' ? 'a card' : (/^[aeiou]/.test(t.what || 'permanent') ? 'an ' : 'a ') + (t.what || 'permanent')) : need}`, b => {
+      const what1 = String(t.what || 'permanent').replace(/(?<!s)s$/, '');
+      openModal(`${t.src}: ${verb} ${need === 1 ? (t.k === 'discard' ? 'a card' : (/^[aeiou]/.test(what1) ? 'an ' : 'a ') + what1) : need + ' ' + (t.k === 'discard' ? 'cards' : what1 + 's')}`, b => {
         b.append(h('div', { class: 'strip pick' }, pool.map(c => cardEl(c, { noMenu: true, cls: sel.includes(c.id) ? 'sel' : '', onClick: () => { const i = sel.indexOf(c.id); if (i >= 0) sel.splice(i, 1); else if (sel.length < need) sel.push(c.id); refreshModal(); } }))));
-        b.append(h('div', { class: 'row' }, h('button', { class: 'primary', disabled: sel.length !== need, onclick: async () => { if (done) return; done = true; closeModal(true); if (t.k === 'discard') await G.fromHand(sel.slice(), 'graveyard', { msg: `discarded {cards} (${t.src})` }); else if (t.k === 'returnOwn') await G.move(sel.slice(), 'hand'); else await G.move(sel.slice(), 'graveyard'); ack(); setTimeout(pumpAsks, 50); } }, `${t.k === 'discard' ? 'Discard' : t.k === 'returnOwn' ? 'Return' : 'Sacrifice'} (${sel.length}/${need})`)));
+        b.append(h('div', { class: 'row' }, h('button', { class: 'primary', disabled: sel.length !== need, onclick: async () => { if (done) return; done = true; closeModal(true); if (t.k === 'discard') await G.fromHand(sel.slice(), 'graveyard', { msg: `discarded {cards} (${t.src})` }); else if (t.k === 'returnOwn') await G.move(sel.slice(), 'hand'); else await G.act({ type: 'move', ids: sel.slice(), to: 'graveyard', sac: true, quietSac: t.src }); ack(); setTimeout(pumpAsks, 50); } }, `${t.k === 'discard' ? 'Discard' : t.k === 'returnOwn' ? 'Return' : 'Sacrifice'} (${sel.length}/${need})`)));
       }, { live: true, cls: 'wide', sticky: true, noEsc: true });
       return;
     }
@@ -1755,9 +1808,11 @@
   function preconPicker(onPick, onMsg) {
     const list = window.KT_PRECONS || [];
     const wrap = h('div', { class: 'precons' });
-    for (const b of [1, 2, 3, 4]) {
-      wrap.append(h('div', { class: 'prehead' }, BRACKETS[b]));
-      wrap.append(h('div', { class: 'prelist' }, list.filter(p => p.bracket === b).map(p => {
+    for (const b of [1, 2, 3, 4, 'test']) {
+      const group = list.filter(p => b === 'test' ? p.test : p.bracket === b && !p.test);
+      if (!group.length) continue;
+      wrap.append(h('div', { class: 'prehead' }, b === 'test' ? 'Test decks · mechanics for testing the rules' : BRACKETS[b]));
+      wrap.append(h('div', { class: 'prelist' }, group.map(p => {
         const have = G.decks().some(d => d.src === p.id);
         return h('button', { class: 'precon' + (have ? ' have' : ''), title: p.blurb, onclick: async e => {
           const btn = e.currentTarget; if (btn.disabled) return; btn.disabled = true;

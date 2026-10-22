@@ -503,7 +503,7 @@
     if (toHand.length) { const cards = take(P.library, toHand); P.hand.push(...cards); }
     shuffle(P.library); savePriv();
     if (toBf.length) await G.fromLibrary(toBf, 'battlefield', { tapped: t.tapped, msg: `put {cards} onto the battlefield${t.tapped ? ' tapped' : ''} (${t.src})` });
-    log(`searched their library${toHand.length ? `, put ${plural(toHand.length, 'land')} into their hand` : ''} and shuffled (${t.src})`);
+    log(`searched their library${toHand.length ? `, put ${plural(toHand.length, t.k === 'search' ? 'card' : 'land')} into their hand` : ''} and shuffled (${t.src})`);
   };
 
   const cmdrAsked = new Set();
@@ -654,7 +654,7 @@
     if (!top && s.prio.step) return { mine: s.prio.holder === KEY, step: true, text: 'Blockers are set — combat damage is next', waiting: s.prio.holder !== KEY ? R.nameOf(s, s.prio.holder) : '' };
     if (!top) return null;
     const tg = [].concat(...(top.tg || [])).map(t => t.p ? (t.p === KEY ? 'you' : R.nameOf(s, t.p)) : s.cards[t.c] ? (s.cards[t.c].ctrl === KEY ? 'your ' : R.nameOf(s, s.cards[t.c].ctrl) + '’s ') + R.cardName(s.cards[t.c]) : 'a card');
-    return { mine: s.prio.holder === KEY, text: `${top.ctrl === KEY ? 'You' : R.nameOf(s, top.ctrl)} ${top.ab ? 'activated ' + top.ab.name : 'cast ' + R.cardName(top)}${tg.length ? ' → ' + R.listNames(tg) : ''}`, waiting: s.prio.holder !== KEY ? R.nameOf(s, s.prio.holder) : '' };
+    return { mine: s.prio.holder === KEY, text: `${top.ab && top.ab.trig ? top.ab.name + ' triggered' : (top.ctrl === KEY ? 'You' : R.nameOf(s, top.ctrl)) + ' ' + (top.ab ? 'activated ' + top.ab.name : 'cast ' + R.cardName(top))}${tg.length ? ' → ' + R.listNames(tg) : ''}`, waiting: s.prio.holder !== KEY ? R.nameOf(s, s.prio.holder) : '' };
   }
   // Ask the phone to pick from a list (targets, modes, X). Resolves with the chosen value, or null.
   const phoneAsks = new Map();

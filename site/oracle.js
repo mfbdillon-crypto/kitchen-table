@@ -25,6 +25,30 @@
     cycling: { zone: 'hand', ability: true }, harmonize: { zone: 'graveyard' }, 'sneak': { zone: 'hand' }
   };
 
+  // The triggered ability each of these keywords stands for (reminder text in modern wording).
+  const KW_TRIGGERS = {
+    extort: 'Whenever you cast a spell, you may pay {W/B}. If you do, each opponent loses 1 life and you gain that much life.',
+    prowess: 'Whenever you cast a noncreature spell, this gets +1/+1 until end of turn.',
+    exalted: 'Whenever a creature you control attacks alone, that creature gets +1/+1 until end of turn.',
+    annihilator: 'Whenever this attacks, defending player sacrifices N permanents.',
+    'battle cry': 'Whenever this attacks, each other attacking creature gets +1/+0 until end of turn.',
+    afflict: 'Whenever this becomes blocked, defending player loses N life.',
+    bushido: 'Whenever this blocks or becomes blocked, it gets +N/+N until end of turn.',
+    rampage: 'Whenever this becomes blocked, it gets +N/+N until end of turn for each creature blocking it beyond the first.',
+    flanking: 'Whenever a creature without flanking blocks this, the blocking creature gets -1/-1 until end of turn.',
+    'living weapon': 'When this enters, create a 0/0 black Phyrexian Germ creature token, then attach this to it.',
+    renown: 'Whenever this deals combat damage to a player, if it isn\'t renowned, put N +1/+1 counters on it and it becomes renowned.',
+    afterlife: 'When this dies, create N 1/1 white and black Spirit creature tokens with flying.',
+    fabricate: 'When this enters, put N +1/+1 counters on it.',
+    evolve: 'Whenever a creature you control enters, if that creature has greater power or toughness than this, put a +1/+1 counter on this.',
+    training: 'Whenever this attacks with another creature with greater power, put a +1/+1 counter on this.',
+    mentor: 'Whenever this attacks, put a +1/+1 counter on target attacking creature with lesser power.',
+    'myriad': 'Whenever this attacks, for each opponent other than defending player, you may create a token that\'s a copy of this that\'s tapped and attacking that player or a planeswalker they control.',
+    melee: 'Whenever this attacks, it gets +1/+1 until end of turn for each opponent you attacked this turn.',
+    dethrone: 'Whenever this attacks the player with the most life or tied for most life, put a +1/+1 counter on this.',
+    toxic: '',
+    cascade: 'When you cast this spell, exile cards from the top of your library until you exile a nonland card that costs less. You may cast it without paying its mana cost. Put the exiled cards on the bottom in a random order.'
+  };
   const cache = new Map();
   function faceOf(c, i) { return c && c.d && c.d.faces ? c.d.faces[i == null ? (c.face || 0) : i] || c.d.faces[0] : null; }
   function stripReminder(t) { return String(t || '').replace(/\([^)]*\)/g, '').replace(/[ \t]+\n/g, '\n').trim(); }
@@ -113,6 +137,7 @@
     if (/^you cycle this$/.test(e)) return { type: 'cycle', who: 'you', self: true };
     if ((m = e.match(/^this enters and whenever (.+)$/))) return { type: 'enter', self: true };
     if ((m = e.match(/^(another |a |an )?((?:[a-z]+ )*?)creature (you control )?with power (\d+) or (less|greater) enters$/))) return { type: 'enter', self: false, other: /another/.test(m[1] || ''), what: (m[2] || '') + 'creature', who: m[3] ? 'you' : 'any', power: { n: +m[4], le: m[5] === 'less' } };
+    if (/^a creature you control attacks alone$/.test(e)) return { type: 'attack', self: false, what: 'creature', who: 'you', alone: true };
     if ((m = e.match(/^(?:a|one or more) ((?:[a-z]+ )*?)creatures? (?:you control )?with (flying|trample|deathtouch|lifelink|haste|menace) attacks?$/))) return { type: 'attack', self: false, what: (m[1] || '') + 'creature', who: 'you', with: m[2], many: /one or more/.test(e) };
     if ((m = e.match(/^(?:a|one or more) creatures? attacks? you(?: or a planeswalker you control)?$/))) return { type: 'attack', self: false, what: 'creature', who: 'opp', attacksYou: true, many: /one or more/.test(e) };
     if ((m = e.match(/^(?:a|an|one or more) ((?:[a-z]+ )*?)([a-z]+?)s? you control (?:attack|attacks)$/))) return { type: 'attack', self: false, what: (m[1] || '') + m[2], who: 'you', many: /one or more/.test(e) };
@@ -251,6 +276,13 @@
           if (k.k === 'cycling' || /cycling$/.test(k.k)) m.abilities.push({ kind: 'activated', keyword: k.k, zone: 'hand', cost: k.param + ', Discard this card', mana: (k.param.match(/\{[^}]+\}/g) || []).join(''), effect: k.k === 'cycling' ? 'Draw a card.' : `Search your library for a ${k.k.replace(/cycling$/, '').trim() || 'land'} card, reveal it, put it into your hand, then shuffle.`, text: line });
         }
         m.abilities.push({ kind: 'keyword', text: line, keywords: kws.map(k => k.k) });
+        // Keywords that are triggered abilities (702.x): the table puts them on the stack like any other trigger.
+        for (const k of kws) {
+          const t = KW_TRIGGERS[k.k]; if (!t) continue;
+          const txt = t.replace(/N/g, k.param || '1');
+          const tr = parseTrigger(txt);
+          if (tr) m.abilities.push(Object.assign({ kind: 'triggered', text: txt, keywordOf: k.k }, tr));
+        }
         continue;
       }
       if (/^choose (?:one|two|three|one or more|one or both|any number)\b/i.test(line)) { modal = { kind: isSpell ? 'spell' : 'modal', text: line, modes: [], pick: line }; m.abilities.push(modal); continue; }
@@ -280,7 +312,7 @@
         const h = String(t).toLowerCase(), mm = h.match(/choose (one or more|one or both|any number|up to (\w+)|\w+)/);
         const nw = { one: 1, two: 2, three: 3, four: 4 };
         const choose = !mm ? 1 : /one or more|any number|one or both/.test(mm[1]) ? { min: 1, max: a.modes.length } : mm[2] ? { min: 1, max: nw[mm[2]] || 1 } : nw[mm[1]] || 1;
-        const pre = h.replace(/choose [^.—]*(?:—|\.)/, '').replace(/if you control a commander[^.]*\./, '').trim();
+        const pre = h.replace(/choose [^.—]*(?:—|\.)/, '').replace(/if you control a commander[^.]*\./, '').replace(/you may choose the same mode more than once\.?/, '').replace(/^\s*\./, '').trim();
         const preOps = pre ? E.parse(pre) : { ops: [], understood: true, targets: 0 };
         const modes = a.modes.map(x => { const r = E.parse(x.replace(/^[^—]{1,30} — /, '')); return { text: x, ops: r.ops, understood: r.understood, nTargets: r.targets }; });
         a.ops = preOps.ops.concat([{ op: 'modes', choose, both: /may choose both/.test(h), repeat: /same mode more than once/.test(h), modes }]);
@@ -327,6 +359,7 @@
         if (E.self) return ev.card && ev.card.id === src.id;
         if (E.other && ev.card && ev.card.id === src.id) return false;
         if (E.attacksYou) return ev.def === ctrl;
+        if (E.alone) return !!(ev.alone && ev.card && ev.card.ctrl === ctrl);
         if (E.with && ev.card && !C().has(ev.card, E.with, s)) return false;
         return whoOk(E.who, ev.card && ev.card.ctrl) && whatOk(E.what, ev.card);
       case 'youAttack': return ev.type === 'youAttack' && ev.player === ctrl;

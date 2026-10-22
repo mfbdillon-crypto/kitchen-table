@@ -83,6 +83,8 @@
     if (s.log.length > 300) s.log.splice(0, s.log.length - 300);
   }
 
+  // A player finishing an effect by hand ("Exile a creature… target opponent controls") may move other players' cards meanwhile.
+  function finishing(s, pid) { return (s.ask || []).some(a => a.kind === 'manual' && a.pid === pid); }
   function canAct(s, pid, c) {
     if (!c) return false;
     if (c.zone === 'battlefield' || c.zone === 'stack') return c.ctrl === pid;
@@ -111,7 +113,7 @@
   function leaveBattlefield(s, c, notes) {
     c.loySeen = false; c.defSeen = false; c.noUntap = false; c.zeroT = false; c.zeroOk = false;
     c.counters = {}; c.tapped = false; c.mod = null; c.attachedTo = null; c.ctrl = c.owner; c.row = null;
-    c.dmg = 0; c.dtd = false; c.grant = null; c.ctlT = null; c.alt = null; c.eot = null;
+    c.dmg = 0; c.dtd = false; c.grant = null; c.ctlT = null; c.alt = null; c.eot = null; c.chosen = null;
     if (s.combat && s.combat.att) { delete s.combat.att[c.id]; for (const a of Object.values(s.combat.att)) a.blk = (a.blk || []).filter(x => x !== c.id); }
     for (const o of Object.values(s.cards)) {
       if (o.attachedTo === c.id) {
@@ -170,7 +172,7 @@
     if (to === 'stack' && opts.by && from !== 'stack') c.ctrl = opts.by; // whoever casts it controls the spell (110.2)
     if (to === 'battlefield' && from !== 'battlefield') {
       if (opts.by) c.ctrl = opts.by; // whoever puts it onto the battlefield controls it (110.2a)
-      c.tapped = !!opts.tapped || entersTapped(c);
+      c.tapped = !!opts.tapped || entersTapped(c, s);
       c.faceDown = keepDown;
       if (from === 'limbo' && opts.backFace) c.face = 1;
       enterBattlefield(s, c);
@@ -185,8 +187,14 @@
   }
 
   // "This land enters tapped." (an unconditional line on the card) — 614.1c / 305.7
-  function entersTapped(c) {
+  function entersTapped(c, s) {
     if (c.faceDown || !root.Cards) return false;
+    // "Artifacts and creatures your opponents control enter tapped." (614.1d) on someone else's permanent.
+    if (s) for (const o of Object.values(s.cards)) {
+      if (o.zone !== 'battlefield' || o.faceDown || !o.d || o.ctrl === c.ctrl) continue;
+      const m = root.Cards.text(o).match(/(?:^|\n|\. )((?:[a-z]+(?:, | and | or ))*[a-z]+) your opponents control enter(?: the battlefield)? tapped/i);
+      if (m && m[1].toLowerCase().split(/,\s*(?:and |or )?|\s+and\s+|\s+or\s+/).some(w => w && (w.replace(/s$/, '') === 'permanent' || root.Cards.isType(c, w.replace(/s$/, ''))))) return true;
+    }
     return root.Cards.text(c).split(/\n|\.\s+/).some(l => /^(this|this (land|creature|artifact|permanent)) enters(?: the battlefield)? tapped\.?$/i.test(l.trim()));
   }
   const ZONE_WORDS = { battlefield: 'the battlefield', stack: 'the stack', graveyard: 'the graveyard', exile: 'exile', command: 'the command zone', hand: 'hand', library: 'library' };
@@ -383,13 +391,13 @@
             const c = s.cards[id];
             if (!c) continue;
             const steal = (c.zone === 'graveyard' || c.zone === 'exile') && (to === 'battlefield' || to === 'stack') && c.owner !== pid;
-            if (!canAct(s, pid, c) && !steal) return { ok: false, err: `You don't control ${cardName(c)}.` };
+            if (!canAct(s, pid, c) && !steal && !finishing(s, pid)) return { ok: false, err: `You don't control ${cardName(c)}.` };
             if (c.zone === to && to !== 'battlefield') continue;
             if (to === 'stack' && ids.length === 1) { const err = castCheck(s, pid, c, a); if (err) return { ok: false, err }; }
             froms.add(c.zone);
             const nm = cardName(c);
             const ownerName = c.owner !== pid ? nameOf(s, c.owner) + '’s ' : '';
-            moveOne(s, c, to, a.pos, { by: pid, tapped: a.tapped, faceDown: a.faceDown, row: a.row }, notes);
+            moveOne(s, c, to, a.pos, { by: pid, tapped: a.tapped, faceDown: a.faceDown, row: a.row, sac: !!a.sac && c.zone === 'battlefield' && to === 'graveyard' }, notes);
             names.push(ownerName + nm);
             if (to === 'stack') onCast(s, pid, c, a);
           }
@@ -403,6 +411,7 @@
             ? (a.pos === 'bottom' ? 'on the bottom of its owner’s library' : a.pos === 'shuffle' ? 'into its owner’s library and it was shuffled' : 'on top of its owner’s library')
             : to === 'hand' ? 'into its owner’s hand' : (to === 'battlefield' ? 'onto ' : 'into ') + ZONE_WORDS[to];
           const fromTxt = froms.size === 1 ? ` from ${ZONE_WORDS[[...froms][0]]}` : '';
+          if (a.sac && to === 'graveyard') return done(`sacrificed ${listNames(names)}${a.quietSac ? ' (' + String(a.quietSac).slice(0, 60) + ')' : ''}`);
           return done(`moved ${listNames(names)}${fromTxt} ${where}`);
         }
         case 'tap': {
@@ -412,7 +421,7 @@
           for (const id of ids) {
             const c = s.cards[id];
             if (!c || c.zone !== 'battlefield') continue;
-            if (c.ctrl !== pid) return { ok: false, err: `You don't control ${cardName(c)}.` };
+            if (c.ctrl !== pid && !finishing(s, pid)) return { ok: false, err: `You don't control ${cardName(c)}.` };
             if (c.tapped !== !!a.tapped) {
               c.tapped = !!a.tapped; changed++;
               // Tapped by hand for mana (not as part of paying for something): the mana goes into the pool.
@@ -428,7 +437,7 @@
           need();
           const c = s.cards[a.id];
           if (!c || (c.zone !== 'battlefield' && c.zone !== 'exile')) return { ok: false, err: 'Counters go on cards on the battlefield or in exile.' };
-          if (!canAct(s, pid, c)) return { ok: false, err: `You don't control ${cardName(c)}.` };
+          if (!canAct(s, pid, c) && !finishing(s, pid)) return { ok: false, err: `You don't control ${cardName(c)}.` };
           const kind = String(a.kind || '').toLowerCase().trim().slice(0, 30);
           if (!kind) return { ok: false, err: 'Name the counter.' };
           const cur = c.counters[kind] || 0;
@@ -442,6 +451,8 @@
             if (minus - m) c.counters['-1/-1'] = minus - m; else delete c.counters['-1/-1'];
           }
           const diff = (c.counters[kind] || 0) - cur;
+          if (root.Engine && diff > 0 && kind === 'lore' && c.zone === 'battlefield' && /\bsaga\b/i.test(typeLine(c))) for (let k = cur + 1; k <= cur + diff; k++) root.Engine.emit({ type: 'chapter', card: c, n: k });
+          if (root.Engine && diff > 0) root.Engine.emit({ type: 'counter', kind, card: c, n: diff });
           return done(diff ? `${diff > 0 ? 'put' : 'removed'} ${Math.abs(diff)} ${kind} counter${Math.abs(diff) > 1 ? 's' : ''} ${diff > 0 ? 'on' : 'from'} ${cardName(c)}` : '');
         }
         case 'mod': {
@@ -868,7 +879,8 @@
           if (root.Engine) {
             T.stats = T.stats || { attacked: {}, died: 0, gained: {}, lost: {}, spells: {}, drew: {} }; T.stats.attacked[pid] = true;
             root.Engine.emit({ type: 'youAttack', player: pid });
-            for (const [id, x] of Object.entries(att)) root.Engine.emit({ type: 'attack', card: s.cards[id], player: pid, def: x.def.p || (s.cards[x.def.c] && s.cards[x.def.c].ctrl) });
+            const alone = Object.keys(att).length === 1;
+            for (const [id, x] of Object.entries(att)) root.Engine.emit({ type: 'attack', card: s.cards[id], player: pid, alone, def: x.def.p || (s.cards[x.def.c] && s.cards[x.def.c].ctrl) });
           }
           const byDef = {};
           for (const [id, x] of Object.entries(att)) { const k = x.def.p ? nameOf(s, x.def.p) : cardName(s.cards[x.def.c]); (byDef[k] = byDef[k] || []).push(cardName(s.cards[id])); }
@@ -1197,6 +1209,9 @@
   function nextHolder(s, notes) {
     for (let guard = 0; guard < 40 && s.prio; guard++) {
       const P = s.prio;
+      // Triggered abilities waiting to be put on the stack (their controller is choosing order, targets or modes):
+      // nobody gets priority until they're on the stack (117.5, 603.3).
+      if (root.Engine && s.tq && s.tq.length) { P.holder = null; return; }
       const cand = P.order.find(p => !P.passed.includes(p) && live(s, p));
       if (cand) { P.holder = cand; P.since = Date.now(); return; }
       if (P.step) { s.prio = null; if (P.step === 'damage' && combatWaiting(s)) combatDamage(s, notes); return; }
@@ -1444,7 +1459,7 @@
       let waiting = false;
       for (const [id, x] of need) {
         const a = s.cards[id], who = a.ctrl;
-        if (s.players[who] && s.players[who].ai || !live(s, who)) { K.assign[id] = 'auto'; continue; }
+        if (s.players[who] && s.players[who].ai || !live(s, who) || !((C.pt(s, a) || [0])[0] > 0)) { K.assign[id] = 'auto'; continue; }
         if (!(s.ask || []).some(q => q.kind === 'assign' && q.att === id)) {
           const pw = Math.max(0, (C.pt(s, a) || [0])[0]);
           s.ask = (s.ask || []).concat([{ id: 'a' + (++s.seq), kind: 'assign', pid: who, att: id, name: cardName(a), power: pw, trample: C.keywords(a, s).has('trample'), deathtouch: C.keywords(a, s).has('deathtouch'),

@@ -184,6 +184,17 @@
       const all = [...new Set(cols.concat(pm))];
       if (all.length) best = { amount: 1, colors: all.join(''), sac: false };
     }
+    // Auras like Fertile Ground / Wild Growth / Utopia Sprawl: "Whenever enchanted land is tapped for mana, its controller adds an additional…" (605.4a)
+    if (best && !best.sac && CUR && CUR.cards && c.id) {
+      for (const o of Object.values(CUR.cards)) {
+        if (o.attachedTo !== c.id || o.zone !== 'battlefield' || o.faceDown || !o.d) continue;
+        const m = text(o).match(/whenever enchanted (?:land|forest|plains|island|swamp|mountain) is tapped for mana, its controller adds an additional (one mana of any color|one mana of the chosen color|\{([WUBRGC])\}(?:\{([WUBRGC])\})?)/i);
+        if (!m) continue;
+        const add = m[2] ? [m[2], m[3]].filter(Boolean).map(x => x.toUpperCase()) : /chosen color/i.test(m[1]) && o.chosen ? [({ white: 'W', blue: 'U', black: 'B', red: 'R', green: 'G' })[o.chosen] || 'WUBRG'] : ['WUBRG'];
+        const units = best.units ? best.units.slice() : Array.from({ length: best.amount }, () => best.colors);
+        best = { amount: units.length + add.length, colors: best.colors, sac: false, units: units.concat(add) };
+      }
+    }
     return best;
   }
 
@@ -366,7 +377,7 @@
       if (c.zone !== 'graveyard') return false;
       if (req.ctrl === 'you' && c.owner !== by) return false;
       if (req.ctrl === 'opp' && c.owner === by) return false;
-      return req.kinds.includes('any-card') || req.kinds.some(k => isType(c, k));
+      return req.kinds.includes('any-card') || req.kinds.some(k => k === 'permanent' ? isPermanentCard(c) : k === 'card' || isType(c, k)) && !req.non.some(k => isType(c, k));
     }
     if (req.kinds.includes('spell')) {
       if (c.zone !== 'stack' || c.ab) return false;

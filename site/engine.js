@@ -79,6 +79,7 @@
         if (now.alt === 'evoke') { s.tq = s.tq || []; s.tq.push({ id: 'q' + (++s.seq), src: now.id, name: cardName(now), d: now.d, face: now.face || 0, ctrl: now.ctrl, i: -1, text: 'Evoke', effect: 'sacrifice this.', fixed: [{ op: 'sacrifice', what: { k: 'self' } }], optional: false, ctx: ctxOf(s, { card: now }), t: Date.now() }); }
         // Blitz: "When this creature dies, draw a card."
         if (now.alt === 'blitz') now.blitzed = true;
+        asEnters(s, now, notes);
         if (now.zone === 'battlefield' && /\bsaga\b/i.test(R.typeLine(now)) && !now.faceDown) { now.counters.lore = (now.counters.lore || 0) + 1; evs.push({ type: 'chapter', card: now, n: now.counters.lore }); }
       }
       if (e.from === 'battlefield' && e.to !== 'battlefield') {
@@ -126,6 +127,31 @@
       c.counters.lore = (c.counters.lore || 0) + 1;
       evs.push({ type: 'chapter', card: c, n: c.counters.lore });
     }
+  }
+  // "As this enters, choose a color / creature type / player…", "you may pay 2 life. If you don't, it enters tapped" (614.12).
+  function asEnters(s, c, notes) {
+    if (!c.d || c.faceDown) return;
+    const M = O().model(c); if (!M) return;
+    for (const a of M.abilities) {
+      const t = String(a.text || '').toLowerCase();
+      let m;
+      if ((m = t.match(/^as this enters, choose (a|an|two) (creature type|color|player|opponent|card name|nonland card name|basic land type|card type)/))) {
+        const what = m[2];
+        const ask = { id: 'a' + (++s.seq), kind: 'choose', pid: c.ctrl, card: c.id, name: cardName(c), what, players: what === 'player' || what === 'opponent' ? s.seats.filter(p => I().alive(s, p) && (what === 'player' || p !== c.ctrl)) : undefined, since: Date.now() };
+        if (isAI(s, c.ctrl) || !I().live(s, c.ctrl)) { c.chosen = defaultChoice(s, c, what); notes.push(`${cardName(c)}: ${nameOf(s, c.ctrl)} chose ${c.chosen}`); continue; }
+        s.ask = (s.ask || []).concat([ask]);
+      } else if ((m = t.match(/^as this enters, you may (pay (\d+) life|reveal an? ([a-z]+) or ([a-z]+) card from your hand)\. if you don't, (?:it|this) enters tapped/))) {
+        const ask = { id: 'a' + (++s.seq), kind: 'enterOpt', pid: c.ctrl, card: c.id, name: cardName(c), text: a.text, life: m[2] ? +m[2] : 0, since: Date.now() };
+        if (isAI(s, c.ctrl) || !I().live(s, c.ctrl)) { if (m[2] && s.players[c.ctrl].life > 10) s.players[c.ctrl].life -= +m[2]; else if (m[2]) c.tapped = true; continue; }
+        s.ask = (s.ask || []).concat([ask]);
+      } else if (/^as this enters, note your life total/.test(t)) { c.noted = s.players[c.ctrl] ? s.players[c.ctrl].life : 0; }
+    }
+  }
+  function defaultChoice(s, c, what) {
+    if (what === 'color') { const cs = Cd().colorsOf(c); return ({ W: 'white', U: 'blue', B: 'black', R: 'red', G: 'green' })[cs[0] || 'W']; }
+    if (what === 'creature type') { const cnt = {}; for (const o of Object.values(s.cards)) if (o.ctrl === c.ctrl && o.zone === 'battlefield' && I().isType(o, 'creature')) for (const w of (I().typeLine(o).split(/[—-]/)[1] || '').trim().split(/\s+/)) if (w) cnt[w] = (cnt[w] || 0) + 1; const top = Object.entries(cnt).sort((a, b) => b[1] - a[1])[0]; return top ? top[0] : 'Human'; }
+    if (what === 'player' || what === 'opponent') return s.seats.find(p => p !== c.ctrl) || c.ctrl;
+    return '—';
   }
   function ctxOf(s, ev) {
     const c = ev.card || null;
@@ -252,7 +278,7 @@
     };
     R.wardFor(s, q.ctrl, it, null);
     const what = String(q.effect || '').replace(/^this /i, q.name + ' ');
-    R.log(s, q.ctrl, `${q.name} triggered${a.eventText ? ' (' + a.eventText.replace(/\bthis\b/g, q.name) + ')' : ''}: “${what}”${R.targetText(s, it)}`, 'trig');
+    R.log(s, null, `${q.name} triggered${a.eventText ? ' (' + a.eventText.replace(/\bthis\b/g, q.name) + ')' : ''}: “${what}”${R.targetText(s, it)}`, 'trig');
   }
 
   // ======================= resolving =======================
@@ -287,7 +313,7 @@
   // The operations of a spell (or of an activated ability on the stack).
   function spellOps(s, c) {
     if (!root.Effects || !c.d) return null;
-    if (c.ab) { const r = root.Effects.parse(O().selfRef(c.ab.text, c.ab.name)); return { ops: r.ops, understood: r.understood && r.ops.every(o => o.op !== 'manual') }; }
+    if (c.ab) { const r = root.Effects.parse(O().selfRef(c.ab.text, c.ab.name).replace(/\s*activate (?:this ability )?only[^.]*\.?/gi, '')); return { ops: r.ops, understood: r.understood && r.ops.every(o => o.op !== 'manual') }; }
     if (c.alt === 'overload') { const r = root.Effects.parse(Cd().spellText(c).replace(/\btarget\b/gi, 'each').replace(/\beach (creatures?|permanents?|artifacts?|[a-z]+) you don't control\b/gi, 'each $1 your opponents control')); return { ops: r.ops, understood: r.understood && r.ops.every(o => o.op !== 'manual') }; }
     const M = O().model(c); if (!M) return null;
     const sp = M.abilities.filter(a => a.kind === 'spell' && a.ops);
@@ -414,6 +440,8 @@
       const plus = c.counters['+1/+1'] || 0, minus = c.counters['-1/-1'] || 0;
       if (plus && minus) { const m = Math.min(plus, minus); if (plus - m) c.counters['+1/+1'] = plus - m; else delete c.counters['+1/+1']; if (minus - m) c.counters['-1/-1'] = minus - m; else delete c.counters['-1/-1']; }
       if (n > 0) emit({ type: 'counter', kind, card: c, n });
+      // 714.2b: a lore counter put on a Saga triggers the chapter it reaches.
+      if (n > 0 && kind === 'lore' && /\bsaga\b/i.test(R.typeLine(c))) for (let k = cur + 1; k <= next; k++) emit({ type: 'chapter', card: c, n: k });
     };
     const KW = (C.KEYWORDS || []);
     const grantTo = (c, kwText, untilNext) => {
@@ -458,7 +486,7 @@
         case 'life': {
           const n = val(o.n); const ps = players(o.who);
           for (const p of ps) { const P = s.players[p]; if (!P) continue; P.life += o.sign * n; R.alertChecks(s, p); }
-          st.last = n;
+          st.last = o.sign < 0 ? n * ps.length : n;
           notes.push(`${R.listNames(ps.map(p => nameOf(s, p)))} ${o.sign > 0 ? 'gained' : 'lost'} ${n} life (${srcName})`);
           break;
         }
@@ -467,6 +495,7 @@
           for (const p of players(o.who)) { R.todo(s, p, { k: 'sacrifice', n: val(o.n), what: String(o.what || 'permanent'), src: srcName }); notes.push(`${nameOf(s, p)} must sacrifice ${o.what} (${srcName})`); }
           break;
         }
+        case 'energy': { const n = val(o.n); for (const p of players(o.who)) { const P = s.players[p]; if (P) P.energy = (P.energy || 0) + n; } st.last = n; notes.push(`${R.listNames(players(o.who).map(p => nameOf(s, p)))} got ${n} energy (${srcName})`); break; }
         case 'scry': R.todo(s, by, { k: 'scry', n: val(o.n), src: srcName }); break;
         case 'surveil': R.todo(s, by, { k: 'surveil', n: val(o.n), src: srcName }); break;
         case 'monarch': { const p = players(o.who)[0]; if (p) { s.table.monarch = p; notes.push(`${nameOf(s, p)} became the monarch`); } break; }
@@ -555,8 +584,20 @@
           for (const c of cs) {
             const nm = cardName(c);
             if (o.delayed) { s.delayed = (s.delayed || []).concat([{ step: 'end', id: c.id, to: o.to, by: o.control === 'you' ? by : c.owner, tapped: o.tapped, src: srcName, n: s.turn.n }]); notes.push(`${nm} will return at the beginning of the next end step (${srcName})`); continue; }
-            R.moveOne(s, c, o.to, 'top', o.to === 'battlefield' ? { by: o.control === 'owner' ? c.owner : by, tapped: o.tapped } : null, notes);
+            R.moveOne(s, c, o.to, 'top', o.to === 'battlefield' ? { by: o.control === 'owner' ? c.owner : by, tapped: o.tapped, backFace: !!o.transformed } : null, notes);
             notes.push(`${srcName} ${o.to === 'exile' ? 'exiled' : o.to === 'hand' ? 'returned' : 'put'} ${nm}${o.to === 'hand' ? ' to its owner’s hand' : o.to === 'battlefield' ? ' onto the battlefield' : ''}`);
+          }
+          break;
+        }
+        case 'biggest': {
+          for (const p of players(o.who)) {
+            const cs = Object.values(s.cards).filter(c => c.zone === 'battlefield' && c.ctrl === p && (c.faceDown || R.isType(c, 'creature')));
+            if (!cs.length) continue;
+            const top = Math.max(...cs.map(c => (C.pt(s, c) || [0])[0]));
+            const c = cs.find(x => (C.pt(s, x) || [0])[0] === top);
+            if (o.act === 'destroy' && C.has(c, 'indestructible', s)) { notes.push(`${cardName(c)} is indestructible`); continue; }
+            const nm = cardName(c); R.moveOne(s, c, o.act === 'exile' ? 'exile' : 'graveyard', 'top', null, notes);
+            notes.push(`${srcName} ${o.act === 'exile' ? 'exiled' : 'destroyed'} ${nm} (the greatest power among ${nameOf(s, p)}’s creatures)`);
           }
           break;
         }
@@ -601,6 +642,8 @@
     for (const l of lands) for (const u of R.unitsOf(l)) units.push({ u, land: l });
     const used = new Set(), take = ok => { const i = units.findIndex((x, k) => !used.has(k) && ok(x.u)); if (i < 0) return false; used.add(i); return true; };
     for (const col of ['W', 'U', 'B', 'R', 'G', 'C']) for (let k = 0; k < need[col]; k++) if (!take(u => u.includes(col))) return false;
+    for (const [a1, b1] of need.hy || []) { if (take(u => u.includes(a1) || u.includes(b1))) continue; if (a1 === '2' && take(() => true) && take(() => true)) continue; return false; }
+    for (const c1 of need.ph || []) { if (take(u => u.includes(c1))) continue; if (P.life < 2) return false; P.life -= 2; }
     for (let k = 0; k < need.g; k++) if (!take(() => true)) return false;
     if (used.size < total) return false;
     const poolDrop = new Set(), tapped = new Set();
@@ -652,14 +695,29 @@
       for (const b of ask.blockers) { const n = Math.max(0, (a.assign && a.assign[b.id]) | 0); plan[b.id] = n; total += n; }
       const toPlayer = Math.max(0, (a.assign && a.assign.player) | 0);
       if (total + toPlayer > ask.power) { s.ask.push(ask); return { ok: false, err: `${ask.name} has only ${ask.power} power to assign.` }; }
-      // 510.1c: lethal damage must be assigned to each blocker in order before the next one (deathtouch: 1 is lethal).
-      let ok = true;
-      ask.blockers.forEach((b, k) => { const lethal = ask.deathtouch ? 1 : b.lethal; if (plan[b.id] < lethal && ask.blockers.slice(k + 1).some(x => plan[x.id] > 0)) ok = false; });
-      if (toPlayer && (!ask.trample || ask.blockers.some(b => plan[b.id] < (ask.deathtouch ? 1 : b.lethal)))) ok = false;
-      if (!ok) { s.ask.push(ask); return { ok: false, err: 'Assign lethal damage to each blocker in order before the next one (and before the player, with trample) — 510.1c.' }; }
+      // 510.1c (since 2024 there is no damage assignment order): divide it among the blockers however you like;
+      // with trample, damage goes to the player only once every blocker has lethal damage (702.19b; deathtouch: 1 is lethal).
+      if (toPlayer && (!ask.trample || ask.blockers.some(b => plan[b.id] < (ask.deathtouch ? 1 : b.lethal)))) { s.ask.push(ask); return { ok: false, err: ask.trample ? 'With trample, assign lethal damage to every blocker before any goes to the player (702.19b).' : 'Without trample, all of its damage goes to the blockers.' }; }
+      if (total + toPlayer < ask.power) { s.ask.push(ask); return { ok: false, err: `Assign all ${ask.power} damage.` }; }
       if (toPlayer) plan.player = toPlayer;
       K.assign = K.assign || {}; K.assign[ask.att] = plan;
       I().combatDamage(s, notes);
+      return { ok: true };
+    }
+    if (ask.kind === 'choose') {
+      const c = s.cards[ask.card]; if (!c) return { ok: true };
+      let v = String(a.value || '').trim().slice(0, 40);
+      if ((ask.what === 'player' || ask.what === 'opponent') && !ask.players.includes(v)) v = ask.players[0];
+      if (!v) v = defaultChoice(s, c, ask.what);
+      c.chosen = v;
+      notes.push(`${cardName(c)}: ${nameOf(s, ask.pid)} chose ${ask.what === 'player' || ask.what === 'opponent' ? nameOf(s, v) : v}`);
+      return { ok: true };
+    }
+    if (ask.kind === 'enterOpt') {
+      const c = s.cards[ask.card]; if (!c) return { ok: true };
+      if (a.yes && ask.life) { s.players[ask.pid].life -= ask.life; notes.push(`${nameOf(s, ask.pid)} paid ${ask.life} life so ${cardName(c)} entered untapped`); }
+      else if (a.yes) notes.push(`${nameOf(s, ask.pid)} revealed a card so ${cardName(c)} entered untapped`);
+      else { c.tapped = true; notes.push(`${cardName(c)} entered tapped`); }
       return { ok: true };
     }
     if (ask.kind === 'legend') {
@@ -685,6 +743,7 @@
       if (ask.kind === 'manual') { if (now - ask.since > 10 * 60000) { s.ask = s.ask.filter(x => x !== ask); changed = true; } continue; }
       s.ask = s.ask.filter(x => x !== ask); changed = true;
       if (ask.kind === 'assign') { const K = s.combat; if (K && !K.done) { K.assign = K.assign || {}; K.assign[ask.att] = 'auto'; I().combatDamage(s, notes); } continue; }
+      if (ask.kind === 'choose' || ask.kind === 'enterOpt') { s.ask.push(ask); answer(s, ask.pid, { id: ask.id, value: '', yes: false }, notes); continue; }
       if (ask.kind === 'legend') { s.ask.push(ask); answer(s, ask.pid, { id: ask.id, keep: ask.ids[ask.ids.length - 1] }, notes); continue; }
       if (ask.kind === 'may') { const it = s.cards[ask.item]; if (it && it.ab) { it.ab.may = false; it.ab.condOk = false; } notes.push(`${ask.name}: no answer in time, so it wasn’t used`); if (s.prio) { s.prio.holder = null; R.nextHolder(s, notes); } }
       else { const q = (s.tq || []).find(x => x.id === ask.q); if (q) q.timeout = true; for (const q2 of s.tq || []) if (ask.kind === 'order') q2.ordered = true; place(s, notes); }
