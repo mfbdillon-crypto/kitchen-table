@@ -277,7 +277,7 @@
     });
     savePriv();
     const land = cards.every(isLand);
-    const r = await act({ type: 'enter', zone, from, cards: send, tapped: !!opts.tapped, pos: opts.pos, row: opts.row, land: !!opts.playLand, tg: opts.tg, mode: opts.mode, x: opts.x, wardPaid: !!opts.wardPaid, fromPool: opts.fromPool, cast: !!opts.cast, alt: opts.alt, msg: msgFor(zone, Object.assign({ land }, opts), from) });
+    const r = await act({ type: 'enter', zone, from, cards: send, tapped: !!opts.tapped, pos: opts.pos, row: opts.row, land: !!opts.playLand, tg: opts.tg, mode: opts.mode, x: opts.x, wardPaid: !!opts.wardPaid, fromPool: opts.fromPool, cast: !!opts.cast, alt: opts.alt, via: opts.via, msg: msgFor(zone, Object.assign({ land }, opts), from) });
     if (r.ok) lastAct = { zone, ids, t: Date.now() };
     if (!r.ok) {
       // Only put the cards back if the table really refused. If we just never heard back, look at the board:
@@ -320,6 +320,22 @@
     savePriv();
     log(`cascaded: revealed ${plural(out.length, 'card')}${hit ? ', hitting ' + hit.d.n : ' and hit nothing'}; the rest went to the bottom in a random order`);
     return hit;
+  };
+  // "Exile cards from the top of your library until you exile a nonland permanent card…" (Illuna, Auspicious Starrix, The Regalia).
+  // digFind looks (top down) for N matching cards; digFinish moves them and the rest where the card says.
+  G.digFind = function (t) {
+    const n = Math.max(1, t.n || 1), want = String(t.what || 'card');
+    const fits = c => !c.d ? false : want === 'card' || window.Cards.matchesWhat(Object.assign({ zone: 'library', owner: KEY, counters: {}, face: 0 }, c), want);
+    const hits = [], rest = [];
+    for (const c of P.library) { if (hits.length >= n) break; if (fits(c)) hits.push(c.id); else rest.push(c.id); }
+    return { hits, rest, names: hits.map(id => (P.library.find(c => c.id === id) || {}).d).filter(Boolean).map(d => d.n) };
+  };
+  G.digFinish = async function (t, hits, rest, dest) {
+    if (t.rest === 'bottom') { const r = take(P.library, rest); shuffle(r); P.library.push(...r); savePriv(); }
+    else if (rest.length) await G.fromLibrary(rest, 'exile', {});
+    if (!hits.length) { log(`${t.src}: revealed ${plural(rest.length, 'card')} and found nothing`); return; }
+    if (dest === 'hand') { const hs = take(P.library, hits); P.hand.push(...hs); savePriv(); log(`${t.src}: revealed ${hs.map(c => c.d.n).join(', ')} and put ${hs.length > 1 ? 'them' : 'it'} into their hand`); }
+    else await G.fromLibrary(hits, 'battlefield', { tapped: !!t.tapped });
   };
   G.cascadeDecline = function (id) { const i = P.hand.findIndex(c => c.id === id); if (i < 0) return; const [c] = P.hand.splice(i, 1); P.library.push(c); savePriv(); log(`put ${c.d.n} on the bottom of their library (didn’t cast it with cascade)`); };
 

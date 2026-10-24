@@ -13,6 +13,8 @@ Generated from `site/aiface.js`. The AI checks every answer against this sheet b
 | `choose` | “As this enters, choose a color / creature type / player” | `{ value: "white" \| "Dragon" \| playerId }` | brain.answerAsk → choose |
 | `enterOpt` | “Pay 2 life or it enters tapped” / “reveal a card or it enters tapped” | `{ yes: true\|false }` | brain.answerAsk → enterOpt |
 | `legend` | Legend rule: keep one of my same-name legends (704.5j) | `{ keep: cardId }` | brain.answerAsk → legend |
+| `pay` | “That player may pay {2}. If they don’t, …” (Smothering Tithe): pay to stop the rest from happening | `{ yes: true\|false } (true: the table taps my lands for it)` | brain.answerAsk → pay |
+| `mutate` | My mutating spell merged with its host: keep the mutating card on top, or put it under (702.140c) | `{ top: true\|false }` | brain.answerAsk → mutate |
 | `copy` | Clone: which creature it enters as a copy of | `{ pick: cardId \| null }` | brain.answerAsk → copy |
 | `assign` | Combat damage of my attacker among 2+ blockers (510.1c) | `{ assign: { blockerId: n, …, player?: n } }` | brain.answerAsk → assign |
 | `manual` | An effect the table can’t carry out by itself (“finish by hand”) | `{} (just acknowledge)` | executor: logs it as “couldn’t finish by hand” and acknowledges |
@@ -32,7 +34,8 @@ Generated from `site/aiface.js`. The AI checks every answer against this sheet b
 | `look` | Look at the top N, take some | executor.onTodo → best for the plan |
 | `fetch` | Search for basic lands | executor.onTodo → colors my hand needs |
 | `search` | Search the library for a card | executor.onTodo → missing combo piece, key card, needed color |
-| `cascade` | Cascade: reveal and maybe cast free | executor.onTodo → cast it unless it has no good target |
+| `cascade` | Cascade / discover N: reveal and maybe cast free (discover: or put it into my hand) | executor.onTodo → cast it unless it has no good target |
+| `dig` | Reveal until N matching cards (Illuna, Auspicious Starrix, The Regalia) → battlefield / hand / either | executor.onTodo → battlefield when I may choose |
 | `fromHand` | Put a card from hand onto the battlefield | executor.onTodo → best for the plan |
 | `fromGy` | Return a card from my graveyard | executor.onTodo → most valuable |
 

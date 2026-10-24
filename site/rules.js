@@ -111,9 +111,9 @@
   // A card that leaves the battlefield becomes a new object (400.7): counters, tapped status,
   // modifiers and attachments go away, and it returns to its owner's control.
   function leaveBattlefield(s, c, notes) {
-    c.loySeen = false; c.defSeen = false; c.noUntap = false; c.zeroT = false; c.zeroOk = false;
+    c.loySeen = false; c.defSeen = false; c.noUntap = false; c.skipUntap = false; c.via = null; c.zeroT = false; c.zeroOk = false;
     c.counters = {}; c.tapped = false; c.mod = null; c.attachedTo = null; c.ctrl = c.owner; c.row = null;
-    c.dmg = 0; c.dtd = false; c.grant = null; c.ctlT = null; c.alt = null; c.eot = null; c.chosen = null; c.animated = null; c.animPT = null; if (c.origD) { c.d = c.origD; c.origD = null; c.copyOf = null; }
+    c.dmg = 0; c.dtd = false; c.grant = null; c.ctlT = null; c.alt = null; c.eot = null; c.chosen = null; c.animated = null; c.animPT = null; c.regen = 0; if (c.origD) { c.d = c.origD; c.origD = null; c.copyOf = null; }
     if (s.combat && s.combat.att) { delete s.combat.att[c.id]; for (const a of Object.values(s.combat.att)) a.blk = (a.blk || []).filter(x => x !== c.id); }
     for (const o of Object.values(s.cards)) {
       if (o.attachedTo === c.id) {
@@ -134,6 +134,12 @@
     if (from === 'stack' && to !== 'battlefield' && to !== 'stack' && ['flashback', 'jump-start', 'harmonize'].includes(c.alt)) to = 'exile';
     if (from === 'stack' && to !== 'battlefield' && c.alt === 'escape' && !isType(c, 'creature') && !isType(c, 'artifact') && !isType(c, 'enchantment') && !isType(c, 'planeswalker')) to = 'exile';
     if (root.Engine && from !== to) root.Engine.emit({ type: 'zone', from, to, card: root.Engine.snap(c), sac: !!opts.sac, fromPriv: opts.fromPriv || null });
+    // A merged (mutated) permanent that leaves takes every card in it along (702.140e / 721.? — each card goes to the same zone).
+    if (from === 'battlefield' && to !== 'battlefield' && c.mut) {
+      const comps = c.mut.filter(k => k.id !== c.id).map(k => s.cards[k.id]).filter(x => x && x.zone === 'merged');
+      c.d = c.mutBase || c.d; c.mut = null; c.mutBase = null; c.mutCmdr = null; c.mutNames = null;
+      for (const k of comps) { k.mergedInto = null; moveOne(s, k, to, pos, null, notes); }
+    }
     if (from === 'battlefield' && to !== 'battlefield') leaveBattlefield(s, c, notes);
 
     // 111.7 / 111.8: a token that leaves the battlefield ceases to exist.
@@ -423,6 +429,7 @@
             if (s.cards[c.id]) return { ok: false, err: 'That card is already in play.' };
             s.cards[c.id] = c;
             c.zone = 'limbo';
+            if (typeof a.via === 'string' && /^[a-z]{2,12}$/.test(a.via) && to === 'battlefield') c.via = a.via;   // "put onto the battlefield with this ability" (Kodama)
             moveOne(s, c, to, a.pos, { by: pid, tapped: a.tapped, faceDown: c.faceDown, row: a.row, backFace: c.face === 1 }, notes);
             names.push(cardName(c));
             if (to === 'stack') onCast(s, pid, c, a);
@@ -518,7 +525,7 @@
         case 'mod': {
           need();
           const c = s.cards[a.id];
-          if (!c || c.zone !== 'battlefield' || c.ctrl !== pid) return { ok: false, err: 'You don’t control that.' };
+          if (!c || c.zone !== 'battlefield' || (c.ctrl !== pid && !finishing(s, pid))) return { ok: false, err: 'You don’t control that.' };   // finishing an effect by hand may change others' creatures
           const p = num(a.p, -99, 99) || 0, t = num(a.t, -99, 99) || 0;
           c.mod = (p || t) ? [p, t] : null;
           return done(c.mod ? `gave ${cardName(c)} ${p >= 0 ? '+' : ''}${p}/${t >= 0 ? '+' : ''}${t} until end of turn` : `cleared the P/T change on ${cardName(c)}`);
@@ -895,6 +902,8 @@
             sacked = cardName(v); moveOne(s, v, 'graveyard', 'top', { sac: true }, notes);
           }
           if (ab.life) { if (me.life < ab.life) return { ok: false, err: `You need ${ab.life} life to pay.` }; me.life -= ab.life; }
+          // "Discard a card" in the cost (Pack Rat): the hand is private, so the owner's page discards it (602.2b).
+          if (/discard (?:a|one) card/i.test(ab.cost || '')) { if (!(me.handCount > 0)) return { ok: false, err: 'You need a card in hand to discard.' }; todo(s, pid, { k: 'discard', n: 1, src: cardName(src) + ' (cost)' }); }
           if (ab.tap) src.tapped = true;
           spendPool(s, pid, ab.mana, num(a.x, 0, 99) || 0, a.fromPool);
           // Mana abilities don't use the stack (605.3).
@@ -1104,6 +1113,15 @@
     }
   }
 
+  // 701.19: a regeneration shield replaces being destroyed — tap it, remove all damage, remove it from combat.
+  function regenerated(s, c, notes) {
+    if (!c || !(c.regen > 0)) return false;
+    c.regen--; c.tapped = true; c.dmg = 0; c.dtd = false;
+    const K = s.combat;
+    if (K && K.att) { delete K.att[c.id]; for (const x of Object.values(K.att)) if (x.blk) x.blk = x.blk.filter(id => id !== c.id); }
+    if (notes) notes.push(`${cardName(c)} regenerated (tapped, damage removed, removed from combat)`);
+    return true;
+  }
   // State-based actions (704.5) the table can check on its own.
   function sba(s, notes) {
     for (let pass = 0; pass < 5; pass++) {
@@ -1116,6 +1134,7 @@
           // 704.5g / 704.5h: lethal damage, or any damage from a source with deathtouch, destroys it (unless it's indestructible).
           const ptl = root.Cards ? root.Cards.pt(s, c) : ptOf(c);
           if (ptl && ((c.dmg > 0 && c.dmg >= ptl[1] && ptl[1] > 0) || c.dtd) && !(root.Cards && root.Cards.has(c, 'indestructible', s))) {
+            if (regenerated(s, c, notes)) { changed = true; continue; }
             const nm = cardName(c); moveOne(s, c, 'graveyard', 'top', null, notes);
             notes.push(`${nm} was destroyed (${c.dtd ? 'deathtouch damage' : 'lethal damage'})`); changed = true; continue;
           }
@@ -1254,7 +1273,7 @@
       if (stackCards(s).length) return `${cardName(c)} can be cast only while the stack is empty (307.1).`;
     }
     if (!C || !a || !a.tg) return null;
-    const reqs = C.targetReqs(c, a.mode);
+    const reqs = C.targetReqs(c, a.mode, a.alt);
     const tg = cleanTargets(a.tg, reqs.length);
     for (let i = 0; i < reqs.length; i++) {
       for (const t of tg[i]) if (!C.legalTarget(s, reqs[i], t, pid)) return `${t.p ? nameOf(s, t.p) : cardName(s.cards[t.c])} isn’t a legal target for ${cardName(c)} (${reqs[i].text}).`;
@@ -1268,10 +1287,12 @@
     const C = root.Cards;
     c.mode = a && a.mode != null ? [].concat(a.mode).map(x => x | 0).slice(0, 5) : null;
     c.x = num(a && a.x, 0, 99) || 0;
-    c.reqs = C && !c.faceDown ? C.targetReqs(c, c.mode) : [];
+    c.reqs = C && !c.faceDown ? C.targetReqs(c, c.mode, a && a.alt) : [];
     c.tg = cleanTargets(a && a.tg, c.reqs.length);
     c.castBy = pid;
     c.alt = a && typeof a.alt === 'string' && /^[a-z-]{3,20}$/.test(a.alt) ? a.alt : null;
+    // "As an additional cost to cast this spell, pay X life" (Toxic Deluge).
+    if (C && !c.faceDown && c.x && /as an additional cost to cast this spell, pay x life/i.test(C.text(c)) && s.players[pid]) { s.players[pid].life -= c.x; log(s, pid, `paid ${c.x} life to cast ${cardName(c)}`, 'auto'); }
     if (s.turn && s.turn.active) { const T = s.turn; T.stats = T.stats || { attacked: {}, died: 0, gained: {}, lost: {}, spells: {}, drew: {} }; T.stats.spells[pid] = (T.stats.spells[pid] || 0) + 1; if (root.Engine) root.Engine.emit({ type: 'cast', player: pid, card: c, nth: T.stats.spells[pid] }); }
     if (C && !c.faceDown) spendPool(s, pid, C.costOf(c), c.x, a && a.fromPool);
     wardFor(s, pid, c, a);
@@ -1365,8 +1386,16 @@
     const tg = c.tg || [];
     const chose = tg.some(l => l && l.length);
     const legal = reqs.map((r, i) => (tg[i] || []).filter(t => C && C.legalTarget(s, r, t, by)));
+    // Mutate (702.140b): onto a legal target it merges; if the target is gone, it's just a creature spell.
+    let mutFell = false;
+    if (c.alt === 'mutate' && !c.ab && reqs[0] && reqs[0].mutate) {
+      const t = legal[0] && legal[0][0], host = t && t.c && s.cards[t.c];
+      if (host && host.zone === 'battlefield' && root.Engine && root.Engine.mutate) { root.Engine.mutate(s, c, host, notes); return; }
+      if (chose) notes.push(`${nm}’s mutate target is gone, so it resolves as an ordinary creature spell (702.140b)`);
+      mutFell = true; c.alt = null;
+    }
     // 608.2b: if every target is gone or illegal, the spell does nothing and leaves the stack.
-    if (C && chose && legal.every(l => !l.length)) {
+    if (C && chose && !mutFell && legal.every(l => !l.length)) {
       notes.push(`${nm} didn’t resolve — its target${[].concat(...tg).length > 1 ? 's are' : ' is'} no longer legal (608.2b)`);
       if (c.ab || c.token) delete s.cards[c.id]; else moveOne(s, c, 'graveyard', 'top', null, notes);
       return;
@@ -1455,6 +1484,7 @@
   function applyEffects(s, src, legal, effects, notes) {
     const C = root.Cards;
     const by = src.ctrl, srcName = src.ab ? src.ab.name : cardName(src);
+    const srcText = src.ab ? String(src.ab.text || '') : (root.Cards && src.d ? root.Cards.text(src) : '');
     const X = src.x || 0;
     const val = n => n === 'X' ? X : (+n || 0);
     const pick = i => (i != null && legal[i]) ? legal[i] : [];
@@ -1484,8 +1514,8 @@
           else { for (const c of Object.values(s.cards)) if (c.zone === 'battlefield' && (c.faceDown || isType(c, 'creature')) && (e.to === 'allCreatures' || c.ctrl !== by)) hurt({ c: c.id }, n); notes.push(`${srcName} dealt ${n} damage to ${e.to === 'allCreatures' ? 'each creature' : 'each creature its controller’s opponents control'}`); }
           break;
         }
-        case 'destroy': for (const t of T) { const c = tcard(t); if (!c) continue; if (C.has(c, 'indestructible', s)) { notes.push(`${cardName(c)} is indestructible, so it wasn’t destroyed`); continue; } const nm = cardName(c); moveOne(s, c, 'graveyard', 'top', null, notes); notes.push(`${srcName} destroyed ${nm}`); } break;
-        case 'destroyAll': { let n = 0; for (const c of Object.values(s.cards)) if (matchesAll(s, c, e.what, by) && !C.has(c, 'indestructible', s)) { moveOne(s, c, 'graveyard', 'top', null, notes); n++; } notes.push(`${srcName} destroyed ${n} permanent${n === 1 ? '' : 's'} (${e.what})`); break; }
+        case 'destroy': for (const t of T) { const c = tcard(t); if (!c) continue; if (C.has(c, 'indestructible', s)) { notes.push(`${cardName(c)} is indestructible, so it wasn’t destroyed`); continue; } if (!/can't be regenerated/i.test(srcText || '') && regenerated(s, c, notes)) continue; const nm = cardName(c); moveOne(s, c, 'graveyard', 'top', null, notes); notes.push(`${srcName} destroyed ${nm}`); } break;
+        case 'destroyAll': { let n = 0; for (const c of Object.values(s.cards)) if (matchesAll(s, c, e.what, by) && !C.has(c, 'indestructible', s) && (/can't be regenerated/i.test(srcText || '') || !regenerated(s, c, notes))) { moveOne(s, c, 'graveyard', 'top', null, notes); n++; } notes.push(`${srcName} destroyed ${n} permanent${n === 1 ? '' : 's'} (${e.what})`); break; }
         case 'exile': for (const t of T) { const c = tcard(t); if (!c) continue; const nm = cardName(c); moveOne(s, c, 'exile', 'top', null, notes); notes.push(`${srcName} exiled ${nm}`); } break;
         case 'exileAll': { let n = 0; for (const c of Object.values(s.cards)) if (matchesAll(s, c, e.what, by)) { moveOne(s, c, 'exile', 'top', null, notes); n++; } notes.push(`${srcName} exiled ${n} permanent${n === 1 ? '' : 's'}`); break; }
         case 'bounce': for (const t of T) { const c = tcard(t); if (!c) continue; const nm = cardName(c); moveOne(s, c, 'hand', 'top', null, notes); notes.push(`${srcName} returned ${nm} to its owner’s hand`); } break;
@@ -1642,6 +1672,7 @@
           // Toxic N (702.164): combat damage to a player also gives them N poison counters.
           { const tx = toxicOf(s, e.src); if (tx) { P.poison += tx; summary.push(`${nameOf(s, e.p)} got ${tx} poison counter${tx > 1 ? 's' : ''} (toxic)`); } }
           if (e.src.cmdr) P.cmdDmg[e.src.id] = (P.cmdDmg[e.src.id] || 0) + e.n;
+          else if (e.src.mutCmdr) P.cmdDmg[e.src.mutCmdr] = (P.cmdDmg[e.src.mutCmdr] || 0) + e.n;   // a commander under a mutated pile (903.3)
           if (root.Engine) root.Engine.emit({ type: 'combatDamage', card: e.src, to: 'player', player: e.p, n: e.n });
           summary.push(`${cardName(e.src)} dealt ${e.n} ${k.has('infect') ? 'poison ' : ''}damage to ${nameOf(s, e.p)}`);
         } else {
@@ -1686,12 +1717,16 @@
     const idx = s.seats.indexOf(T.active);
     let next = s.seats[(idx + 1) % s.seats.length];
     for (let k = 2; k <= s.seats.length && !alive(s, next); k++) next = s.seats[(idx + k) % s.seats.length];
+    // 500.7: extra turns — the most recently created one is taken first.
+    while (s.extraTurns && s.extraTurns.length) { const e = s.extraTurns.pop(); if (alive(s, e)) { next = e; log(s, e, 'takes an extra turn', 'alert'); break; } }
     T.active = next; T.n++; T.phase = 0;
     // 502.3: the active player untaps their permanents during the untap step.
     let n = 0;
     for (const c of Object.values(s.cards)) {
+      if (c.zone === 'battlefield' && c.ctrl === next && !c.tapped && c.skipUntap) c.skipUntap = false;
       if (c.zone !== 'battlefield' || c.ctrl !== next || !c.tapped) continue;
       if (c.noUntap) { log(s, next, `${cardName(c)} doesn't untap`, 'auto'); continue; }
+      if (c.skipUntap) { c.skipUntap = false; log(s, next, `${cardName(c)} doesn't untap this time`, 'auto'); continue; }
       // 122.1d: instead of untapping, remove a stun counter.
       if (c.counters && c.counters.stun) { c.counters.stun--; if (!c.counters.stun) delete c.counters.stun; log(s, next, `removed a stun counter from ${cardName(c)} instead of untapping it`, 'auto'); continue; }
       c.tapped = false; n++;
@@ -1733,7 +1768,7 @@
   }
 
   const _int = { moveOne, makeToken, tokenD, todo, log, cardName, nameOf, stackCards, stackTop, startPrio, nextHolder: (s, n) => nextHolder(s, n), PHASES, PI: n => PHASES.indexOf(n),
-    gainLife: (s, p, n) => gainLife(s, p, n), isType, typeLine, alive: (s, p) => alive(s, p), live: (s, p) => live(s, p), addPool, unitsOf, passTurn, sba, alertChecks, rotate, face, rowFor, listNames,
+    gainLife: (s, p, n) => gainLife(s, p, n), regenerated: (s, c, n) => regenerated(s, c, n), isType, typeLine, alive: (s, p) => alive(s, p), live: (s, p) => live(s, p), addPool, unitsOf, passTurn, sba, alertChecks, rotate, face, rowFor, listNames,
     clearMods, cleanTargets, wardFor, targetText, sick, combatDamage: (s, n) => combatDamage(s, n) };
   root.Rules = { _int, PHASES, ROWS, PUBLIC_ZONES, KEYWORD_COUNTERS, SUGGESTED_COUNTERS, MAX_SEATS, START_LIFE,
     newState, apply, canAct, zoneCards, cardName, typeLine, isType, face, rowFor, ptOf, rid, listNames, nameOf,

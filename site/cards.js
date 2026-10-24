@@ -149,7 +149,23 @@
       if ((!f || f.p === '' || f.tg === '' || f.p == null) && !c.animPT) return null;
       p = parseInt(f.p, 10); t = parseInt(f.tg, 10);
       if (c.animPT) { p = c.animPT[0]; t = c.animPT[1]; }
-      if (isNaN(p)) p = 0; if (isNaN(t)) t = 0;   // */* creatures: the table can't count, so 0 plus boosts
+      // */* creatures (604.3, characteristic-defining): "power and toughness are each equal to the number of Rats you control",
+      // "… equal to the number of cards in your hand", "power is equal to …" — counted where the table can.
+      if ((isNaN(p) || isNaN(t)) && s && s.cards && !c.animPT) {
+        const tx = text(c).toLowerCase();
+        const m = tx.match(/(power and toughness are each|power is|toughness is) equal to the number of (.+?)(?: you control| on the battlefield| in your graveyard| in all graveyards)?(?:\.|,|$)/);
+        if (m) {
+          const zoneTxt = (tx.match(/equal to the number of .+?( you control| on the battlefield| in your graveyard| in all graveyards)/) || [])[1] || ' you control';
+          const what = m[2].replace(/ cards?$/, '').replace(/(elv|dwarv|wolv)es$/, x => x.slice(0, -3) + 'f').replace(/ies$/, 'y').replace(/s$/, '');
+          let n = 0;
+          if (/cards? in your hand/.test(m[2])) n = (s.players[c.ctrl] || {}).handCount || 0;
+          else if (/graveyard/.test(zoneTxt)) n = Object.values(s.cards).filter(o => o.zone === 'graveyard' && (/all/.test(zoneTxt) || o.owner === c.ctrl) && (what === 'card' || matchesWhat(Object.assign({}, o), what))).length;
+          else n = Object.values(s.cards).filter(o => o.zone === 'battlefield' && (/battlefield/.test(zoneTxt) || o.ctrl === c.ctrl) && matchesWhat(o, what)).length;
+          if (isNaN(p) && /power/.test(m[1])) p = n;
+          if (isNaN(t) && /toughness|each/.test(m[1])) t = n;
+        }
+      }
+      if (isNaN(p)) p = 0; if (isNaN(t)) t = 0;   // anything else with a *: 0 plus boosts
     }
     const k = c.counters || {};
     p += (k['+1/+1'] || 0) - (k['-1/-1'] || 0); t += (k['+1/+1'] || 0) - (k['-1/-1'] || 0);
@@ -310,7 +326,7 @@
       free.sort((a, b) => (t.has(units[b].src) - t.has(units[a].src))
         || ((left(units[b].src) <= generic) - (left(units[a].src) <= generic))
         || (left(units[b].src) - left(units[a].src))
-        || (units[a].colors.length - units[b].colors.length));
+        || (units[a].colors.replace('C', '').length - units[b].colors.replace('C', '').length));   // colorless first, then the least flexible
       used[free[0]] = true; generic--;
     }
     return [...touched()];
@@ -355,7 +371,7 @@
     if (/^(you control|you own)\b/.test(rest)) req.ctrl = 'you';
     else if (/^(you don't control|an opponent controls|your opponents control|you do not control)\b/.test(rest)) req.ctrl = 'opp';
     if (/^(from|in) (your|a|an opponent's|target player's) graveyard/.test(rest) || /graveyard/.test(rest.split(/[.;]/)[0]) && req.kinds.includes('card')) req.gy = true;
-    if (/^(from|in) your graveyard/.test(rest)) req.ctrl = 'you';
+    if (/^(from|in) your graveyard/.test(rest) || (req.kinds.includes('card') && /\bfrom your graveyard\b/.test(rest.split(/[.;]/)[0]))) req.ctrl = 'you';
     if (/^(from|in) an opponent's graveyard/.test(rest)) req.ctrl = 'opp';
     if (/power|toughness|mana value|converted/.test(rest.split(/[.;]/)[0])) req.complex = true;
     if (/^with flying\b/.test(rest)) req.flags.flying = true;
@@ -384,8 +400,20 @@
     let m;
     while ((m = re.exec(s))) {
       if (/^any target$/i.test(m[0])) { reqs.push({ n: 1, upTo: false, kinds: ['creature', 'player', 'planeswalker', 'battle'], ctrl: 'any', non: [], flags: {}, gy: false, any: true, text: 'any target' }); continue; }
-      const req = parseTargetPhrase(m[6] || '');
-      if (!req.kinds.length) continue;
+      let req = parseTargetPhrase(m[6] || '');
+      // "target Rat, Ninja, or Squirrel", "target Goblin you control": a list of subtypes.
+      if (!req.kinds.length) {
+        const sm = (m[6] || '').match(/^((?:[A-Z][a-z]+)(?:,? (?:or |and )?[A-Z][a-z]+)*)\b(.*)$/);
+        if (!sm || /\bthat\s*$/i.test(s.slice(Math.max(0, m.index - 8), m.index))) continue;   // "spells that target Terror of the Peaks" is not a target
+        const subs = sm[1].split(/,? (?:or |and )?|, /).map(x => x.trim()).filter(Boolean);
+        req = parseTargetPhrase('permanent' + sm[2]);
+        if (/^\s*cards?\b/.test(sm[2])) req = parseTargetPhrase('card' + sm[2].replace(/^\s*cards?/, ''));
+        req.subs = subs;
+      } else {
+        // "target Dragon card", "target Elf creature": a subtype in front of the type.
+        const cm = (m[6] || '').match(/^((?:[A-Z][a-z]+)(?:,? (?:or |and )?[A-Z][a-z]+)*) (?:creature|card|permanent|spell|artifact|enchantment|land)s?\b/);
+        if (cm) req.subs = cm[1].split(/,? (?:or |and )?|, /).map(x => x.trim()).filter(Boolean);
+      }
       req.n = m[4] ? 99 : toNum(m[2] || m[3]) || 1;
       req.upTo = !!m[1] || !!m[4];
       req.other = !!m[5];
@@ -396,8 +424,10 @@
   }
 
   // Targets chosen when casting: for an Aura, the thing it enchants; for an instant or sorcery, every "target" in it.
-  function targetReqs(c, mode) {
+  function targetReqs(c, mode, alt) {
     if (!c || c.faceDown) return [];
+    // Mutate (702.140a): the spell targets a non-Human creature with the same owner.
+    if ((alt || (c.zone === 'stack' ? c.alt : null)) === 'mutate') return [{ n: 1, upTo: false, kinds: ['creature'], ctrl: 'any', non: ['human'], flags: {}, gy: false, own: true, mutate: true, text: 'target non-Human creature you own' }];
     const tl = typeLine(c);
     if (/\baura\b/i.test(tl)) {
       const m = text(c).match(/^enchant ([a-z ]+?)(?:\n|$)/im);
@@ -448,6 +478,7 @@
       if (c.zone !== 'graveyard') return false;
       if (req.ctrl === 'you' && c.owner !== by) return false;
       if (req.ctrl === 'opp' && c.owner === by) return false;
+      if (req.subs && !req.subs.some(t => isType(c, t))) return false;
       return req.kinds.includes('any-card') || req.kinds.some(k => k === 'permanent' ? isPermanentCard(c) : k === 'card' || isType(c, k)) && !req.non.some(k => isType(c, k));
     }
     if (req.kinds.includes('spell')) {
@@ -460,9 +491,11 @@
     if (c.zone !== 'battlefield') return false;
     const kindOk = req.kinds.some(k => k === 'permanent' || (k === 'creature' && c.faceDown) || isType(c, k));
     if (!kindOk) return false;
+    if (req.subs && !req.subs.some(t => isType(c, t))) return false;
     if (req.non.some(k => (k === 'token' ? c.token : isType(c, k)) || (['white', 'blue', 'black', 'red', 'green'].includes(k) && sameColor(c, k)))) return false;
     if (req.ctrl === 'you' && c.ctrl !== by) return false;
     if (req.ctrl === 'opp' && c.ctrl === by) return false;
+    if (req.own && c.owner !== by) return false;
     if (req.flags.tapped && !c.tapped) return false;
     if (req.flags.untapped && c.tapped) return false;
     const attacking = !!(s.combat && s.combat.att && s.combat.att[c.id]);
@@ -487,7 +520,7 @@
     const kinds = req.kinds.map(k => k === 'any-card' ? 'card' : k);
     const joinOr = l => l.length <= 1 ? l.join('') : l.slice(0, -1).join(', ') + ' or ' + l[l.length - 1];
     const others = kinds.filter(k => k !== 'spell');
-    const list = kinds.includes('spell') ? (others.length ? joinOr(others) + ' ' : '') + pl('spell') : joinOr(kinds.map(pl));
+    const list = req.subs ? joinOr(req.subs.map(pl)) + (others.length && !['permanent', 'any-card'].includes(others[0]) ? ' ' + pl(others[0]) : '') : kinds.includes('spell') ? (others.length ? joinOr(others) + ' ' : '') + pl('spell') : joinOr(kinds.map(pl));
     const pre = [].concat(req.non.map(n => 'non' + n), Object.keys(req.flags || {}).filter(f => req.flags[f] && f !== 'flying' && f !== 'combat'));
     let w = (req.flags && req.flags.combat ? 'attacking or blocking ' : '') + (pre.length ? pre.join(' ') + ' ' : '') + list;
     if (req.gy) w += (kinds.includes('card') ? '' : ' card') + (req.ctrl === 'you' ? ' in your graveyard' : req.ctrl === 'opp' ? ' in an opponent’s graveyard' : ' in a graveyard');
@@ -496,7 +529,7 @@
     if (req.ctrl === 'opp' && kinds.length === 1 && kinds[0] === 'player') w = 'opponent';
     if (req.flags && req.flags.flying) w += ' with flying';
     if (req.num) w += ` with ${req.num.stat === 'mv' ? 'mana value' : req.num.stat} ${req.num.n} or ${req.num.ge ? 'greater' : 'less'}`;
-    const n = req.n > 1 && req.n < 99 ? (['', '', 'two', 'three', 'four', 'five'][req.n] || req.n) + ' ' : req.n >= 99 ? 'any number of ' : /^[aeiou]/.test(w) ? 'an ' : 'a ';
+    const n = req.n > 1 && req.n < 99 ? (['', '', 'two', 'three', 'four', 'five'][req.n] || req.n) + ' ' : req.n >= 99 ? 'any number of ' : /^[aeiou]/i.test(w) ? 'an ' : 'a ';
     return (req.upTo && req.n < 99 ? 'up to ' : '') + n + (req.other ? 'other ' : '') + w;
   }
   // Is target i of this spell meant to help (pump, protect, reanimate…) rather than hurt? Decides which choices are listed first.
@@ -565,6 +598,48 @@
       const sub = new RegExp('\\b' + k + '(?:s|es)?\\b', 'i').test((typeLine(c).split(/[—-]/)[1] || '')) || (k === 'aura' || k === 'equipment' || k === 'vehicle' ? new RegExp('\\b' + k + '\\b', 'i').test(typeLine(c)) : false) || (c.d && c.faces === undefined && /changeling/i.test(text(c)) && isType(c, 'creature'));
       return neg ? !sub : sub;
     }));
+  }
+  // Cost reductions (601.2f): "This spell costs {1} less to cast for each creature on the battlefield" (Blasphemous Act),
+  // "costs {X} less, where X is the greatest power among creatures you control" (The Great Henge), affinity, and statics
+  // on my permanents: "Artifact spells you cast cost {1} less to cast", "Angel spells you cast cost {2} less"…
+  // Returns how much generic mana is taken off.
+  function costReduction(s, c, by) {
+    if (!s || !c || c.faceDown) return 0;
+    by = by || c.owner || c.ctrl;
+    const bf = Object.values(s.cards).filter(o => o.zone === 'battlefield' && !o.faceDown && o.d);
+    const count = (what, who) => bf.filter(o => (who === 'you' ? o.ctrl === by : who === 'opp' ? o.ctrl !== by : true) && matchesWhat(o, what)).length;
+    const pow = o => (pt(s, o) || [0])[0];
+    let n = 0;
+    const own = text(c).toLowerCase();
+    let m;
+    if ((m = own.match(/this spell costs \{(\d+)\} less to cast for each ([a-z -]+?) (on the battlefield|you control|your opponents control)/))) n += +m[1] * count(m[2], /you control/.test(m[3]) ? 'you' : /opponents/.test(m[3]) ? 'opp' : 'any');
+    if ((m = own.match(/affinity for ([a-z]+)/))) n += count(m[1].replace(/s$/, ''), 'you');
+    if ((m = own.match(/this spell costs \{x\} less to cast, where x is (the greatest power among creatures you control|the total power of creatures you control|the greatest number of ([a-z]+) an opponent controls)/))) {
+      const mine = bf.filter(o => o.ctrl === by && isType(o, 'creature'));
+      if (/greatest power/.test(m[1])) n += Math.max(0, ...mine.map(pow));
+      else if (/total power/.test(m[1])) n += mine.reduce((a, o) => a + Math.max(0, pow(o)), 0);
+      else { const per = {}; for (const o of bf) if (o.ctrl !== by && matchesWhat(o, m[2].replace(/s$/, ''))) per[o.ctrl] = (per[o.ctrl] || 0) + 1; n += Math.max(0, ...Object.values(per)); }
+    }
+    // Statics on my permanents.
+    for (const o of bf) {
+      if (o.ctrl !== by) continue;
+      const t = text(o).toLowerCase();
+      for (const line of t.split('\n')) {
+        const r = line.match(/^(?:each spell you cast that's ([a-z ]+?)|([a-z ,]+?) spells you cast(?: of the chosen type)?) costs? \{(\d+)\} less to cast(?: for each ([+\-\d/]+) counter on this)?\.?$/);
+        if (!r) continue;
+        if (!r[1] && !r[4]) continue;   // the plain "X spells you cast cost {N} less" is already in costOf
+        const per = r[4] ? ((o.counters || {})[r[4]] || 0) : 1;
+        let ok;
+        if (r[1]) ok = r[1].split(/ or /).some(w => matchesWhat(c, w.trim()));
+        else {
+          const filt = r[2].trim();
+          if (/chosen type/.test(line)) ok = !!o.chosen && isType(c, 'creature') && new RegExp('\\b' + o.chosen + '\\b', 'i').test(typeLine(c)) && (!/creature/.test(filt) || isType(c, 'creature'));
+          else ok = filt.split(/ and | or |, /).some(w => { w = w.replace(/\s*spells?$/, '').trim(); return w === 'noncreature' ? !isType(c, 'creature') : matchesWhat(Object.assign({}, c, { zone: 'stack' }), w); });
+        }
+        if (ok) n += +r[3] * per;
+      }
+    }
+    return n;
   }
   // Ward's cost (702.21): "Ward {2}", "Ward—Pay 4 life", "Ward—Discard a card", "Ward—{3}, Pay 3 life", "Ward—Sacrifice a …".
   function wardCost(c) {
@@ -743,6 +818,6 @@
   // Does this permanent have flash, or is it an instant? (can be cast at any time you have priority)
   function instantSpeed(c) { return /\binstant\b/i.test(typeLine(c)) || has(c, 'flash'); }
 
-  root.Cards = { KEYWORDS, colorsOf, face, typeLine, isType, nameOf, text, rawText, keywords, has, statics, pt, parseCost, costOf, manaValue, costTotal, manaSource, pay,
+  root.Cards = { costReduction, KEYWORDS, colorsOf, face, typeLine, isType, nameOf, text, rawText, keywords, has, statics, pt, parseCost, costOf, manaValue, costTotal, manaSource, pay,
     setState, notCreatureNow, wardCost, targetReqs, targetsIn, legalTarget, targetChoices, reqLabel, protections, protectedFrom, blockProblem, matchesWhat, helpfulTarget, orderChoices, modesOf, effectsIn, effectsOf, abilities, triggers, instantSpeed, isPermanentCard, toNum, spellText };
 })(typeof window !== 'undefined' ? window : globalThis);

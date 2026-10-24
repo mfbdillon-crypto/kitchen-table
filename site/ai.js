@@ -41,6 +41,8 @@
     searchTake: (ids, t) => G.fetchLands(ids, t),
     cascadeReveal: mv => G.cascadeReveal(mv),
     cascadeDecline: id => G.cascadeDecline(id),
+    digFind: t => G.digFind(t),
+    digFinish: (t, hits, rest, dest) => G.digFinish(t, hits, rest, dest),
     fromHand: (ids, zone, o) => G.fromHand(ids, zone, o),
     move: (ids, to, extra) => G.move(ids, to, null, extra)
   };
@@ -73,6 +75,7 @@
     [/indestructible/, 'Indestructible: it isn’t destroyed by lethal damage or “destroy” effects (702.12).'],
     [/defender/, 'Defender: it can’t attack (702.3).'],
     [/flash/, 'Flash: you can cast it any time you could cast an instant (702.8).'],
+    [/toxic/, 'Toxic N: when it deals combat damage to a player, it deals that damage normally AND that player gets N poison counters. Ten poison counters and that player loses (702.164, 704.5c).'],
     [/infect|poison/, 'Infect: damage to players is dealt as poison counters (10 poison and you lose), and to creatures as −1/−1 counters (702.90).'],
     [/summoning sick|sickness|just came in|why can't .*attack/, 'Summoning sickness: a creature can’t attack or use {T} abilities unless its controller has controlled it continuously since their most recent turn began — unless it has haste (302.6).'],
     [/land.*(turn|once|two|second|extra)|play.*land/, 'Lands: you may play one land per turn, during your main phase, when the stack is empty (305.2). Extra land drops only come from effects — use the Move to option for those.'],
@@ -101,12 +104,17 @@
     // A card on the table the question is about (longest name wins; never cards in hidden zones).
     const pool = Object.values(s.cards).filter(c => !c.faceDown && c.d && c.zone !== 'library' && c.zone !== 'hand');
     let card = null; for (const c of pool) { const n = cn(c).toLowerCase(), short = n.split(',')[0]; if ((n.length > 3 && t.includes(n)) || (short.length > 4 && t.includes(short))) if (!card || n.length > cn(card).length) card = c; }
-    const cardLine = c => `${cn(c)} (${R.typeLine(c)}${C.pt(s, c) ? ', now ' + C.pt(s, c).join('/') : ''}): “${C.text(c).replace(/\n/g, ' ').slice(0, 300)}”`;
+    const cardLine = c => `${cn(c)} (${R.typeLine(c)}${C.pt(s, c) ? ', now ' + C.pt(s, c).join('/') : ''}): “${(C.rawText ? C.rawText(c) : C.text(c)).replace(/\n/g, ' ').replace(/\([^)]*\)/g, '').slice(0, 300)}”`;
     // "Why did you attack me / block / target that?" — my last public move of that kind, with its public reason.
     if (/\bwhy\b|legal|allowed|cheat|illegal/.test(t)) {
       const kind = /attack/.test(t) ? /attacked|no attack/ : /block/.test(t) ? /blocked|no blocks/ : card ? new RegExp(cn(card).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') : null;
       const e = lastDid(kind);
-      if (e) return { text: `${/legal|allowed|cheat|illegal/.test(t) ? 'Yes, it was legal — the table checks every move before allowing it. ' : ''}${e.text.replace(/ — in hand:.*$/, '').replace(/\(holding [^)]*\)/, '')}.` };
+      if (e) {
+        const legal = /legal|allowed|cheat|illegal/.test(t) ? 'Yes, it was legal — the table checks every move before allowing it. ' : '';
+        const what = e.text.replace(/ — in hand:.*$/, '').replace(/\(holding [^)]*\)/, '').replace(/ \(.*\)$/, '');
+        const reason = /attacked/.test(e.text) ? ' I attack whoever threatens my game plan most, where my creatures get through or trade well — not whoever attacked me last.' : /blocked/.test(e.text) ? ' I block when it kills the attacker, survives, or keeps me alive; I don’t throw away creatures my plan needs.' : '';
+        return { text: `${legal}I ${what.replace(/^(attacked|blocked|cast|no attack|no blocks)/, m => m)}.${reason}` };
+      }
     }
     // Rules questions: the rule, plus the card's text when a card is named.
     if (faqs.length || card) {

@@ -185,6 +185,58 @@
     c.origD = c.origD || c.d; c.d = JSON.parse(JSON.stringify(of.d)); c.face = of.face || 0; c.copyOf = of.id; c.row = I().rowFor(c);
     notes.push(`${nm} entered as a copy of ${cardName(of)} (707.9)`);
   }
+  // ======================= mutate (702.140) =======================
+  // A mutating creature spell merges with its target: the host keeps being the same object (counters, tapped, how long
+  // it has been under its controller's control); the card on top gives the name, types and power/toughness, and the
+  // merged permanent has every ability of every card in it. The cards under the top one wait in the 'merged' zone.
+  function mutComp(c) { return { id: c.id, d: c.d, face: c.face || 0, cmdr: !!c.cmdr }; }
+  function mutSynth(s, h) {
+    const comps = h.mut, top = comps[0];
+    const tf = (top.d.faces && (top.d.faces[top.face || 0] || top.d.faces[0])) || {};
+    const topName = tf.n || top.d.n || '';
+    const texts = comps.map(k => {
+      const f = (k.d.faces && (k.d.faces[k.face || 0] || k.d.faces[0])) || {};
+      let o = f.o || ''; const n = f.n || k.d.n || '';
+      if (n && n !== topName) { o = o.split(n).join(topName); const sh = n.split(',')[0]; if (sh.length > 2 && sh !== n) o = o.split(sh).join(topName); }
+      return o;
+    }).filter(Boolean);
+    const d = JSON.parse(JSON.stringify(top.d));
+    d.faces = [Object.assign({}, tf, { o: texts.join('\n') })];
+    d.kw = [...new Set([].concat(...comps.map(k => Array.isArray(k.d.kw) ? k.d.kw : [])))];
+    d.mk = 'mut:' + comps.map(k => k.id).join(',');
+    h.d = d; h.face = 0;
+    h.mutCmdr = (comps.find(k => k.cmdr && k.id !== h.id) || {}).id || null;
+    h.mutNames = comps.map(k => ((k.d.faces && k.d.faces[k.face || 0]) || {}).n || k.d.n);
+    h.row = I().rowFor(h);
+  }
+  function mutate(s, m, host, notes) {
+    const R = I();
+    if (!host.mut) { host.mutBase = host.d; host.mut = [mutComp(host)]; }
+    const comp = mutComp(m);
+    host.mut.unshift(comp);                               // on top by default; the caster may put it under (702.140c)
+    R.moveOne(s, m, 'merged', 'top', null, notes);
+    const mc = s.cards[m.id]; if (mc) { mc.mergedInto = host.id; mc.ctrl = host.ctrl; }
+    const was = cardName(host);
+    mutSynth(s, host);
+    notes.push(`${cardName(mc || m)} mutated onto ${was} — they’re one creature now with all their abilities (702.140)`);
+    emit({ type: 'mutate', card: host, player: host.ctrl });
+    if (!isAI(s, host.ctrl) && R.live(s, host.ctrl)) s.ask = (s.ask || []).concat([{ id: 'a' + (++s.seq), kind: 'mutate', pid: host.ctrl, card: host.id, comp: m.id, name: cardName(host), mut: cardName(mc || m), host: was, since: Date.now() }]);
+    else if (isAI(s, host.ctrl)) mutOrder(s, host, m.id, mutTopBest(s, host, m.id), notes);
+  }
+  // The old (v1) AI: whichever card gives the bigger creature goes on top.
+  function mutTopBest(s, host, compId) {
+    const pt = k => { const f = (k.d.faces && k.d.faces[k.face || 0]) || {}; return (+f.p || 0) + (+f.tg || 0); };
+    const a = host.mut.find(k => k.id === compId), b = host.mut.find(k => k.id !== compId && k === host.mut[1]);
+    return !b || pt(a) >= pt(b);
+  }
+  function mutOrder(s, host, compId, onTop, notes) {
+    if (!host || !host.mut) return;
+    const i = host.mut.findIndex(k => k.id === compId); if (i < 0) return;
+    const [k] = host.mut.splice(i, 1);
+    if (onTop) host.mut.unshift(k); else host.mut.splice(1, 0, k);
+    mutSynth(s, host);
+    if (!onTop) notes.push(`${cardName(host)}: ${(k.d.faces && k.d.faces[0] || {}).n || 'the mutating card'} went under it (702.140c)`);
+  }
   function defaultChoice(s, c, what) {
     if (what === 'color') { const cs = Cd().colorsOf(c); return ({ W: 'white', U: 'blue', B: 'black', R: 'red', G: 'green' })[cs[0] || 'W']; }
     if (what === 'creature type') { const cnt = {}; for (const o of Object.values(s.cards)) if (o.ctrl === c.ctrl && o.zone === 'battlefield' && I().isType(o, 'creature')) for (const w of (I().typeLine(o).split(/[—-]/)[1] || '').trim().split(/\s+/)) if (w) cnt[w] = (cnt[w] || 0) + 1; const top = Object.entries(cnt).sort((a, b) => b[1] - a[1])[0]; return top ? top[0] : 'Human'; }
@@ -598,6 +650,8 @@
           const cs = cards(o.what); for (const c of cs) { c.tapped = false; c.manaAt = null; }
           if (cs.length) notes.push(`${srcName} untapped ${R.listNames(cs.map(cardName))}`); break;
         }
+        case 'skipUntap': { const cs = cards(o.what); for (const c of cs) c.skipUntap = true; if (cs.length) notes.push(`${R.listNames(cs.map(cardName))} won’t untap during ${cs.length > 1 ? 'their controllers’' : 'its controller’s'} next untap step (${srcName})`); break; }
+        case 'extraTurn': { s.extraTurns = (s.extraTurns || []).concat([by]); notes.push(`${nameOf(s, by)} will take an extra turn after this one (${srcName}, 500.7)`); break; }
         case 'tap': { const cs = cards(o.what); for (const c of cs) c.tapped = true; if (cs.length) notes.push(`${srcName} tapped ${R.listNames(cs.map(cardName))}`); break; }
         case 'addMana': {
           let units = Array.isArray(o.units) ? o.units : [];
@@ -618,7 +672,8 @@
         case 'pump': {
           const cs = cards(o.what);
           const mult = o.per ? val({ v: 'count', what: o.per, ctrl: /you control/.test(o.per) ? 'you' : 'any' }) : 1;
-          const num = v => /x/.test(v) ? Math.sign(parseInt(v.replace(/x/, '1'), 10)) * X : parseInt(v, 10) * mult;
+          const XX = o.xv ? val(o.xv) : X;
+          const num = v => /x/.test(v) ? Math.sign(parseInt(v.replace(/x/, '1'), 10)) * XX : parseInt(v, 10) * mult;
           const p = num(o.p), t = num(o.t);
           for (const c of cs) { c.mod = [(c.mod ? c.mod[0] : 0) + p, (c.mod ? c.mod[1] : 0) + t]; badge(c, { label: `${p >= 0 ? '+' : ''}${p}/${t >= 0 ? '+' : ''}${t}`, until: 'eot' }); if (o.kws) grantTo(c, o.kws); }
           if (cs.length) notes.push(`${R.listNames(cs.map(cardName))} got ${p >= 0 ? '+' : ''}${p}/${t >= 0 ? '+' : ''}${t}${o.kws ? ' and ' + o.kws : ''} until end of turn (${srcName})`);
@@ -631,7 +686,8 @@
           if (!got.length) st.manual.push(`Give ${o.kws}`);
           break;
         }
-        case 'destroy': for (const c of cards(o.what)) { if (C.has(c, 'indestructible', s)) { notes.push(`${cardName(c)} is indestructible`); continue; } const nm = cardName(c); R.moveOne(s, c, 'graveyard', 'top', null, notes); notes.push(`${srcName} destroyed ${nm}`); } break;
+        case 'regen': for (const c of cards(o.what)) { if (c.zone !== 'battlefield') continue; c.regen = (c.regen || 0) + 1; badge(c, { label: 'regeneration shield', until: 'eot', regen: true }); notes.push(`${cardName(c)} has a regeneration shield until end of turn (${srcName})`); } break;
+        case 'destroy': st.last = 0; for (const c of cards(o.what)) { if (C.has(c, 'indestructible', s)) { notes.push(`${cardName(c)} is indestructible`); continue; } if (!/can't be regenerated/i.test(String(item.ab ? item.ab.text : (item.d && C.text(item)) || '')) && R.regenerated(s, c, notes)) continue; const nm = cardName(c); R.moveOne(s, c, 'graveyard', 'top', null, notes); st.last++; notes.push(`${srcName} destroyed ${nm}`); } break;
         case 'flicker': for (const c of cards(o.what)) { const owner = c.owner, nm = cardName(c); R.moveOne(s, c, 'exile', 'top', null, notes); const again = s.cards[c.id]; if (again) R.moveOne(s, again, 'battlefield', 'top', { by: o.control === 'you' ? by : owner }, notes); notes.push(`${srcName} exiled ${nm} and returned it to the battlefield`); } break;
         case 'move': {
           const cs = cards(o.what);
@@ -663,10 +719,31 @@
           }
           break;
         }
+        // "That player may pay {2}. If they don't, …": the payer is asked (the v1 AI decides by itself).
+        case 'payOrElse': {
+          const payer = players(o.who)[0]; if (!payer) break;
+          const elseItem = { id: 'q' + (++s.seq), src: srcId, name: srcName, d: item.d, face: item.face || 0, ctrl: by, i: -1, text: o.text, effect: o.text, fixed: o.ops, optional: false, ctx, t: Date.now(), ordered: true };
+          if (isAI(s, payer) || !R.live(s, payer)) {
+            const spare = s.turn.active !== payer && payMana(s, payer, o.cost, notes);
+            if (spare) notes.push(`${nameOf(s, payer)} paid ${o.cost} (${srcName})`); else { s.tq = s.tq || []; s.tq.push(elseItem); notes.push(`${nameOf(s, payer)} didn’t pay ${o.cost} (${srcName})`); }
+            break;
+          }
+          s.ask = (s.ask || []).concat([{ id: 'a' + (++s.seq), kind: 'pay', pid: payer, cost: o.cost, name: srcName, by, text: o.text, item: elseItem, since: Date.now() }]);
+          break;
+        }
         case 'reflexive': {
           if (!st.did) break;
           s.tq = s.tq || [];
           s.tq.push({ id: 'q' + (++s.seq), src: srcId, name: srcName, d: item.d, face: item.face || 0, ctrl: by, i: -1, text: o.text, effect: o.text, fixed: o.ops, optional: false, ctx, t: Date.now(), ordered: true });
+          break;
+        }
+        case 'discover': R.todo(s, by, { k: 'cascade', mv: (o.n | 0) + 1, discover: true, src: srcName }); notes.push(`${srcName}: discover ${o.n} (${nameOf(s, by)} reveals until a nonland card with mana value ${o.n} or less)`); break;
+        case 'dig': {
+          const src = s.cards[srcId];
+          const n = o.n === 'mut' ? Math.max(0, ((src && src.mut) || [1]).length - 1) : 1;
+          if (!n) { notes.push(`${srcName}: nothing to reveal`); break; }
+          R.todo(s, by, { k: 'dig', what: o.what, n, dest: o.dest, tapped: !!o.tapped, rest: o.rest, src: srcName });
+          notes.push(`${srcName}: ${nameOf(s, by)} reveals cards until ${n > 1 ? n + ' ' + o.what + ' cards' : (/^[aeiou]/.test(o.what) ? 'an ' : 'a ') + o.what + ' card'}`);
           break;
         }
         case 'cascade': R.todo(s, by, { k: 'cascade', mv: ctx.mv || (+((item.d || {}).cmc) || 0), src: srcName }); notes.push(`${srcName}: cascade (${nameOf(s, by)} reveals until a cheaper nonland card)`); break;
@@ -699,7 +776,10 @@
         case 'attach': { const at = src && s.cards[src.id], t = cards(o.to)[0]; if (at && t && at.zone === 'battlefield') { at.attachedTo = t.id; notes.push(`${cardName(at)} is now attached to ${cardName(t)}`); } break; }
         case 'extraLand': { const T = s.turn; T.extraLand = T.extraLand || {}; T.extraLand[by] = (T.extraLand[by] || 0) + (o.n || 1); notes.push(`${nameOf(s, by)} may play an additional land this turn`); break; }
         case 'roll': { const r = 1 + Math.floor(Math.random() * o.d); st.last = r; notes.push(`${nameOf(s, by)} rolled a d${o.d}: ${r} (${srcName})`); break; }
-        case 'fromHand': R.todo(s, by, { k: 'fromHand', n: val(o.n), filter: o.filter, tapped: !!o.tapped, src: srcName }); break;
+        case 'fromHand': {
+          if (o.via && ctx.c && s.cards[ctx.c] && s.cards[ctx.c].via === o.via) { notes.push(`${srcName}: that one was put onto the battlefield with this ability, so nothing happens`); break; }
+          R.todo(s, by, { k: 'fromHand', n: val(o.n), filter: o.filter, tapped: !!o.tapped, mvMax: o.mvMax ? val(o.mvMax) : undefined, via: o.via || undefined, src: srcName }); break;
+        }
         case 'fromGy': R.todo(s, by, { k: 'fromGy', n: val(o.n), filter: o.filter, dest: o.dest || 'hand', tapped: !!o.tapped, src: srcName }); break;
         case 'sacUnless': R.todo(s, by, { k: 'sacUnless', n: val(o.n), what: o.what, srcId, src: srcName }); notes.push(`${nameOf(s, by)} sacrifices ${o.what === 'land' ? 'a land' : o.what} or ${srcName}`); break;
         case 'sacUnlessPay': { const c0 = s.cards[srcId]; if (!c0 || c0.zone !== 'battlefield') break; if (pay(o.cost)) notes.push(`${nameOf(s, by)} paid ${o.cost} to keep ${srcName}`); else { R.moveOne(s, c0, 'graveyard', 'top', { sac: true }, notes); notes.push(`${nameOf(s, by)} couldn’t pay ${o.cost}, so ${srcName} was sacrificed`); } break; }
@@ -814,6 +894,18 @@
       else notes.push(`${cardName(c)} entered as itself (no copy)`);
       return { ok: true };
     }
+    if (ask.kind === 'pay') {
+      if (a.yes && payMana(s, pid, ask.cost, notes)) { notes.push(`${nameOf(s, pid)} paid ${ask.cost} (${ask.name})`); place(s, notes); return { ok: true }; }
+      if (a.yes) notes.push(`${nameOf(s, pid)} couldn’t pay ${ask.cost} with untapped lands (${ask.name})`);
+      else notes.push(`${nameOf(s, pid)} didn’t pay ${ask.cost} (${ask.name})`);
+      s.tq = s.tq || []; s.tq.push(Object.assign({}, ask.item, { t: Date.now() }));
+      place(s, notes); return { ok: true };
+    }
+    if (ask.kind === 'mutate') {
+      const h = s.cards[ask.card]; if (!h) return { ok: true };
+      mutOrder(s, h, ask.comp, a.top !== false, notes);
+      return { ok: true };
+    }
     if (ask.kind === 'enterOpt') {
       const c = s.cards[ask.card]; if (!c) return { ok: true };
       if (a.yes && ask.life) { s.players[ask.pid].life -= ask.life; notes.push(`${nameOf(s, ask.pid)} paid ${ask.life} life so ${cardName(c)} entered untapped`); }
@@ -844,6 +936,8 @@
       if (ask.kind === 'manual') { if (now - ask.since > 10 * 60000) { s.ask = s.ask.filter(x => x !== ask); changed = true; } continue; }
       s.ask = s.ask.filter(x => x !== ask); changed = true;
       if (ask.kind === 'assign') { const K = s.combat; if (K && !K.done) { K.assign = K.assign || {}; K.assign[ask.att] = 'auto'; I().combatDamage(s, notes); } continue; }
+      if (ask.kind === 'pay') { s.ask.push(ask); answer(s, ask.pid, { id: ask.id, yes: false }, notes); continue; }
+      if (ask.kind === 'mutate') { s.ask.push(ask); answer(s, ask.pid, { id: ask.id, top: true }, notes); continue; }
       if (ask.kind === 'choose' || ask.kind === 'enterOpt' || ask.kind === 'copy') { s.ask.push(ask); answer(s, ask.pid, { id: ask.id, value: '', yes: false }, notes); continue; }
       if (ask.kind === 'legend') { s.ask.push(ask); answer(s, ask.pid, { id: ask.id, keep: ask.ids[ask.ids.length - 1] }, notes); continue; }
       if (ask.kind === 'may') { const it = s.cards[ask.item]; if (it && it.ab) { it.ab.may = false; it.ab.condOk = false; } notes.push(`${ask.name}: no answer in time, so it wasn’t used`); if (s.prio) { s.prio.holder = null; R.nextHolder(s, notes); } }
@@ -865,6 +959,7 @@
         if (b.until && b.until !== 'eot') { keep.push(b); continue; }
         if (b.counter && c.counters && c.counters[b.counter]) { c.counters[b.counter]--; if (!c.counters[b.counter]) delete c.counters[b.counter]; }
         if (b.animate) { c.animated = null; c.animPT = null; if (c.zone === 'battlefield') c.row = I().rowFor(c); }
+        if (b.regen) c.regen = 0;
         if (b.control && c.zone === 'battlefield' && s.players[b.control]) { c.ctrl = b.control; c.ctlT = s.turn.n; c.seq = ++s.seq; }
       }
       c.eot = keep.length ? keep : null;
@@ -980,5 +1075,5 @@
     return M.abilities.some(a => a.kind === 'triggered' && a.event && a.event.type !== 'other' && (norm(a.text) === t || norm(a.effect) === t || t.includes(norm(a.effect)) || norm(a.text).includes(t)));
   }
 
-  root.Engine = { spellOps, emit, begin, check, place, hold, resolve, run, answer, timeouts, endOfTurn, turnBegins, flow, after, handles, canRun, canAttack, snap, payMana, _ev: () => EV };
+  root.Engine = { mutate, mutOrder, spellOps, emit, begin, check, place, hold, resolve, run, answer, timeouts, endOfTurn, turnBegins, flow, after, handles, canRun, canAttack, snap, payMana, _ev: () => EV };
 })(typeof window !== 'undefined' ? window : globalThis);

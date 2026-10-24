@@ -25,6 +25,8 @@
       check: (a, ask) => typeof a.value === 'string' && (!ask.players || ask.players.includes(a.value)) ? '' : 'value must be a word (or one of ask.players)', safe: ask => ({ value: ask.players ? ask.players[0] : '' }) },
     enterOpt: { what: '“Pay 2 life or it enters tapped” / “reveal a card or it enters tapped”', answer: '{ yes: true|false }', ai: 'brain.answerAsk → enterOpt', check: a => typeof a.yes === 'boolean' ? '' : 'yes must be true or false', safe: () => ({ yes: false }) },
     legend: { what: 'Legend rule: keep one of my same-name legends (704.5j)', answer: '{ keep: cardId }', ai: 'brain.answerAsk → legend', check: (a, ask) => ask.ids.includes(a.keep) ? '' : 'keep must be one of ask.ids', safe: ask => ({ keep: ask.ids[ask.ids.length - 1] }) },
+    pay: { what: '“That player may pay {2}. If they don’t, …” (Smothering Tithe): pay to stop the rest from happening', answer: '{ yes: true|false } (true: the table taps my lands for it)', ai: 'brain.answerAsk → pay', check: a => typeof a.yes === 'boolean' ? '' : 'yes must be true or false', safe: () => ({ yes: false }) },
+    mutate: { what: 'My mutating spell merged with its host: keep the mutating card on top, or put it under (702.140c)', answer: '{ top: true|false }', ai: 'brain.answerAsk → mutate', check: a => typeof a.top === 'boolean' ? '' : 'top must be true or false', safe: () => ({ top: true }) },
     copy: { what: 'Clone: which creature it enters as a copy of', answer: '{ pick: cardId | null }', ai: 'brain.answerAsk → copy', check: (a, ask) => a.pick == null || ask.choices.includes(a.pick) ? '' : 'pick must be one of ask.choices', safe: () => ({ pick: null }) },
     assign: { what: 'Combat damage of my attacker among 2+ blockers (510.1c)', answer: '{ assign: { blockerId: n, …, player?: n } }', ai: 'brain.answerAsk → assign',
       check: (a, ask) => { if (!a.assign || typeof a.assign !== 'object') return 'assign must be an object'; const tot = Object.values(a.assign).reduce((x, y) => x + (y | 0), 0); return tot === ask.power ? '' : `assign exactly ${ask.power}`; },
@@ -46,7 +48,8 @@
     look: { what: 'Look at the top N, take some', ai: 'executor.onTodo → best for the plan' },
     fetch: { what: 'Search for basic lands', ai: 'executor.onTodo → colors my hand needs' },
     search: { what: 'Search the library for a card', ai: 'executor.onTodo → missing combo piece, key card, needed color' },
-    cascade: { what: 'Cascade: reveal and maybe cast free', ai: 'executor.onTodo → cast it unless it has no good target' },
+    cascade: { what: 'Cascade / discover N: reveal and maybe cast free (discover: or put it into my hand)', ai: 'executor.onTodo → cast it unless it has no good target' },
+    dig: { what: 'Reveal until N matching cards (Illuna, Auspicious Starrix, The Regalia) → battlefield / hand / either', ai: 'executor.onTodo → battlefield when I may choose' },
     fromHand: { what: 'Put a card from hand onto the battlefield', ai: 'executor.onTodo → best for the plan' },
     fromGy: { what: 'Return a card from my graveyard', ai: 'executor.onTodo → most valuable' }
   };

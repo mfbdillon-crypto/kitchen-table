@@ -97,6 +97,7 @@
     if ((m = e.match(/^(another |one or more (?:other )?)?((?:nontoken |token |legendary |non-?[a-z]+ |[a-z]+ )*?)?(creatures?|lands?|artifacts?|enchantments?|planeswalkers?|permanents?|tokens?|[a-z]+s?)( you control| an opponent controls| your opponents control)? (?:enters|enter)(?: the battlefield)?(?: under your control| under an opponent's control)?(?: or attacks)?$/))) {
       return { type: 'enter', self: false, other: !!m[1] && /another|other/.test(m[1]), what: (m[2] || '') + m[3].replace(/s$/, ''), who: m[4] ? who(m[4]) : /under your control/.test(e) ? 'you' : 'any', many: /one or more/.test(m[1] || '') };
     }
+    if (/^this mutates$/.test(e)) return { type: 'mutate', self: true };
     if (/^this dies$|^this is put into (?:a|your) graveyard from the battlefield$/.test(e)) return { type: 'die', self: true };
     if ((m = e.match(/^(another |one or more (?:other )?)?((?:nontoken |token |legendary |non-?[a-z]+ |[a-z]+ )*?)?(creatures?|permanents?|artifacts?|[a-z]+s?)( you control| an opponent controls| your opponents control)? (?:dies|die|is put into a graveyard from the battlefield)$/))) {
       return { type: 'die', self: false, other: !!m[1] && /another|other/.test(m[1]), what: (m[2] || '') + m[3].replace(/s$/, ''), who: m[4] ? who(m[4]) : 'any', many: /one or more/.test(m[1] || '') };
@@ -249,7 +250,7 @@
   // ---------------- the model ----------------
   function model(c) {
     if (!c || !c.d) return null;
-    const key = (c.d.n || '') + '|' + (c.face || 0) + '|' + (c.faceDown ? 1 : 0);
+    const key = (c.d.n || '') + '|' + (c.face || 0) + '|' + (c.faceDown ? 1 : 0) + (c.d.mk ? '|' + c.d.mk : '');
     if (cache.has(key)) return cache.get(key);
     const f = faceOf(c) || {};
     const name = f.n || c.d.n || '';
@@ -385,6 +386,7 @@
       case 'token': return ev.type === 'token' && ev.player === ctrl;
       case 'tapped': case 'untapped': return ev.type === E.type && ev.card && ev.card.id === src.id;
       case 'targeted': return ev.type === 'targeted' && ev.card && ev.card.id === src.id && (!E.oppOnly || ev.player !== ctrl);
+      case 'mutate': return ev.type === 'mutate' && ev.card && ev.card.id === src.id;
       case 'chapter': return ev.type === 'chapter' && ev.card && ev.card.id === src.id && a.chapter.includes(ev.n);
       case 'counter': return ev.type === 'counter' && (E.kind === 'any' || ev.kind === E.kind) && (E.self ? ev.card && ev.card.id === src.id : ev.card && ev.card.ctrl === ctrl && (!E.what || whatOk(E.what, ev.card)));
       case 'cycle': return ev.type === 'cycle' && ev.player === ctrl && (!E.self || (ev.card && ev.card.id === src.id));
@@ -420,6 +422,7 @@
     if (/^you gained life this turn$/.test(c)) return !!(st.gained && st.gained[me]);
     if (/^an opponent lost life this turn$/.test(c)) return Object.keys(st.lost || {}).some(p => p !== me);
     if (/^you(?:'ve)? cast two or more spells this turn$/.test(c)) return ((st.spells || {})[me] || 0) >= 2;
+    if (/^it wasn't put onto the battlefield with this ability$/.test(c)) return true;   // checked as it resolves (engine fromHand)
     if (/^it's not your turn$/.test(c)) return T.active !== me;
     if (/^it's your turn$/.test(c)) return T.active === me;
     if (/^you control your commander$/.test(c)) return Object.values(s.cards).some(x => x.cmdr && x.owner === me && x.ctrl === me && x.zone === 'battlefield');

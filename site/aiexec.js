@@ -197,7 +197,7 @@
       return r.ok !== false;
     }
     if (o.pay && o.pay.length) { const r = await io.tapPay([...new Set(o.pay)]); if (r && r.ok === false) { this.lastErr = r.err; return false; } }
-    const opts = { tg: o.tg, mode: o.mode, x: o.x, wardPaid: o.wardPaid, fromPool: [] };
+    const opts = { tg: o.tg, mode: o.mode, x: o.x, wardPaid: o.wardPaid, fromPool: [], alt: o.alt || undefined };
     let r;
     if (o.card.zone === 'hand') r = await io.castFromHand(o.card.id, opts);
     else r = await io.castPublic(o.card.id, opts);
@@ -261,9 +261,20 @@
     const r = await this.act({ type: 'activate', id: outlet.id, i, sac: fodder.id });
     return Object.assign(r, { text: `sacrificed ${R().cardName(fodder)} to ${R().cardName(outlet)} (drain for the win)` });
   };
-  // {T} abilities that deal damage, draw, gain life or tap: once each per turn.
+  // {T} abilities that deal damage, draw, gain life or tap: once each per turn. Fetch lands get cracked too.
   E.tapAbility = async function () {
     const B = this.B, s = this.io.s(), key = s.gameId + ':' + s.turn.n;
+    for (const c of B.bf(this.io.me())) {
+      if (c.tapped || !R().isType(c, 'land') || this.tried.has(key + ':fetch:' + c.id)) continue;
+      const abs = C().abilities(c), i = abs.findIndex(a => a.sac && /search your library for/i.test(a.text));
+      if (i < 0) continue;
+      this.tried.add(key + ':fetch:' + c.id);
+      if (abs[i].life && B.life(this.io.me()) <= abs[i].life + 5) continue;
+      const pay = C().pay(abs[i].mana, B.sources().filter(x => x.id !== c.id), 0); if (!pay) continue;
+      if (pay.length) await this.io.tapPay(pay);
+      const r = await this.act({ type: 'activate', id: c.id, i, tg: [] });
+      return Object.assign(r, { text: `cracked ${R().cardName(c)}: ${abs[i].text}` });
+    }
     for (const c of B.bf(this.io.me())) {
       if (c.tapped || this.tried.has(key + ':ab:' + c.id)) continue;
       if (B.isCre(c) && R().sick(s, c) && !B.kw(c).has('haste')) continue;
@@ -378,17 +389,28 @@
         const o = B.option(card, 'instant', { sources: [] }) || B.option(card, 'main', { sources: [] });
         // Free: the cost check doesn't apply; cast it unless it would hurt me.
         const tgt = o ? o.tg : B.chooseTargets(card, null, C().effectsOf(card, null), {});
-        if (tgt === null && C().targetReqs(card, null).some(r => !r.upTo)) { await io.cascadeDecline(hit.id); B.note('did', `cascade: declined ${hit.d.n} (no good target)`); return; }
+        const word = t.discover ? 'discover' : 'cascade';
+        // Discover: a card with no good target right now goes into my hand instead (701.57a).
+        if (tgt === null && C().targetReqs(card, null).some(r => !r.upTo)) { if (!t.discover) await io.cascadeDecline(hit.id); B.note('did', `${word}: ${t.discover ? 'put ' + hit.d.n + ' into my hand' : 'declined ' + hit.d.n} (no good target)`); return; }
+        if (t.discover && R().isType(card, 'land')) return;
         const r = await io.castFromHand(hit.id, { tg: o ? o.tg : (tgt || { tg: [] }).tg, mode: o ? o.mode : undefined, alt: 'free', fromPool: [] });
-        if (!r || r.ok === false) await io.cascadeDecline(hit.id);
-        B.note('did', `cascade: cast ${hit.d.n} for free`);
+        if ((!r || r.ok === false) && !t.discover) await io.cascadeDecline(hit.id);
+        B.note('did', `${word}: cast ${hit.d.n} for free`);
+        return;
+      }
+      if (t.k === 'dig') {
+        const f = await io.digFind(t);
+        // "Onto the battlefield or into your hand": permanents I can use go down; the rest to hand.
+        const dest = t.dest !== 'either' ? t.dest : 'battlefield';
+        await io.digFinish(t, f.hits, f.rest, dest);
+        B.note('did', `${t.src}: revealed until ${f.names.join(', ') || 'nothing'}${f.hits.length ? ' → ' + (dest === 'hand' ? 'hand' : 'battlefield') : ''}`);
         return;
       }
       if (t.k === 'fromHand') {
         const want = String(t.filter || 'card').replace(/ cards?$/, '').trim();
-        const pool = hand().filter(c => want === 'card' || C().matchesWhat(c, want)).sort((a, b) => B.value(b) + (B.isKey(b) ? 5 : 0) - B.value(a) - (B.isKey(a) ? 5 : 0));
+        const pool = hand().filter(c => (want === 'card' || C().matchesWhat(c, want)) && (t.mvMax == null || (+c.d.cmc || 0) <= t.mvMax)).sort((a, b) => B.value(b) + (B.isKey(b) ? 5 : 0) - B.value(a) - (B.isKey(a) ? 5 : 0));
         const pick = pool.slice(0, t.n || 1);
-        if (pick.length) { await io.fromHand(pick.map(c => c.id), 'battlefield', { tapped: t.tapped }); B.note('did', `put ${pick.map(c => c.d.n).join(', ')} onto the battlefield (${t.src})`); }
+        if (pick.length) { await io.fromHand(pick.map(c => c.id), 'battlefield', { tapped: t.tapped, via: t.via }); B.note('did', `put ${pick.map(c => c.d.n).join(', ')} onto the battlefield (${t.src})`); }
         return;
       }
       if (t.k === 'fromGy') {

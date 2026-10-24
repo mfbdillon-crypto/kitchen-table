@@ -310,6 +310,7 @@
     if (G.picking && c.zone !== 'hand' && c.zone !== 'library') { const st = pickState({ c: c.id }); if (st) el.classList.add(st); }
     if (G.combatPick && c.zone === 'battlefield') { const st = combatState(c); if (st) el.classList.add(st); }
     if (c.ab) el.append(h('div', { class: 'abtext' }, h('b', null, 'Ability'), ' ', c.ab.text));
+    if (c.mutNames && c.zone === 'battlefield') el.append(h('div', { class: 'tag chosen', title: 'Mutated: ' + c.mutNames.join(' over ') + ' (top to bottom)' }, 'Mutated ×' + c.mutNames.length));
     if (c.chosen && c.zone === 'battlefield') el.append(h('div', { class: 'tag chosen', title: 'Chosen as it entered' }, 'Chosen: ' + (S().players[c.chosen] ? nameOf(c.chosen) : c.chosen)));
     if (c.noUntap && c.zone === 'battlefield') el.append(h('div', { class: 'tag nou' }, 'Doesn’t untap'));
     if (c.zeroT && c.zone === 'battlefield') el.append(h('div', { class: 'tag zero' }, '0 toughness'));
@@ -741,10 +742,12 @@
     // The cost being paid: the printed one, an alternative one, or printed + additional (kicker).
     const altMana = alt ? (String(alt.cost || '').match(/\{[^}]+\}/g) || []).join('') : '';
     const payCost = !alt ? CD.costOf(card) : alt.additional ? (() => { const a = CD.costOf(card), b = CD.parseCost(altMana); for (const k of ['g', 'W', 'U', 'B', 'R', 'G', 'C', 'x']) a[k] += b[k] || 0; a.hy = a.hy.concat(b.hy); a.ph = a.ph.concat(b.ph); return a; })() : CD.parseCost(altMana);
-    if (payCost.x) { x = await askX(card); if (x == null) return; }
+    if (alt?.kind !== 'free' && CD.costReduction) payCost.g = Math.max(0, payCost.g - CD.costReduction(S(), Object.assign({ owner: KEY, ctrl: KEY }, card), KEY));   // 601.2f
+    if (payCost.x || /as an additional cost to cast this spell, pay x life/i.test(CD.text(card))) { x = await askX(card); if (x == null) return; }
     const extra = alt && String(alt.cost || '').replace(/\{[^}]+\}/g, '').replace(/^[,\s—-]+|[,\s]+$/g, '');
     if (extra && !/^\d+\/\d+$/.test(extra)) G.toast(`${ALT_LABEL[alt.kind] || alt.kind}: also ${extra.replace(/^./, m => m.toLowerCase())} — do that part with the card menus.`, 'info');
-    const reqs = alt && alt.kind === 'overload' ? [] : CD.targetReqs(card, mode);
+    const reqs = alt && alt.kind === 'overload' ? [] : CD.targetReqs(card, mode, alt && alt.kind);
+    if (alt && alt.kind === 'mutate' && !CD.targetChoices(S(), reqs[0], KEY).length) { G.toast(`Mutate needs a non-Human creature you own on the battlefield.`, 'err'); return; }
     let tg;
     if (reqs.length) { tg = await pickTargets(`Casting ${R.cardName(card)}`, card, reqs, mode); if (!tg) return; }
     // Ward (702.21a): the spell is countered unless its controller also pays the ward cost.
@@ -946,6 +949,11 @@
       if (a.kind === 'assign') { G._askSeen[a.id] = 1; askNow(() => askAssign(a)); continue; }
       if (a.kind === 'legend') { G._askSeen[a.id] = 1; ask(() => askLegend(a)); continue; }
       if (a.kind === 'choose') { G._askSeen[a.id] = 1; ask(() => askChoose(a)); continue; }
+      if (a.kind === 'mutate') { G._askSeen[a.id] = 1; ask(() => openAskModal(a, `${a.mut} mutates onto ${a.host}`, b => {
+        b.append(h('p', { class: 'muted' }, `Put ${a.mut} on top or under? The top card gives the merged creature its name, types and power/toughness; it keeps every ability of both either way (702.140c).`));
+        const done = top => { closeModal(true); answer(a, { top }); setTimeout(pumpAsks, 50); };
+        b.append(h('div', { class: 'row' }, h('button', { class: 'primary', onclick: () => done(true) }, `${a.mut} on top`), h('button', { onclick: () => done(false) }, `${a.mut} under ${a.host}`)));
+      }, { live: true, onClose: () => setTimeout(pumpAsks, 50) })); continue; }
       if (a.kind === 'copy') { G._askSeen[a.id] = 1; ask(() => openAskModal(a, `${a.name} — enter as a copy of…`, b => {
         b.append(h('p', { class: 'muted' }, `Choose the ${a.what} it copies (707.9), or let it enter as itself.`));
         b.append(h('div', { class: 'pkchoices pics' }, a.choices.filter(id => S().cards[id]).map(id => targetThumb({ c: id }, false, () => { closeModal(true); answer(a, { pick: id }); setTimeout(pumpAsks, 50); }))));
@@ -1030,6 +1038,9 @@
     const e = myAsks().find(x => x.kind === 'enterOpt');
     if (e) return h('div', { class: 'prio mine', role: 'alert' }, h('span', { class: 'pring' }), h('div', { class: 'ptext' }, h('b', null, `${e.name}: `), e.text),
       h('button', { class: 'primary', onclick: () => answer(e, { yes: true }) }, e.life ? `Pay ${e.life} life` : 'I reveal one'), h('button', { onclick: () => answer(e, { yes: false }) }, 'Let it enter tapped'));
+    const py = myAsks().find(x => x.kind === 'pay');
+    if (py) return h('div', { class: 'prio mine', role: 'alert' }, h('span', { class: 'pring' }), h('div', { class: 'ptext' }, h('b', null, `${py.name}: `), `pay ${py.cost}? If you don’t, ${String(py.text || '').replace(/^you /, nameOf(py.by) + ' ').replace(/^./, m => m)}.`),
+      h('button', { class: 'primary', onclick: () => answer(py, { yes: true }) }, `Pay ${py.cost}`), h('button', { onclick: () => answer(py, { yes: false }) }, 'Don’t pay'));
     const a = myAsks().find(x => x.kind === 'may');
     if (!a) return null;
     const left = Math.max(0, Math.ceil((120000 - (Date.now() - (a.since || 0))) / 1000));
@@ -1804,9 +1815,18 @@
     if (t.k === 'cascade') {
       const hit = G.cascadeReveal(t.mv || 0);
       if (!hit) { ack(); return pumpAsks(); }
-      choose(`${t.src}: cascade`, `You hit ${hit.d.n}. Cast it without paying its mana cost?`, [
-        { label: `Cast ${hit.d.n} free`, primary: true, fn: async () => { await castFlow(hit, 'hand', { kind: 'free', cost: '' }); if (G.P.hand.some(c => c.id === hit.id)) G.cascadeDecline(hit.id); ack(); setTimeout(pumpAsks, 50); } },
-        { label: 'Don’t cast it (bottom of library)', fn: () => { G.cascadeDecline(hit.id); ack(); setTimeout(pumpAsks, 50); } }]);
+      const disc = !!t.discover;
+      choose(`${t.src}: ${disc ? 'discover' : 'cascade'}`, `You hit ${hit.d.n}. Cast it without paying its mana cost${disc ? ', or put it into your hand' : ''}?`, [
+        { label: `Cast ${hit.d.n} free`, primary: true, fn: async () => { await castFlow(hit, 'hand', { kind: 'free', cost: '' }); if (!disc && G.P.hand.some(c => c.id === hit.id)) G.cascadeDecline(hit.id); ack(); setTimeout(pumpAsks, 50); } },
+        disc ? { label: 'Put it into your hand', fn: () => { ack(); setTimeout(pumpAsks, 50); } } : { label: 'Don’t cast it (bottom of library)', fn: () => { G.cascadeDecline(hit.id); ack(); setTimeout(pumpAsks, 50); } }]);
+      return;
+    }
+    if (t.k === 'dig') {
+      const f = G.digFind(t);
+      const go = async dest => { await G.digFinish(t, f.hits, f.rest, dest); ack(); setTimeout(pumpAsks, 50); };
+      if (!f.hits.length || t.dest !== 'either') { go(t.dest === 'either' ? 'battlefield' : t.dest); return; }
+      choose(t.src, `You exiled cards until ${f.names.join(', ')}. Put it onto the battlefield or into your hand?`, [
+        { label: 'Onto the battlefield', primary: true, fn: () => go('battlefield') }, { label: 'Into your hand', fn: () => go('hand') }]);
       return;
     }
     // "Look at the top N cards…": the look window, with the card's instructions on top.
@@ -1819,13 +1839,13 @@
     if (t.k === 'fromHand' || t.k === 'fromGy') {
       const n = t.n || 1, sel = []; let done = false;
       const want = String(t.filter || 'card').replace(/ cards?$/, '').trim();
-      const fits = c => want === 'card' || CD.matchesWhat(c, want);
+      const fits = c => (want === 'card' || CD.matchesWhat(c, want)) && (t.mvMax == null || (+((c.d || {}).cmc) || 0) <= t.mvMax);
       const pool = t.k === 'fromHand' ? G.P.hand.map(c => handCard(c)).filter(fits) : Object.values(S().cards).filter(c => c.zone === 'graveyard' && c.owner === KEY && fits(c));
       if (!pool.length) { G.toast(`${t.src}: you have no ${want} card ${t.k === 'fromHand' ? 'in your hand' : 'in your graveyard'}.`, 'info'); ack(); return pumpAsks(); }
       const dest = t.k === 'fromHand' ? 'battlefield' : t.dest;
       const finish = async ids => {
         if (done) return; done = true; closeModal(true);
-        if (ids.length) { if (t.k === 'fromHand') await G.fromHand(ids, 'battlefield', { tapped: t.tapped }); else await G.move(ids, dest, null, dest === 'battlefield' && t.tapped ? { tapped: true } : null); }
+        if (ids.length) { if (t.k === 'fromHand') await G.fromHand(ids, 'battlefield', { tapped: t.tapped, via: t.via }); else await G.move(ids, dest, null, dest === 'battlefield' && t.tapped ? { tapped: true } : null); }
         ack(); setTimeout(pumpAsks, 50);
       };
       openModal(`${t.src}: put ${n > 1 ? 'up to ' + n + ' × ' : (/^[aeiou]/.test(want) ? 'an ' : 'a ')}${want} card ${t.k === 'fromHand' ? 'from your hand' : 'from your graveyard'} ${dest === 'hand' ? 'into your hand' : 'onto the battlefield' + (t.tapped ? ' tapped' : '')}`, b => {

@@ -98,6 +98,8 @@
     }
     if ((m = s.match(/^(?:this|it) deals (\d+|x) damage$/)) && st.lastTo) return [wrap({ op: 'dmg', src: 'self', n: amt(m[1]), to: st.lastTo })];
     if (/^cascade$/.test(s)) return [wrap({ op: 'cascade' })];
+    // Discover N (701.57): exile until a nonland card with mana value N or less; cast it free or put it into your hand.
+    if ((m = s.match(/^discover (\d+)$/))) return [wrap({ op: 'discover', n: +m[1] })];
     if ((m = body.match(/^gets? (a|an|one|two|three|\d+|x) poison counters?$/))) return [wrap({ op: 'poison', who: subj, n: amt(m[1]) })];
     if ((m = s.match(/^double (?:the power of (.+?)|(its|this's) power) until end of turn$/))) { const what = targetOf(m[1] || (m[2] === 'its' ? 'it' : 'this'), st); if (what) return [wrap({ op: 'doublePT', what, powerOnly: true })]; }
     if ((m = s.match(/^(?:have )?(.+?) becomes? an? (.+?) with base power and toughness (\d+)\/(\d+)(?: in addition to (?:its|their) other (?:colors and )?types)? until end of turn$/))) { const what = targetOf(m[1], st); if (what) return [wrap({ op: 'animate', what, p: m[3], t: m[4], types: m[2], kws: '', eot: true })]; }
@@ -111,6 +113,7 @@
     // Players.
     if ((m = body.match(/^draws? (\w+|x) cards?$/)) || (m = body.match(/^draws? a card$/))) return [wrap({ op: 'draw', who: subj, n: m[1] ? amt(m[1]) : 1 })];
     if ((m = body.match(/^draws? cards equal to (.+)$/))) return [wrap({ op: 'draw', who: subj, n: variable(m[1]) })];
+    if ((m = body.match(/^draws? a card for each (?:creature|permanent|card)s? (?:destroyed|exiled|sacrificed|put into a graveyard) this way$/))) return [wrap({ op: 'draw', who: subj, n: { v: 'lastAmount' } })];
     if ((m = body.match(/^draws? a card for each (.+)$/)) && !/\b(?:it|this way|devoured|exiled|that|those)\b/.test(m[1])) return [wrap({ op: 'draw', who: subj, n: { v: 'count', what: m[1].replace(/ you control$/, ''), ctrl: /you control/.test(m[1]) ? 'you' : 'any' } })];
     if ((m = body.match(/^draws? that many cards$/))) return [wrap({ op: 'draw', who: subj, n: { v: 'thatMany' } })];
     if ((m = body.match(/^draws? an additional card$/))) return [wrap({ op: 'draw', who: subj, n: 1 })];
@@ -137,7 +140,10 @@
     if (/^(?:this|it) connives$/.test(s)) return [wrap({ op: 'draw', who: { k: 'you' }, n: 1 }), wrap({ op: 'discard', who: { k: 'you' }, n: 1 })];
     if ((m = s.match(/^shuffle (?:your|their) graveyard into (?:your|their) library$/))) return [wrap({ op: 'shuffleGy', who: subj })];
     if ((m = s.match(/^untap (?:up to (\w+) )?(lands|lands you control|all lands you control|target (.+)|this|it|that creature|all creatures you control)$/))) return [wrap({ op: 'untap', what: m[3] ? { k: 't', i: st.ti++, what: m[3] } : /^lands/.test(m[2]) ? { k: 'chooseUntap', n: amt(m[1]) || 99, what: 'land' } : /all/.test(m[2]) ? { k: 'each', what: m[2].replace(/^all /, '').replace(/ you control$/, ''), ctrl: 'you' } : obj(m[2]) })];
-    if ((m = s.match(/^tap (?:up to (\w+) )?(target .+|this|it|that creature|all creatures your opponents control|each creature your opponents control|all lands that player controls)$/))) return [wrap({ op: 'tap', what: targetOf(m[2], st) })];
+    if ((m = s.match(/^tap (?:up to (\w+) )?(target .+|this|it|that creature|all creatures your opponents control|each creature your opponents control|all lands that player controls)$/))) { const what = targetOf(m[2], st); st.lastObj = what; return [wrap({ op: 'tap', what })]; }
+    // "It doesn't untap during its controller's next untap step" (Archipelagore, Frost Breath…).
+    if ((m = s.match(/^(it|that creature|those creatures|they|that permanent|those permanents) (?:doesn't|don't|do not) untap during (?:its|their) controllers?'s? next untap step$/))) return [wrap({ op: 'skipUntap', what: st.lastObj || { k: 'ev' } })];
+    if (/^(?:you )?take an extra turn after this one$/.test(s)) return [wrap({ op: 'extraTurn' })];
     if ((m = s.match(/^tap or untap (target .+|another target .+)$/))) return [wrap({ op: 'tapUntap', what: targetOf(m[1], st) })];
     // "Each player this attacked this turn loses the game" (Angel of Destiny), "each player with exactly 13 life loses the game".
     if ((m = s.match(/^each player (?:this attacked this turn|with exactly (\d+) life) loses the game$/))) return [wrap({ op: 'loseGame', attacked: !m[1], life: m[1] ? +m[1] : null })];
@@ -162,6 +168,10 @@
     // Pump / grant (until end of turn = a temporary badge).
     if ((m = s.replace(/ until end of turn$/, '').match(/^(.+?) (?:gets|get) ([+-]\d+|[+-]x)\/([+-]\d+|[+-]x)(?: and (?:gains?|has|have) (.+?))?$/))) {
       const what = targetOf(m[1], st); if (what) return [wrap({ op: 'pump', what, p: m[2], t: m[3], kws: m[4] || '', eot: /until end of turn/.test(s) })];
+    }
+    // "Creatures you control gain trample and get +X/+X until end of turn" (Craterhoof, Overwhelming Stampede).
+    if ((m = s.replace(/^until end of turn, /, '').replace(/ until end of turn$/, '').match(/^(.+?) (?:gains?|have) ([a-z ,]+?) and (?:gets?) ([+-]\d+|[+-]x)\/([+-]\d+|[+-]x)$/))) {
+      const what = targetOf(m[1], st); if (what) return [wrap({ op: 'pump', what, p: m[3], t: m[4], kws: m[2], eot: true })];
     }
     // Threaten effects: "gain control of target creature until end of turn".
     if ((m = s.match(/^(?:you )?gain control of (.+?)( until end of turn)?$/))) { const what = targetOf(m[1], st); if (what && what.k !== 'you') return [wrap({ op: 'gainControl', what, eot: !!m[2] })]; }
@@ -202,6 +212,7 @@
     if ((m = s.match(/^tap untapped creatures with total power (\d+) or more: this becomes an artifact creature until end of turn$/))) return [wrap({ op: 'crew', n: +m[1] })];
     if ((m = s.match(/^(.+?) (?:becomes an?|become) (?:(\d+|x)\/(\d+|x) )?(.+?)(?: with (.+?))?(?: in addition to (?:its|their) other types)? until end of turn$/)) && /creature/.test(m[4])) { const what = targetOf(m[1], st); if (what) return [wrap({ op: 'animate', what, p: m[2] || null, t: m[3] || null, types: m[4].replace(/creatures$/, 'creature'), kws: m[5] || '', eot: true })]; }
     // Hand to battlefield.
+    if ((m = s.match(/^(?:you may )?put an? (.+?) card with equal or lesser mana value from your hand onto the battlefield$/))) return [wrap({ op: 'fromHand', filter: m[1], n: 1, mvMax: { v: 'evMV' }, via: 'kodama' })];
     if ((m = s.match(/^put (?:an? |up to (\w+) )?(.+?) cards? from your hand onto the battlefield( tapped)?$/))) return [wrap({ op: 'fromHand', filter: m[2], n: amt(m[1]) || 1, tapped: !!m[3] })];
     if ((m = s.match(/^put (?:an? )?(.+?) cards? from your graveyard onto the battlefield( tapped)?$/))) return [wrap({ op: 'fromGy', filter: m[1], dest: 'battlefield', tapped: !!m[2] })];
     if ((m = s.match(/^return (?:an? |up to (\w+) )?(.+?) cards? from your graveyard to your hand$/))) return [wrap({ op: 'fromGy', filter: m[2], n: amt(m[1]) || 1, dest: 'hand' })];
@@ -261,11 +272,25 @@
     const st = st0 || { ti: 0 };
     const t0 = String(text || '').toLowerCase().replace(/\([^)]*\)/g, '').replace(/[“”]/g, '"')
       .replace(/\.?\s*(?:it|they) (?:has|have|gains?) "[^"]*"(?: until end of turn)?\.?/g, '.').trim();
+    // "Exile/reveal cards from the top of your library until you exile a nonland permanent card. Put that card onto the
+    // battlefield or into your hand." (Illuna, Auspicious Starrix, The Regalia): one effect, done on the owner's device.
+    const t1 = t0.replace(/(?:exile|reveal) cards from the top of your library until you (?:exile|reveal) (a|an|x) ((?:nonland |non-?[a-z]+ )*(?:permanent|creature|land|artifact|enchantment|nonland)) cards?(, where x is the number of times this creature has mutated)?\. put (?:that card|those [a-z ]*cards|it) (onto the battlefield(?: tapped)?(?: or into your hand)?|into your hand)(?: and the rest on the bottom of your library in a random order)?\./g,
+      (all, a, what, mut, dest) => `__dig:${what.trim()}:${mut ? 'mut' : 1}:${/or into your hand/.test(dest) ? 'either' : /battlefield/.test(dest) ? 'battlefield' : 'hand'}:${/tapped/.test(dest) ? 1 : 0}:${/rest on the bottom/.test(all) ? 'bottom' : 'exile'}__.`);
+    // "That player may pay {2}. If they don't, you create a Treasure token." (Smothering Tithe, Rhystic Study): the other
+    // player chooses whether to pay; if they don't, the rest happens.
+    const t2 = t1.replace(/\b(that player|its controller|they|that opponent) may pay ((?:\{[^}]+\})+)\. if (?:they|that player|the player|he or she|its controller) (?:doesn't|don't|do not), ([^.]+)\./g, (all, w, cost, rest) => `__payor|${w}|${cost}|${rest}__.`);
     // "where X is …" applies to the clause before it.
-    const sentences = t0.replace(/\.?\n/g, '. ').split(/(?<=\.)\s+|(?<=\.)$/).map(x => x.trim()).filter(Boolean);
+    const sentences = t2.replace(/\.?\n/g, '. ').split(/(?<=\.)\s+|(?<=\.)$/).map(x => x.trim()).filter(Boolean);
     const ops = [];
     let understood = true;
     for (let sent of sentences) {
+      const dg = sent.match(/^__dig:([a-z -]+):(mut|1):(either|battlefield|hand):([01]):(bottom|exile)__\.?$/);
+      if (/^as an additional cost to cast this spell, pay x life\.?$/.test(sent)) continue;
+      // Cost changes and "can't be countered" are about casting it, not what it does (601.2f, 101.2).
+      if (/^this(?: spell)? costs? (?:\{[^}]+\})+ (?:less|more) to cast\b|^this spell can't be countered\.?$|^affinity for /.test(sent)) continue;   // paid as it's cast (601.2f)
+      const po = sent.match(/^__payor\|([^|]+)\|([^|]+)\|(.+)__\.?$/);
+      if (po) { const inner = parse(po[3] + '.', opts); ops.push({ op: 'payOrElse', who: who(po[1]), cost: po[2], ops: inner.ops, text: po[3] }); if (!inner.understood) understood = false; continue; }
+      if (dg) { ops.push({ op: 'dig', what: dg[1], n: dg[2] === 'mut' ? 'mut' : 1, dest: dg[3], tapped: dg[4] === '1', rest: dg[5] }); continue; }
       // "If you're the monarch, it deals 7 damage instead." / "If it's an artifact, draw a card."
       // Reflexive triggers (603.12): "When you do, ..." is a new ability whose targets are chosen then.
       const rf = sent.replace(/\.$/, '').match(/^when you do, (.+)$/);
@@ -297,7 +322,7 @@
         else if (subject && /^(gains?|loses?|draws?|discards?|mills?|sacrifices?)\b/.test(p)) p = (subject.startsWith('target') ? 'that player' : subject) + ' ' + p;
         const r = clause(p, st);
         if (!r) { understood = false; ops.push({ op: 'manual', text: p.replace(/^./, x => x.toUpperCase()) }); continue; }
-        for (const o of r) { if (xvar && (o.n && o.n.v === 'X')) o.n = xvar; if (xvar && o.spec && (o.spec.p === 'x' || (o.spec.n && o.spec.n.v === 'X'))) { o.spec.x = xvar; if (o.spec.n && o.spec.n.v === 'X') o.spec.n = xvar; } ops.push(o); }
+        for (const o of r) { if (xvar && o.op === 'pump' && /x/.test(String(o.p) + String(o.t))) o.xv = xvar; if (xvar && (o.n && o.n.v === 'X')) o.n = xvar; if (xvar && o.spec && (o.spec.p === 'x' || (o.spec.n && o.spec.n.v === 'X'))) { o.spec.x = xvar; if (o.spec.n && o.spec.n.v === 'X') o.spec.n = xvar; } ops.push(o); }
       }
     }
     return { ops, understood, targets: st.ti };

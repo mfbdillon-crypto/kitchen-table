@@ -309,6 +309,7 @@
   P.costOf = function (c) {
     const cost = C().costOf(c);
     if (c.zone === 'command' && c.cmdr) cost.g += 2 * ((this.s.tax || {})[c.id] || 0);
+    if (C().costReduction) cost.g = Math.max(0, cost.g - C().costReduction(this.s, c, this.me));
     return cost;
   };
   P.mv = function (c) { return C().costTotal(this.costOf(c), 0); };
@@ -412,6 +413,11 @@
   // ======================= what a card would do if cast now =======================
   // Returns a castable option with a score, or null. when: 'main' (my main phase, empty stack) | 'instant'.
   P.option = function (card, when, extra) {
+    const o = this.option0(card, when, extra);
+    const m = extra && (extra.counterTarget || extra.noMutate) ? null : this.mutateOption(card, when, extra);
+    return m && (!o || m.score > o.score) ? m : o;
+  };
+  P.option0 = function (card, when, extra) {
     const Cd = C(), Rr = R(), s = this.s;
     extra = extra || {};
     if (Rr.isType(card, 'land')) return null;
@@ -432,6 +438,12 @@
     const srcs = extra.sources || this.sources();
     let x = 0;
     if (cost.x) { x = Math.max(0, Math.floor((this.manaNow(srcs) - Cd.costTotal(cost, 0)) / cost.x)); if (x < 1) return null; }
+    // "As an additional cost to cast this spell, pay X life" (Toxic Deluge): enough to kill what matters, never below 8 life.
+    if (!cost.x && /as an additional cost to cast this spell, pay x life/i.test(Cd.text(card))) {
+      const tough = this.opps().flatMap(p => this.creatures(p)).map(c => this.pt(c)[1]).sort((a, b) => b - a);
+      x = Math.min(tough[0] || 0, this.life(this.me) - 8);
+      if (x < 1) return null;
+    }
     let pay = this.payFor(cost, srcs, x, card);
     if (!pay) return null;
     let t;
@@ -446,11 +458,38 @@
     }
     const wardMana = t.tg.flat().reduce((a, q) => { const c = q.c && s.cards[q.c]; if (!c || c.ctrl === this.me || !this.kw(c).has('ward')) return a; const k = Cd.wardCost(c); return a + (k ? k.mana : 0); }, 0);
     if (wardMana) { pay = this.payFor(Object.assign({}, cost, { g: cost.g + wardMana, hy: cost.hy.slice(), ph: cost.ph.slice() }), srcs, x, card); if (!pay) return null; }
-    if (this.selfHarm(eff, x) >= this.life(this.me) - 3) return null;
+    if (this.selfHarm(eff, x, card) >= this.life(this.me) - 3) return null;
     const mana = Cd.costTotal(cost, x) + wardMana;
     const o = { card, id: card.id, name: Rr.cardName(card), mode, eff, x, pay, tg: t.tg, reqs: t.reqs, desc: t.desc, cost, mana, roles: rl, perm, when,
       wardPaid: t.tg.flat().some(q => q.c && s.cards[q.c] && s.cards[q.c].ctrl !== this.me && this.kw(s.cards[q.c]).has('ward')), from: card.zone };
     o.score = this.scoreOption(o);
+    return o;
+  };
+  // Mutate (702.140): cast it for its mutate cost onto a non-Human creature I own — it keeps every ability and fires
+  // "whenever this creature mutates"; the merged creature can attack now if the host could.
+  P.mutateOption = function (card, when, extra) {
+    const Cd = C(), Rr = R(), s = this.s, O = root.Oracle;
+    if (!O || !card.d || !Rr.isType(card, 'creature')) return null;
+    if (when === 'instant' && !Cd.instantSpeed(card)) return null;
+    let M; try { M = O.model(card); } catch (e) { return null; }
+    const k = M && M.costs.find(x => x.kind === 'mutate'); if (!k) return null;
+    if (card.zone !== 'hand' && !(card.zone === 'command' && card.cmdr)) return null;
+    const req = Cd.targetReqs(card, null, 'mutate')[0];
+    const hosts = Cd.targetChoices(s, req, this.me).map(t => s.cards[t.c]).filter(h => h && h.zone === 'battlefield' && !Cd.protectedFrom(h, card, s));
+    if (!hosts.length) return null;
+    const cost = Cd.parseCost((String(k.cost || '').match(/\{[^}]+\}/g) || []).join(''));
+    if (card.zone === 'command' && card.cmdr) cost.g += 2 * ((s.tax || {})[card.id] || 0);
+    cost.g = Math.max(0, cost.g - Cd.costReduction(s, card, this.me));
+    const srcs = (extra && extra.sources) || this.sources();
+    const pay = this.payFor(cost, srcs, 0, card); if (!pay) return null;
+    const hostScore = h => (Rr.sick(s, h) && !this.kw(h).has('haste') ? 0 : 3) + this.value(h) * 0.3 + (this.kw(h).has('flying') || this.kw(h).has('trample') ? 1 : 0) - (h.tapped ? 0.5 : 0);
+    const host = hosts.sort((a, b) => hostScore(b) - hostScore(a))[0];
+    const eff = { effects: [], understood: true };
+    const o = { card, id: card.id, name: Rr.cardName(card), mode: null, eff, x: 0, pay, tg: [[{ c: host.id }]], reqs: [req], desc: ['my ' + Rr.cardName(host)], cost, mana: Cd.costTotal(cost, 0), roles: roles(card), perm: true, when, wardPaid: false, from: card.zone, alt: 'mutate' };
+    o.score = this.scoreOption(o);
+    const trig = (Cd.text(card) + '\n' + Cd.text(host)).match(/whenever this creature mutates/gi);
+    o.score += 1.5 + (trig ? trig.length * 2 : 0) + (hostScore(host) >= 3 ? 1.5 : 0);
+    o.desc = ['mutate onto my ' + Rr.cardName(host)];
     return o;
   };
   // Why a card in hand isn't being cast (for the end-of-turn note in the plan log).
@@ -484,8 +523,8 @@
     }
     return ok.length === pick ? ok.sort((a, b) => a - b) : undefined;
   };
-  P.selfHarm = function (eff, x) {
-    let n = 0;
+  P.selfHarm = function (eff, x, card) {
+    let n = card && /pay x life/i.test(C().text(card)) ? (x || 0) : 0;
     for (const e of eff.effects) {
       const v = e.n === 'X' ? (x || 0) : (+e.n || 0);
       if (e.k === 'dmg' && (e.to === 'eachPlayer' || e.to === 'you')) n += v;
@@ -524,7 +563,7 @@
       const best = Math.max(0, ...o.tg.flat().filter(q => q.c).map(q => this.targetScore(q) * (s.cards[q.c] && (s.cards[q.c].token ? 1 : rl.has('bounce') && !/destroy|exile/.test(low(C().text(card))) ? (s.cards[q.c].cmdr ? 0.35 : 0.45) : 1))));
       v += 1.5 + best * 0.6;
     }
-    if (rl.has('wipe')) { const w = this.wipeCheck(card); v = w.good ? 6 + w.margin : -50; o.wipe = w; }
+    if (rl.has('wipe')) { const w = this.wipeCheck(card, o.x); v = w.good ? 6 + w.margin : -50; o.wipe = w; }
     // Combo piece: big bonus when it completes (or nearly completes) a combo the bracket allows.
     const cp = this.comboPiece(card); if (cp) v += cp.complete ? 30 : 3;
     // Don't overextend into a likely wipe: creatures past a healthy board are worth less if opponents can wipe.
@@ -564,10 +603,14 @@
 
   // ======================= board wipes =======================
   // All three tests: do I come out ahead, am I behind, and could I hold creatures back first.
-  P.wipeCheck = function (card) {
+  P.wipeCheck = function (card, x) {
     const t = low(C().text(card));
     const hitsAll = !/you don't control|your opponents control|nonblack|non-?\w+ creatures? you don't/.test(t);
-    const affected = c => this.isCre(c) && !this.kw(c).has('indestructible') && !(/creature tokens/.test(t) && !c.token);
+    // How much it does: "deals 2 damage to each creature", "all creatures get -X/-X" (X chosen), or everything.
+    const dm = t.match(/deals? (\d+|x) damage to each creature|(?:all|each) creatures? gets? -(\d+|x)\/-(?:\d+|x)/);
+    const amt = dm ? ((dm[1] || dm[2]) === 'x' ? (x || 0) : +(dm[1] || dm[2])) : null;
+    const shrink = dm && !!dm[2];
+    const affected = c => this.isCre(c) && !(/creature tokens/.test(t) && !c.token) && (amt == null ? !this.kw(c).has('indestructible') : shrink ? this.pt(c)[1] <= amt : !this.kw(c).has('indestructible') && this.pt(c)[1] - (c.dmg || 0) <= amt);
     const mine = this.creatures(this.me).filter(affected);
     const myLoss = hitsAll ? sum(mine, c => this.value(c)) : 0;
     const per = this.opps().map(p => ({ p, loss: sum(this.creatures(p).filter(affected), c => this.value(c)), n: this.creatures(p).filter(affected).length }));
@@ -904,6 +947,7 @@
     const c = o.card;
     if (!this.isCre(c) || this.kw(c).has('haste') || o.roles.has('anthem') || o.roles.has('ramp') || o.card.cmdr && this.profile.cmdrRole === 'engine') return false;
     if (o.roles.has('wipe')) return false;
+    if (o.alt === 'mutate') { const h = o.tg[0] && o.tg[0][0] && this.s.cards[o.tg[0][0].c]; if (h && !h.tapped && !R().sick(this.s, h)) return false; }   // the merged creature can attack now
     return this.creatures(this.me).some(x => !x.tapped && !R().sick(this.s, x));
   };
   P.whyOption = function (o) {
@@ -1267,7 +1311,11 @@
         const bad = bl.some(b => { const r = this.fight(c, b); return r.aDies && !r.bDies; });
         const trade = bl.some(b => { const r = this.fight(c, b); return r.aDies && r.bDies && this.value(b) < this.value(c); });
         const trickBad = risk > 0.35 && bl.some(b => { const r = this.fight(c, b, 0, 2); return r.aDies; });
-        const ev = (bl.length ? 0.4 : 1) * this.pt(c)[0] * (1 + this.threatOf(p) / 10) - (bad ? this.value(c) : 0) - (trade ? this.value(c) * 0.4 : 0) - (trickBad ? this.value(c) * risk : 0) - (this.isProtect(c) && bl.length ? 3 : 0);
+        // Damage counts for more against whoever threatens my plan most (relative to the top threat), never by grudge.
+        const topScore = Math.max(0.1, ...this.threats.map(x => x.score));
+        const weight = 0.5 + this.threatOf(p) / topScore;
+        const dies = bl.some(b => this.fight(c, b).aDies);
+        const ev = (bl.length ? 0.4 : 1) * this.pt(c)[0] * weight - (bad ? this.value(c) : 0) - (trade ? this.value(c) * 0.6 : dies && !stall ? this.value(c) * 0.35 : 0) - (trickBad ? this.value(c) * risk : 0) - (this.isProtect(c) && bl.length ? 3 : 0);
         if (!best || ev > best.ev) best = { p, ev, bad, trickBad };
       }
       if (best && (best.ev > 0.3 || (stall && !best.bad))) { list.push({ id: c.id, p: best.p, why: best.trickBad ? 'risky' : 'safe' }); }
@@ -1402,6 +1450,23 @@
         return { yes: true, why: 'free to enter untapped' };
       }
       case 'legend': { const list = ask.ids.map(id => s.cards[id]).filter(Boolean).sort((a, b) => this.value(b) - this.value(a) + (a.tapped - b.tapped)); return { keep: (list[0] || {}).id || ask.ids[ask.ids.length - 1], why: 'keep the better one' }; }
+      case 'pay': {
+        // Pay with spare mana: never on my own turn if it costs me a spell; keep mana held for answers.
+        const cost = C().costTotal(C().parseCost(ask.cost), 0);
+        const lands = this.bf(me).filter(c => !c.tapped && R().isType(c, 'land') && C().manaSource(c)).length;
+        const mine = s.turn.active === me;
+        const hc = this.holding && !this.holding.fired && this.handCards().find(c => c.id === this.holding.id); const held = hc ? this.mv(hc) : 0;
+        const yes = mine ? lands - cost >= Math.max(...this.handCards().filter(c => !R().isType(c, 'land')).map(c => this.mv(c)), 0) : lands - cost >= held;
+        return { yes: !!yes && lands >= cost, why: yes ? 'spare mana' : 'I need the mana' };
+      }
+      case 'mutate': {
+        // The top card decides power/toughness, name and types; abilities stay either way.
+        const h = s.cards[ask.card], comps = (h && h.mut) || [];
+        const ptOf = k => { const f = (k && k.d && k.d.faces && k.d.faces[k.face || 0]) || {}; return (+f.p || 0) + (+f.tg || 0); };
+        const mine = comps.find(k => k.id === ask.comp), other = comps.find(k => k.id !== ask.comp);
+        const top = !other || ptOf(mine) >= ptOf(other);
+        return { top, why: top ? 'the mutating card is the bigger body' : 'the host is the bigger body' };
+      }
       case 'copy': { const best = ask.choices.map(id => s.cards[id]).filter(Boolean).sort((a, b) => this.value(b) - this.value(a))[0]; return { pick: best ? best.id : null, why: 'best creature' }; }
       case 'assign': {
         const plan = {}; let left = ask.power;
