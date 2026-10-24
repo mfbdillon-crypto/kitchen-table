@@ -76,7 +76,7 @@
   function clause(raw, st) {
     let s = raw.trim().replace(/\.$/, '').replace(/^then,? /, '').trim();
     { const u = s.match(/^until end of turn, (.+)$/); if (u) s = u[1] + ' until end of turn'; }
-    s = s.replace(/^(?:he|she) /, 'it ').replace(/ (?:him|her) /g, ' it ');
+    s = s.replace(/\bhis or her\b/g, 'their').replace(/\bhim or her\b/g, 'them').replace(/^(?:he|she) /, 'it ').replace(/ (?:him|her) /g, ' it ');
     let optional = false, ifDid = false, m;
     if ((m = s.match(/^if you do,? (.+)$/))) { ifDid = true; s = m[1]; }
     if ((m = s.match(/^you may (.+)$/))) { optional = true; s = m[1]; }
@@ -98,6 +98,8 @@
     if ((m = s.match(/^(?:this|it) deals (\d+|x) damage$/)) && st.lastTo) return [wrap({ op: 'dmg', src: 'self', n: amt(m[1]), to: st.lastTo })];
     if (/^cascade$/.test(s)) return [wrap({ op: 'cascade' })];
     if ((m = body.match(/^gets? (a|an|one|two|three|\d+|x) poison counters?$/))) return [wrap({ op: 'poison', who: subj, n: amt(m[1]) })];
+    if ((m = s.match(/^double (?:the power of (.+?)|(its|this's) power) until end of turn$/))) { const what = targetOf(m[1] || (m[2] === 'its' ? 'it' : 'this'), st); if (what) return [wrap({ op: 'doublePT', what, powerOnly: true })]; }
+    if ((m = s.match(/^(?:have )?(.+?) becomes? an? (.+?) with base power and toughness (\d+)\/(\d+)(?: in addition to (?:its|their) other (?:colors and )?types)? until end of turn$/))) { const what = targetOf(m[1], st); if (what) return [wrap({ op: 'animate', what, p: m[3], t: m[4], types: m[2], kws: '', eot: true })]; }
     if ((m = s.match(/^double the power and toughness of (.+?) until end of turn$/))) { const what = targetOf(m[1], st); if (what) return [wrap({ op: 'doublePT', what })]; }
     if (/^do this only once each turn$|^this ability triggers only once each turn$/.test(s)) return [];
     // Energy (107.14): "you get {E}{E}", "you get that many {E}".
@@ -135,6 +137,7 @@
     if ((m = s.match(/^untap (?:up to (\w+) )?(lands|lands you control|all lands you control|target (.+)|this|it|that creature|all creatures you control)$/))) return [wrap({ op: 'untap', what: m[3] ? { k: 't', i: st.ti++, what: m[3] } : /^lands/.test(m[2]) ? { k: 'chooseUntap', n: amt(m[1]) || 99, what: 'land' } : /all/.test(m[2]) ? { k: 'each', what: m[2].replace(/^all /, '').replace(/ you control$/, ''), ctrl: 'you' } : obj(m[2]) })];
     if ((m = s.match(/^tap (?:up to (\w+) )?(target .+|this|it|that creature|all creatures your opponents control|each creature your opponents control|all lands that player controls)$/))) return [wrap({ op: 'tap', what: targetOf(m[2], st) })];
     if ((m = s.match(/^add ((?:\{[wubrgc]\})+)$/))) return [wrap({ op: 'addMana', units: m[1].match(/[wubrgc]/g).map(x => x.toUpperCase()) })];
+    if ((m = s.match(/^add \{([wubrgc])\} for each (.+)$/)) && !/\b(?:it|this way|removed|that|those)\b/.test(m[2])) return [wrap({ op: 'addMana', units: { v: 'X', each: m[1].toUpperCase() }, n: { v: 'count', what: m[2].replace(/ you control$/, ''), ctrl: /you control/.test(m[2]) ? 'you' : 'any' } })];
     if ((m = s.match(/^add (one|two|three) mana of any (?:one )?color$/))) return [wrap({ op: 'addMana', units: Array(amt(m[1])).fill('WUBRG') })];
     // Tokens.
     if ((m = body.match(/^creates? (.+)$/))) {
@@ -155,6 +158,8 @@
     if ((m = s.replace(/ until end of turn$/, '').match(/^(.+?) (?:gets|get) ([+-]\d+|[+-]x)\/([+-]\d+|[+-]x)(?: and (?:gains?|has|have) (.+?))?$/))) {
       const what = targetOf(m[1], st); if (what) return [wrap({ op: 'pump', what, p: m[2], t: m[3], kws: m[4] || '', eot: /until end of turn/.test(s) })];
     }
+    // Threaten effects: "gain control of target creature until end of turn".
+    if ((m = s.match(/^(?:you )?gain control of (.+?)( until end of turn)?$/))) { const what = targetOf(m[1], st); if (what && what.k !== 'you') return [wrap({ op: 'gainControl', what, eot: !!m[2] })]; }
     if ((m = s.replace(/ until (?:end of turn|your next turn)$/, '').match(/^(.+?) (?:gains?|has|have) (protection from [a-z ,]+|[a-z ,]+?)$/)) && !/"/.test(s)) {
       const what = targetOf(m[1], st); if (what && m[2].length < 60) return [wrap({ op: 'grant', what, kws: m[2], eot: /until end of turn/.test(s), untilNext: /until your next turn/.test(s) })];
     }
@@ -163,7 +168,7 @@
     if ((m = s.match(/^(exile|destroy) (?:a|the) creature with the greatest power among creatures (target opponent|target player|that player|an opponent|each opponent) controls$/))) { const w = who(m[2]); if (w && w.k === 't') w.i = st.ti++; return [wrap({ op: 'biggest', act: m[1], who: w || { k: 'eachOpp' } })]; }
     if ((m = s.match(/^exile (.+?), then return (?:it|that card|those cards|them) to the battlefield(?: tapped)? under (its owner's|their owners'|your) control$/))) return [wrap({ op: 'flicker', what: targetOf(m[1], st), control: /your/.test(m[2]) ? 'you' : 'owner' })];
     if ((m = s.match(/^exile (.+)$/)) && !/top|library/.test(m[1])) { const what = targetOf(m[1], st); if (what) return [wrap({ op: 'move', what, to: 'exile' })]; }
-    if ((m = s.match(/^return (.+?) (?:from (?:your|a|their) graveyard )?to (?:its owner's|their owners'|your|their) hands?$/))) { const what = targetOf(m[1], st); if (what) return [wrap({ op: 'move', what, to: 'hand' })]; }
+    if ((m = s.match(/^return (.+?) (?:from (?:your|a|their) graveyard )?to (?:its owner's|their owners'|their owner's|your|their) hands?$/))) { const what = targetOf(m[1], st); if (what) return [wrap({ op: 'move', what, to: 'hand' })]; }
     if ((m = s.match(/^return (.+?) from (?:your|a|their) graveyard to the battlefield( tapped)?(?: under your control)?$/))) { const what = targetOf(m[1], st); if (what) return [wrap({ op: 'move', what, to: 'battlefield', tapped: !!m[2], control: 'you' })]; }
     if ((m = s.match(/^return (this|it) from your graveyard to your hand$/))) return [wrap({ op: 'move', what: obj(m[1]), to: 'hand' })];
     if ((m = s.match(/^put (.+?) onto the battlefield( tapped)?(?: under your control)?$/)) && !/from your hand|from among|library/.test(m[1])) { const what = targetOf(m[1], st); if (what) return [wrap({ op: 'move', what, to: 'battlefield', tapped: !!m[2], control: 'you' })]; }
@@ -186,7 +191,7 @@
     if ((m = s.match(/^add (\{[wubrgc]\})(?:\{[wubrgc]\})*,? (?:or )?(\{[wubrgc]\}.*)$/))) return [wrap({ op: 'addMana', units: [s.match(/[wubrgc](?=\})/g).map(x => x.toUpperCase()).join('')], choice: true })];
     if (/^add one mana of any (?:color|type) (?:that a land (?:you|an opponent) controls? could produce|in your commander's color identity|that .+)$/.test(s)) return [wrap({ op: 'addMana', units: ['WUBRG'], limit: s })];
     if ((m = s.match(/^add (x|\w+) mana (?:of any one color|in any combination of colors)$/))) return [wrap({ op: 'addMana', units: { v: 'X', each: 'WUBRG' }, n: amt(m[1]) })];
-    if (/^spend this mana only|^until end of turn, you don't lose this mana|this can't be countered|this can't be copied|it's still a land|they're still lands/.test(s)) return [];
+    if (/^spend this mana only|^until end of turn, you don't lose this mana|^you don't lose this mana|this can't be countered|this can't be copied|it's still a land|they're still lands/.test(s)) return [];
     // Attach / animate.
     if ((m = s.match(/^attach (this|it) to (.+)$/))) return [wrap({ op: 'attach', what: obj(m[1]), to: targetOf(m[2], st) })];
     if ((m = s.match(/^tap untapped creatures with total power (\d+) or more: this becomes an artifact creature until end of turn$/))) return [wrap({ op: 'crew', n: +m[1] })];
@@ -271,7 +276,7 @@
       const wx = sent.match(/,? where x is (.+?)\.?$/);
       if (wx) { xvar = variable(wx[1]); sent = sent.slice(0, wx.index); }
       // Split into clauses: "draw a card, then discard a card", "each opponent loses 1 life and you gain 1 life".
-      const parts = sent.replace(/\.$/, '').split(/,? then |(?<!if you do|if they do|when you do|if a player does), (?=(?:gain|lose|draw|discard|mill|create|scry|surveil)s?\b)|\. then |, and then |,? and (?=(?:you |each opponent |each player |that player |target player |its controller )?(?:gains? (?:\d|x |that much|life)|loses?|draws?|discards?|mills?|creates?|puts?|scry|surveil|sacrifices?|untaps?|taps?|returns?|exiles?|becomes?|takes?|investigate|proliferate)\b)/);
+      const parts = sent.replace(/\.$/, '').split(/,? then |(?<!if you do|if they do|when you do|if a player does), (?=(?:gain|lose|draw|discard|mill|create|scry|surveil)s?\b)|\. then |, and then |,? and (?=(?:you |each opponent |each player |that player |target player |its controller )?(?:gains? (?:\d|x |that much|life|control)|loses?|draws?|discards?|mills?|creates?|puts?|scry|surveil|sacrifices?|untaps?|taps?|returns?|exiles?|becomes?|takes?|investigate|proliferate)\b)/);
       let subject = null, sentIfDid = false;
       for (let p of parts) {
         if (/^if you do,? /.test(p.trim())) sentIfDid = true;

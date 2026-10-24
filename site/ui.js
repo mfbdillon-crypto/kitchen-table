@@ -505,7 +505,7 @@
       if (c.token) items.push({ label: 'Remove token from the game', fn: () => G.removeToken([c.id]) });
     } else if (c.zone === 'stack') {
       const P = S().prio;
-      if (P && P.holder !== KEY) items.push({ note: `Waiting for ${nameOf(P.holder)} to respond. It resolves by itself when everyone has passed.` });
+      if (P && P.holder && P.holder !== KEY) items.push({ note: `Waiting for ${nameOf(P.holder)} to respond. It resolves by itself when everyone has passed.` });
       if (c.ctrl === KEY || !P || !P.holder) items.push({ label: 'Resolve it now (don’t wait for responses)', fn: () => G.act({ type: 'resolveNow' }) });
       if (!c.ab) items.push({ label: 'Counter it (to the graveyard)', fn: mv(c, 'graveyard') });
       if (two) items.push({ label: 'Flip to other face', fn: () => G.flip(c.id) });
@@ -881,6 +881,12 @@
         h('label', { class: 'apass', title: 'Pass automatically when you have no instants, flash cards or abilities you could use' }, h('input', { type: 'checkbox', checked: auto, onchange: e => { G.LS.set('kt:autopass', e.target.checked); render(); } }), ' Auto-pass when I can’t respond'),
         h('button', { class: 'primary', onclick: () => G.pass() }, 'Pass'));
     }
+    if (!P.holder) {
+      // Nobody holds priority because a choice is pending (a "may", targets, trigger order…).
+      const pend = (s.ask || []).find(x => x.kind !== 'manual');
+      const who = pend ? (pend.pid === KEY ? 'you' : nameOf(pend.pid)) : null;
+      return h('div', { class: 'prio' }, h('div', { class: 'ptext' }, what + '. ', h('b', null, who ? `Waiting for ${who} to decide${pend.name ? ' about ' + pend.name : ''}…` : 'Putting triggered abilities on the stack…')));
+    }
     const waited = Date.now() - (P.since || 0);
     const passed = P.passed.filter(p => p !== top.ctrl && p !== P.holder).map(p => p === KEY ? 'You' : nameOf(p));
     const hp = s.players[P.holder];
@@ -902,6 +908,7 @@
     }
     const hp = s.players[P.holder];
     const waited = Date.now() - (P.since || 0);
+    if (!P.holder) return h('div', { class: 'prio' }, h('div', { class: 'ptext' }, what + '. ', h('b', null, 'One moment…')));
     return h('div', { class: 'prio' }, h('div', { class: 'ptext' }, what + '. ', h('b', null, `Waiting for ${nameOf(P.holder)}${hp && hp.ai ? ' (AI)' : ''}…`)),
       s.turn.active === KEY && !endStep && (waited > 30000 || (hp && !hp.online)) ? h('button', { onclick: () => G.act({ type: 'resolveNow' }) }, 'Go to damage') : null);
   }
@@ -1769,6 +1776,25 @@
     if (t.k === 'look') {
       G.toast(`${t.src}: ${String(t.text || '').replace(/^./, m => m.toUpperCase())}`, 'info');
       lookModal('look', t.n || 1, () => { ack(); setTimeout(pumpAsks, 50); });
+      return;
+    }
+    // "You may put a land card from your hand onto the battlefield" / "Return a creature card from your graveyard to your hand".
+    if (t.k === 'fromHand' || t.k === 'fromGy') {
+      const n = t.n || 1, sel = []; let done = false;
+      const want = String(t.filter || 'card').replace(/ cards?$/, '').trim();
+      const fits = c => want === 'card' || CD.matchesWhat(c, want);
+      const pool = t.k === 'fromHand' ? G.P.hand.map(c => handCard(c)).filter(fits) : Object.values(S().cards).filter(c => c.zone === 'graveyard' && c.owner === KEY && fits(c));
+      if (!pool.length) { G.toast(`${t.src}: you have no ${want} card ${t.k === 'fromHand' ? 'in your hand' : 'in your graveyard'}.`, 'info'); ack(); return pumpAsks(); }
+      const dest = t.k === 'fromHand' ? 'battlefield' : t.dest;
+      const finish = async ids => {
+        if (done) return; done = true; closeModal(true);
+        if (ids.length) { if (t.k === 'fromHand') await G.fromHand(ids, 'battlefield', { tapped: t.tapped }); else await G.move(ids, dest, null, dest === 'battlefield' && t.tapped ? { tapped: true } : null); }
+        ack(); setTimeout(pumpAsks, 50);
+      };
+      openModal(`${t.src}: put ${n > 1 ? 'up to ' + n + ' × ' : (/^[aeiou]/.test(want) ? 'an ' : 'a ')}${want} card ${t.k === 'fromHand' ? 'from your hand' : 'from your graveyard'} ${dest === 'hand' ? 'into your hand' : 'onto the battlefield' + (t.tapped ? ' tapped' : '')}`, b => {
+        b.append(h('div', { class: 'strip pick' }, pool.map(c => cardEl(c, { noMenu: true, cls: sel.includes(c.id) ? 'sel' : '', onClick: () => { const i = sel.indexOf(c.id); if (i >= 0) sel.splice(i, 1); else if (sel.length < n) sel.push(c.id); refreshModal(); } }))));
+        b.append(h('div', { class: 'row' }, h('button', { class: 'primary', disabled: !sel.length, onclick: () => finish(sel.slice()) }, `Put ${sel.length || ''} ${dest === 'hand' ? 'into your hand' : 'onto the battlefield'}`), h('button', { onclick: () => finish([]) }, 'None')));
+      }, { live: true, cls: 'wide', sticky: true, noEsc: true });
       return;
     }
     if (t.k === 'discard' || t.k === 'sacrifice' || t.k === 'returnOwn') {

@@ -797,6 +797,10 @@
             remember(); sba(s, notes); for (const n of notes) log(s, null, n, 'auto'); s.rev++; return { ok: true };
           }
           if (!top) return { ok: true };
+          // A "you may" on top is still being answered: that player's choice comes first (it times out after 2 minutes).
+          const mayAsk = (s.ask || []).find(x => x.kind === 'may' && x.item === top.id);
+          if (mayAsk) return { ok: false, err: mayAsk.pid === pid ? `First answer whether to use ${mayAsk.name}.` : `${nameOf(s, mayAsk.pid)} is deciding whether to use ${mayAsk.name}.` };
+          if ((s.tq || []).length) return { ok: false, err: 'Triggered abilities are still being put on the stack.' };
           const waited = P ? Date.now() - (P.since || 0) : 1e9;
           // The spell's own controller may skip the wait (a casual-table shortcut); anyone else waits 45 seconds.
           if (P && live(s, P.holder) && waited < 45000 && top.ctrl !== pid) return { ok: false, err: `${nameOf(s, P.holder)} is still deciding. You can resolve it yourself after 45 seconds.` };

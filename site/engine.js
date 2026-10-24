@@ -196,7 +196,9 @@
   function place(s, notes) {
     if (!s.tq || !s.tq.length) return 0;
     const R = I(), T = s.turn;
-    if ((s.ask || []).some(x => x.kind === 'targets' || x.kind === 'modes' || x.kind === 'order')) return 0;
+    // Nobody gets priority while triggered abilities are waiting to go on the stack (117.2a, 603.3).
+    const wait = () => { if (s.prio) s.prio.holder = null; return 0; };
+    if ((s.ask || []).some(x => x.kind === 'targets' || x.kind === 'modes' || x.kind === 'order')) return wait();
     const order = R.rotate(s, T.active || s.seats[0]);
     s.tq.sort((a, b) => (order.indexOf(a.ctrl) - order.indexOf(b.ctrl)) || (a.ord != null && b.ord != null ? a.ord - b.ord : 0));
     // Several triggers of one human player at once: they may pick the order (603.3b). Ask once.
@@ -206,7 +208,7 @@
       if (list.length > 1 && !isAI(s, pid) && R.live(s, pid) && new Set(list.map(q => q.effect)).size > 1) {
         list.forEach((q, k) => { q.ordered = true; q.ord = k; });
         s.ask = (s.ask || []).concat([{ id: 'a' + (++s.seq), kind: 'order', pid, items: list.map(q => ({ id: q.id, name: q.name, text: q.effect })), since: Date.now() }]);
-        return 0;
+        return wait();
       }
       for (const q of list) q.ordered = true;
     }
@@ -220,7 +222,8 @@
       if (prep === 'drop') { notes.push(`${q.name}’s triggered ability was removed from the stack — it has no legal target (603.3d)`); continue; }
       pushStack(s, q, prep, notes); placed++;
     }
-    if (placed) R.startPrio(s, null, notes);
+    if (s.tq.length) return wait() || placed;
+    if (placed || (s.prio && !s.prio.holder && R.stackTop(s))) R.startPrio(s, null, notes);
     return placed;
   }
   // Targets (and modes) are chosen as the ability is put on the stack.
@@ -407,7 +410,12 @@
       if (!w) return [];
       switch (w.k) {
         case 'self': return src && s.cards[src.id] ? [s.cards[src.id]] : [];
-        case 'ev': { const c = s.cards[ctx.c]; return c ? [c] : []; }
+        case 'ev': {
+          const c = s.cards[ctx.c]; if (c) return [c];
+          // A spell has no triggering object: "that creature" / "it" is the card it targeted.
+          for (let k = legal.length - 1; k >= 0; k--) { const l = (legal[k] || []).map(tcard).filter(Boolean); if (l.length) return l; }
+          return [];
+        }
         case 'attached': { const c = s.cards[src.attachedTo]; return c ? [c] : []; }
         case 't': return (legal[w.i] || []).map(tcard).filter(Boolean);
         case 'each': case 'eachOppAndCreatures': case 'everything': {
@@ -606,6 +614,15 @@
           }
           break;
         }
+        case 'gainControl': {
+          for (const c of cards(o.what)) {
+            if (c.zone !== 'battlefield' || c.ctrl === by) continue;
+            const prev = c.ctrl; c.ctrl = by; c.ctlT = s.turn.n; c.seq = ++s.seq;
+            if (o.eot) badge(c, { label: 'borrowed', until: 'eot', control: prev });
+            notes.push(`${nameOf(s, by)} gained control of ${cardName(c)}${o.eot ? ' until end of turn' : ''} (${srcName})`);
+          }
+          break;
+        }
         case 'animate': {
           // "becomes a 3/3 Elemental creature with haste until end of turn", crewed Vehicles (205.1b keeps its other types).
           for (const c of cards(o.what)) {
@@ -625,7 +642,7 @@
         }
         case 'cascade': R.todo(s, by, { k: 'cascade', mv: ctx.mv || (+((item.d || {}).cmc) || 0), src: srcName }); notes.push(`${srcName}: cascade (${nameOf(s, by)} reveals until a cheaper nonland card)`); break;
         case 'poison': { const n = val(o.n); for (const p of players(o.who)) { const P = s.players[p]; if (P) P.poison = (P.poison || 0) + n; } notes.push(`${R.listNames(players(o.who).map(p => nameOf(s, p)))} got ${n} poison counter${n > 1 ? 's' : ''} (${srcName})`); break; }
-        case 'doublePT': for (const c of cards(o.what)) { const v = C.pt(s, c) || [0, 0]; c.mod = [(c.mod ? c.mod[0] : 0) + v[0], (c.mod ? c.mod[1] : 0) + v[1]]; badge(c, { label: `+${v[0]}/+${v[1]}`, until: 'eot' }); } notes.push(`${srcName} doubled power and toughness until end of turn`); break;
+        case 'doublePT': for (const c of cards(o.what)) { const v = C.pt(s, c) || [0, 0]; if (o.powerOnly) v[1] = 0; c.mod = [(c.mod ? c.mod[0] : 0) + v[0], (c.mod ? c.mod[1] : 0) + v[1]]; badge(c, { label: `+${v[0]}/+${v[1]}`, until: 'eot' }); } notes.push(`${srcName} doubled ${o.powerOnly ? 'power' : 'power and toughness'} until end of turn`); break;
         case 'biggest': {
           for (const p of players(o.who)) {
             const cs = Object.values(s.cards).filter(c => c.zone === 'battlefield' && c.ctrl === p && (c.faceDown || R.isType(c, 'creature')));
@@ -653,6 +670,8 @@
         case 'attach': { const at = src && s.cards[src.id], t = cards(o.to)[0]; if (at && t && at.zone === 'battlefield') { at.attachedTo = t.id; notes.push(`${cardName(at)} is now attached to ${cardName(t)}`); } break; }
         case 'extraLand': { const T = s.turn; T.extraLand = T.extraLand || {}; T.extraLand[by] = (T.extraLand[by] || 0) + (o.n || 1); notes.push(`${nameOf(s, by)} may play an additional land this turn`); break; }
         case 'roll': { const r = 1 + Math.floor(Math.random() * o.d); st.last = r; notes.push(`${nameOf(s, by)} rolled a d${o.d}: ${r} (${srcName})`); break; }
+        case 'fromHand': R.todo(s, by, { k: 'fromHand', n: val(o.n), filter: o.filter, tapped: !!o.tapped, src: srcName }); break;
+        case 'fromGy': R.todo(s, by, { k: 'fromGy', n: val(o.n), filter: o.filter, dest: o.dest || 'hand', tapped: !!o.tapped, src: srcName }); break;
         case 'bounceOwn': R.todo(s, by, { k: 'returnOwn', n: 1, what: o.what, src: srcName }); break;
         case 'pay': { st.did = pay(o.cost); notes.push(st.did ? `${nameOf(s, by)} paid ${o.cost} (${srcName})` : `${nameOf(s, by)} couldn’t pay ${o.cost} (${srcName})`); break; }
         case 'modes': { let off = 0; for (const mi of (opt.mode || [0])) { const md = o.modes[mi]; if (!md) continue; runList(md.ops, off); off += md.nTargets || 0; } break; }
@@ -807,6 +826,7 @@
         if (b.until && b.until !== 'eot') { keep.push(b); continue; }
         if (b.counter && c.counters && c.counters[b.counter]) { c.counters[b.counter]--; if (!c.counters[b.counter]) delete c.counters[b.counter]; }
         if (b.animate) { c.animated = null; c.animPT = null; if (c.zone === 'battlefield') c.row = I().rowFor(c); }
+        if (b.control && c.zone === 'battlefield' && s.players[b.control]) { c.ctrl = b.control; c.ctlT = s.turn.n; c.seq = ++s.seq; }
       }
       c.eot = keep.length ? keep : null;
     }

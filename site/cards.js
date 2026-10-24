@@ -535,7 +535,7 @@
   const MW_SKIP = new Set(['you', 'control', 'controls', 'your', 'opponent', 'opponents', 'the', 'with', 'card', 'spell', 'attacking', 'blocking', 'tapped', 'untapped', 'that', 'this', 'and', 'from', 'graveyard', 'hand', 'library', 'battlefield', 'player', 'each', 'another', 'target', 'power', 'toughness', 'mana', 'value', 'less', 'greater', 'equal', 'than', 'or', 'any', 'number', 'other', 'face-down', 'face-up', 'nontoken', 'non', 'don\'t', 'doesn\'t', 'without', 'flying', 'reach', 'trample', 'haste', 'counter', 'counters', 'on', 'it', 'its', 'of', 'in', 'under', 'commander', 'historic', 'outlaw', 'party', 'enter', 'enters', 'die', 'dies']);
   function matchesWhat(c, what) {
     const alts = String(what || 'permanent').toLowerCase().replace(/\b(a|an|one|two|other)\b/g, ' ').split(/\s+or\s+|,\s*/);
-    const is = k => k === 'permanent' ? true : k === 'token' ? !!c.token : (k === 'creature' && c.faceDown) || isType(c, k);
+    const is = k => k === 'permanent' ? (c.zone === 'battlefield' || !(isType(c, 'instant') || isType(c, 'sorcery'))) : k === 'token' ? !!c.token : (k === 'creature' && c.faceDown) || isType(c, k);
     return alts.some(alt => alt.trim().split(/\s+/).filter(Boolean).every(w0 => {
       const w = w0.replace(/(elv|dwarv|wolv)es$/, m => m.slice(0, -3) + 'f').replace(/ies$/, 'y').replace(/s$/, '');
       const neg = /^non-?/.test(w) && w.length > 4; const k = neg ? w.replace(/^non-?/, '') : w;
