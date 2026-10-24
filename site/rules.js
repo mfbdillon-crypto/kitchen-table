@@ -295,7 +295,7 @@
             if (s.seats.length >= MAX_SEATS) return { ok: false, err: 'The table is full (6 players).' };
             if (!s.hostPid || !s.players[s.hostPid]) s.hostPid = s.seats.find(p => s.players[p] && !s.players[p].ai) || (a.ai ? null : pid);
             s.players[pid] = newPlayer(a.name);
-            if (a.ai && typeof a.ai === 'object') s.players[pid].ai = { skill: ['easy', 'normal', 'hard'].includes(a.ai.skill) ? a.ai.skill : 'normal', by: String(a.ai.by || '').slice(0, 40) };
+            if (a.ai && typeof a.ai === 'object') s.players[pid].ai = { skill: ['easy', 'normal', 'hard'].includes(a.ai.skill) ? a.ai.skill : 'normal', by: String(a.ai.by || '').slice(0, 40), v: a.ai.v === 2 ? 2 : 1 };
             s.seats.push(pid);
             return done(s.players[pid].ai ? `(an AI player, ${s.players[pid].ai.skill}) sat down at the table` : 'sat down at the table');
           }
@@ -1054,6 +1054,8 @@
           if (!me.ai && a.restore) me.ai = { skill: 'normal', by: String(a.by || '').slice(0, 40) };
           if (!me.ai) return { ok: false, err: 'Only an AI player can do that.' };
           if (['easy', 'normal', 'hard'].includes(a.skill)) me.ai.skill = a.skill;
+          // v2: the planning AI answers the table's questions itself (targets, "you may", order…) instead of taking defaults.
+          if (a.v === 2) me.ai.v = 2;
           s.rev++; return { ok: true };
         }
         default: return { ok: false, err: 'Unknown action.' };
@@ -1182,8 +1184,18 @@
       if (T.phase < PI('Main 1')) T.phase = PI('Main 1');     // playing a land in upkeep/draw just moves you to your main phase
       else return 'You can play a land only in one of your main phases.';
     }
-    if ((T.lands && T.lands[pid] || 0) >= 1) return 'You can only play one land per turn. If you need a second land, use the Move to option.';
+    // 305.2: one land per turn, plus "you may play an additional land" effects (Aesi, Azusa, Exploration, Explore…).
+    if ((T.lands && T.lands[pid] || 0) >= 1 + extraLands(s, pid)) return extraLands(s, pid) ? `You've played all ${1 + extraLands(s, pid)} lands you may play this turn.` : 'You can only play one land per turn. If you need a second land, use the Move to option.';
     return null;
+  }
+  function extraLands(s, pid) {
+    const C = root.Cards; let n = (s.turn.extraLand && s.turn.extraLand[pid]) || 0;
+    if (C) for (const c of Object.values(s.cards)) {
+      if (c.zone !== 'battlefield' || c.ctrl !== pid || c.faceDown) continue;
+      const m = C.text(c).toLowerCase().match(/you may play (an|two|three) additional lands? on each of your turns/);
+      if (m) n += { an: 1, two: 2, three: 3 }[m[1]];
+    }
+    return n;
   }
   function cleanTargets(tg, n) {
     const out = [];
@@ -1686,5 +1698,5 @@
     clearMods, cleanTargets, wardFor, targetText, sick, combatDamage: (s, n) => combatDamage(s, n) };
   root.Rules = { _int, PHASES, ROWS, PUBLIC_ZONES, KEYWORD_COUNTERS, SUGGESTED_COUNTERS, MAX_SEATS, START_LIFE,
     newState, apply, canAct, zoneCards, cardName, typeLine, isType, face, rowFor, ptOf, rid, listNames, nameOf,
-    stackCards, stackTop, sick, alive, fixUp: (s) => { const key = () => JSON.stringify([s.prio && [s.prio.holder, s.prio.top, s.prio.passed.length], s.combat && s.combat.done, stackCards(s).length, (s.ask || []).length, (s.tq || []).length, s.turn && [s.turn.phase, s.turn.n]]); const before = key(); const notes = []; if (root.Engine && s.turn && s.turn.active) { root.Engine.begin(s); try { root.Engine.timeouts(s, notes); } catch (e) {} } fixUp(s, notes); if (root.Engine && s.turn && s.turn.active) { try { root.Engine.after(s, notes); } catch (e) { if (typeof console !== 'undefined') console.error(e); } } for (const n of notes) log(s, null, n, 'auto'); return notes.length > 0 || key() !== before; }, landCheck: (s, pid) => landCheck(JSON.parse(JSON.stringify(s)), pid), PI };
+    stackCards, stackTop, sick, alive, fixUp: (s) => { const key = () => JSON.stringify([s.prio && [s.prio.holder, s.prio.top, s.prio.passed.length], s.combat && s.combat.done, stackCards(s).length, (s.ask || []).length, (s.tq || []).length, s.turn && [s.turn.phase, s.turn.n]]); const before = key(); const notes = []; if (root.Engine && s.turn && s.turn.active) { root.Engine.begin(s); try { root.Engine.timeouts(s, notes); } catch (e) {} } fixUp(s, notes); if (root.Engine && s.turn && s.turn.active) { try { root.Engine.after(s, notes); } catch (e) { if (typeof console !== 'undefined') console.error(e); } } for (const n of notes) log(s, null, n, 'auto'); return notes.length > 0 || key() !== before; }, landCheck: (s, pid) => landCheck(JSON.parse(JSON.stringify(s)), pid), extraLands: (s, pid) => extraLands(s, pid), PI };
 })(typeof window !== 'undefined' ? window : globalThis);

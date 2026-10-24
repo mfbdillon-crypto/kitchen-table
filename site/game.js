@@ -293,8 +293,9 @@
   G.playLand = async function (id, tapped) {
     const c = P.hand.find(x => x.id === id); if (!c) return { ok: false };
     const T = G.S && G.S.turn;
-    if (T && T.active === KEY && (T.lands && T.lands[KEY] || 0) >= 1) {
-      const err = 'You can only play one land per turn. If you need a second land, use the Move to option.';
+    const lerr = T && T.active === KEY && R.landCheck ? R.landCheck(G.S, KEY) : null;
+    if (lerr && /lands? per turn|lands you may play/.test(lerr)) {
+      const err = lerr;
       G.toast(err, 'err'); if (G.phoneLinked) phoneBanner(err); G.render();
       return { ok: false, err };
     }

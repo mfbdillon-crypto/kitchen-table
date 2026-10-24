@@ -31,7 +31,8 @@
   function snap(c) { return Object.assign({}, c, { counters: Object.assign({}, c.counters || {}), wasCre: !!(c.faceDown || (I() && I().isType(c, 'creature'))), pw: (Cd() && Cd().pt(null, c) || [0, 0])[0] }); }
   function cardName(c) { return I().cardName(c); }
   function nameOf(s, p) { return I().nameOf(s, p); }
-  const isAI = (s, p) => !!(s.players[p] && s.players[p].ai);
+  // The old AI takes the table's default choices; the planning AI (ai.v === 2) is asked like a person.
+  const isAI = (s, p) => !!(s.players[p] && s.players[p].ai && s.players[p].ai.v !== 2);
   const norm = t => String(t || '').toLowerCase().replace(/[^a-z0-9+/]+/g, ' ').trim();
 
   // ======================= finding triggers =======================
@@ -116,12 +117,32 @@
           if (a.oncePerTurn) { T.once = T.once || {}; const k = src.id + '#' + i; if (T.once[k] === T.n) return; T.once[k] = T.n; }
           const cond = a.condition ? O().conditionHolds(s, src, a.condition) : true;
           if (cond === false) return;
-          queue(s, src, a, i, ev, cond === null);
-          found++;
+          const times = triggerTimes(s, src, ev);
+          for (let k = 0; k < times; k++) { queue(s, src, a, i, ev, cond === null); found++; }
         });
       }
     }
     return place(s, notes);
+  }
+  // Teysa Karlov, Panharmonicon, Yarok, Elesh Norn (Mother of Machines), Isshin: some events make triggered abilities
+  // trigger an additional time (or not at all, for an opponent's Elesh Norn).
+  function triggerTimes(s, src, ev) {
+    const C = Cd(), R = I(); if (!C) return 1;
+    const ctrl = src.ctrl;
+    let n = 1;
+    const ent = ev.type === 'enter' && ev.card;
+    for (const c of Object.values(s.cards)) {
+      if (c.zone !== 'battlefield' || c.faceDown || !c.d) continue;
+      const t = C.text(c).toLowerCase();
+      if (!/additional time|don't cause abilities/.test(t)) continue;
+      if (c.ctrl === ctrl) {
+        if (ev.type === 'die' && /if a creature dying causes a triggered ability of a permanent you control to trigger/.test(t)) n++;
+        if (ent && /if an artifact or creature entering the battlefield causes a triggered ability of a permanent you control to trigger/.test(t) && (R.isType(ent, 'artifact') || R.isType(ent, 'creature'))) n++;
+        if (ent && /(?:if a permanent entering the battlefield causes|permanents entering the battlefield cause) (?:a )?triggered abilit(?:y|ies) of (?:a )?permanents? you control to trigger/.test(t)) n++;
+        if (ev.type === 'attack' && /if a creature attacking causes a triggered ability of a permanent you control to trigger/.test(t)) n++;
+      } else if (ent && /permanents entering the battlefield don't cause abilities of permanents your opponents control to trigger/.test(t)) return 0;
+    }
+    return Math.min(n, 4);
   }
   // Sagas: a lore counter as your precombat main phase begins (714.3b).
   function loreUp(s, pid, evs) {
@@ -232,18 +253,25 @@
     const a = abilityOf(q); if (!a) return 'drop';
     const ops = a.ops || [];
     const mo = ops.find(o => o.op === 'modes');
+    // "Choose one that hasn't been chosen this turn" (Monument to Endurance and friends).
+    const onceTurn = mo && /hasn't been chosen this turn/i.test(String(q.text || '') + ' ' + String(q.effect || ''));
+    const T = s.turn;
+    if (onceTurn) { T.modeUsed = T.modeUsed && T.modeUsed.n === T.n ? T.modeUsed : { n: T.n }; }
+    const off = onceTurn ? (T.modeUsed[q.src] || []) : [];
     if (mo && q.mode == null) {
       const max = typeof mo.choose === 'number' ? mo.choose : mo.choose.max;
       const min = typeof mo.choose === 'number' ? mo.choose : mo.choose.min;
+      if (onceTurn && off.length >= mo.modes.length) return 'drop';
       if (isAI(s, q.ctrl) || q.timeout) {
         // Pick the first mode(s) that can actually do something.
-        const okModes = mo.modes.map((md, k) => k).filter(k => { const reqs = C.targetsIn(mo.modes[k].text); return reqs.every(r => r.upTo || C.targetChoices(s, r, q.ctrl).length); });
-        q.mode = (okModes.length ? okModes : [0]).slice(0, Math.max(1, min));
+        const okModes = mo.modes.map((md, k) => k).filter(k => !off.includes(k)).filter(k => { const reqs = C.targetsIn(mo.modes[k].text); return reqs.every(r => r.upTo || C.targetChoices(s, r, q.ctrl).length); });
+        q.mode = (okModes.length ? okModes : mo.modes.map((md, k) => k).filter(k => !off.includes(k))).slice(0, Math.max(1, min));
       } else {
-        s.ask = (s.ask || []).concat([{ id: 'a' + (++s.seq), kind: 'modes', pid: q.ctrl, q: q.id, name: q.name, modes: mo.modes.map(md => md.text), min, max, since: Date.now() }]);
+        s.ask = (s.ask || []).concat([{ id: 'a' + (++s.seq), kind: 'modes', pid: q.ctrl, q: q.id, name: q.name, modes: mo.modes.map(md => md.text), off, min, max, since: Date.now() }]);
         return 'ask';
       }
     }
+    if (onceTurn && q.mode && !q.modeRec) { q.modeRec = true; T.modeUsed[q.src] = off.concat(q.mode); }
     const text = mo ? q.mode.map(k => mo.modes[k] && mo.modes[k].text).filter(Boolean).join('. ') : q.effect;
     const reqs = C.targetsIn(text || '');
     if (!reqs.length) return { tg: [], reqs: [] };
@@ -728,7 +756,7 @@
     }
     if (ask.kind === 'modes') {
       const q = (s.tq || []).find(x => x.id === ask.q); if (!q) return { ok: true };
-      const pick = [...new Set((Array.isArray(a.modes) ? a.modes : [0]).map(x => x | 0).filter(x => x >= 0 && x < ask.modes.length))];
+      const pick = [...new Set((Array.isArray(a.modes) ? a.modes : [0]).map(x => x | 0).filter(x => x >= 0 && x < ask.modes.length && !(ask.off || []).includes(x)))];
       if (pick.length < ask.min || pick.length > ask.max) { s.ask.push(ask); return { ok: false, err: `Choose ${ask.min === ask.max ? ask.min : ask.min + '–' + ask.max} mode${ask.max > 1 ? 's' : ''}.` }; }
       q.mode = pick;
       place(s, notes); return { ok: true };

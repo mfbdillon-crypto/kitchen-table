@@ -960,7 +960,7 @@
   function askModes(a) {
     const sel = [];
     openAskModal(a, `${a.name} — choose ${a.min === a.max ? (a.min === 1 ? 'one' : a.min) : a.min + ' to ' + a.max}`, b => {
-      b.append(h('div', { class: 'modes' }, a.modes.map((m, i) => h('button', { class: 'mode' + (sel.includes(i) ? ' on' : ''), onclick: () => {
+      b.append(h('div', { class: 'modes' }, a.modes.map((m, i) => h('button', { class: 'mode' + (sel.includes(i) ? ' on' : ''), disabled: (a.off || []).includes(i), title: (a.off || []).includes(i) ? 'Already chosen this turn' : '', onclick: () => {
         if (sel.includes(i)) sel.splice(sel.indexOf(i), 1); else if (sel.length < a.max) sel.push(i);
         if (a.max === 1 && sel.length === 1) { closeModal(true); answer(a, { modes: sel.slice() }); setTimeout(pumpAsks, 50); return; }
         refreshModal();
@@ -1058,6 +1058,7 @@
       R.stackTop(s) ? h('button', { class: 'chip', onclick: () => G.act({ type: 'resolveNow', as: R.stackTop(s).ctrl }) }, 'Resolve top of stack') : null,
       R.stackTop(s) ? h('button', { class: 'chip', onclick: () => { const t = R.stackTop(s); if (t.ab || t.token) G.act({ type: 'removeToken', ids: [t.id], as: t.ctrl }); else G.act({ type: 'move', ids: [t.id], to: 'graveyard', as: t.ctrl }); } }, 'Remove top of stack') : null,
       s.turn.active ? h('button', { class: 'chip', onclick: () => G.act({ type: 'phase', dir: 'pass', dev: true, as: s.turn.active }) }, 'Next turn') : null,
+      Object.keys(aiFrames).length ? h('button', { class: 'chip' + (G.aiPlanOpen ? ' set' : ''), title: 'What each AI plans, holds back and has done — with every change of plan', onclick: () => { G.aiPlanOpen = !G.aiPlanOpen; render(); } }, 'AI plans') : null,
       h('button', { class: 'chip', onclick: () => G.act({ type: 'dev', on: false }) }, 'Turn off'));
   }
   function devPlayerModal(pid) {
@@ -1647,39 +1648,67 @@
     G.toast(`${name} is sitting down…`, 'info');
   };
   const aiOf = pid => myAIs().find(a => a.pid === pid);
-  const SKILLS = [['easy', 'Easy', 'Plays loosely, never responds to your spells, blocks at random.'], ['normal', 'Normal', 'Plays on curve, sensible attacks and blocks, sometimes counters big spells.'], ['hard', 'Hard', 'Looks for lethal, holds up answers, careful trades and blocks.']];
+  const SKILLS = [['easy', 'Easy', 'Plans a few turns ahead, holds nothing back, and makes a not-best play now and then.'], ['normal', 'Normal', 'Plans its win over ten turns with backups, holds up answers, picks attacks and blocks carefully.'], ['hard', 'Hard', 'Full ten-turn plan with five backups, reads open mana for tricks, never misplays on purpose.']];
+  // The AI plays the ready-made decks (and the test decks) — it has a saved game plan for each of them.
+  const aiDecks = () => G.decks().filter(d => d.src && (window.KT_AI_PROFILES || {})[d.src]);
   function addAIModal() {
     if (!G.seated()) return G.toast('Take a seat first.', 'err');
     const used = new Set(S().seats.map(p => S().players[p].name));
     let name = AI_NAMES.find(n => !used.has(n)) || 'AI player';
-    let skill = 'normal', deckId = (G.decks()[0] || {}).id || null, busy = '', preAI = null;
-    const imp = {};
+    let skill = 'normal', deckId = (aiDecks()[0] || {}).id || null, busy = '';
     openModal('Add an AI player', b => {
-      const decks = G.decks();
+      const decks = aiDecks();
       if (deckId && !decks.some(d => d.id === deckId)) deckId = decks[0] && decks[0].id;
       const full = S().seats.length >= R.MAX_SEATS;
-      b.append(h('p', { class: 'muted' }, 'The AI sits at the table like a player: it plays whole turns by itself, follows the rules, responds when it has priority, blocks — and explains what it’s doing in the AI chat, where anyone can ask it questions.'));
+      b.append(h('p', { class: 'muted' }, 'The AI sits at the table like a player: it reads its commander and yours, plans how to win, holds up answers on your turn, and follows the rules. It stays quiet — ask it questions in the AI chat.'));
       const nm = h('input', { type: 'text', id: 'ainame', maxlength: '20', value: name, oninput: e => name = e.target.value });
       b.append(h('div', { class: 'row' }, h('b', null, 'Name'), nm));
-      b.append(h('h4', null, 'Skill'), h('div', { class: 'skills' }, SKILLS.map(([k, l, d]) => h('button', { class: 'skill' + (skill === k ? ' on' : ''), onclick: () => { skill = k; refreshModal(); } }, h('b', null, l), h('span', null, d)))));
-      b.append(h('h4', null, 'Deck'));
-      if (!decks.length) b.append(h('p', { class: 'muted' }, 'You don’t have any decks yet. Import one below, or in Decks.'));
-      else b.append(h('div', { class: 'aidecks' }, decks.map(d => h('button', { class: 'dk' + (d.id === deckId ? ' on' : ''), onclick: () => { deckId = d.id; refreshModal(); } }, h('img', { src: d.sleeve || BACK, alt: '' }), h('span', null, h('b', null, d.name), h('small', null, `${d.cards.reduce((a, c) => a + c.qty, 0)} cards${d.cards.some(c => c.cmdr) ? ' · ' + d.cards.filter(c => c.cmdr).map(c => c.d.n).join(' & ') : ''}`))))));
-      b.append(h('details', { class: 'predetails', open: (preAI == null ? !decks.length : preAI) || undefined, ontoggle: e => { preAI = e.target.open; } }, h('summary', null, 'Ready-made decks by bracket'), preconPicker(d => { deckId = d.id; refreshModal(); }, msg => { busy = msg; refreshModal(); })));
-      b.append(deckImporter(imp, d => { deckId = d.id; busy = `Imported ${d.name}.`; refreshModal(); }, msg => { busy = msg; refreshModal(); }));
+      b.append(h('h4', null, 'Difficulty'), h('div', { class: 'skills' }, SKILLS.map(([k, l, d]) => h('button', { class: 'skill' + (skill === k ? ' on' : ''), onclick: () => { skill = k; refreshModal(); } }, h('b', null, l), h('span', null, d)))));
+      b.append(h('h4', null, 'Deck'), h('p', { class: 'muted small' }, 'The AI plays the ready-made decks, including the test decks — pick one below.'));
+      if (decks.length) b.append(h('div', { class: 'aidecks' }, decks.map(d => h('button', { class: 'dk' + (d.id === deckId ? ' on' : ''), onclick: () => { deckId = d.id; refreshModal(); } }, h('img', { src: d.sleeve || BACK, alt: '' }), h('span', null, h('b', null, d.name), h('small', null, `${d.cards.reduce((a, c) => a + c.qty, 0)} cards`))))));
+      b.append(h('details', { class: 'predetails', open: !decks.length || undefined }, h('summary', null, 'All ready-made and test decks'), preconPicker(d => { deckId = d.id; refreshModal(); }, msg => { busy = msg; refreshModal(); })));
       if (busy) b.append(h('p', { class: 'muted small immsg' }, busy));
       b.append(h('div', { class: 'row wrap' },
         h('button', { class: 'primary', disabled: !deckId || full || !name.trim(), onclick: () => { const d = G.decks().find(x => x.id === deckId); if (!d) return; closeModal(); G.addAI(name.trim().slice(0, 20), d, skill); G.aiOpen = true; render(); } }, full ? 'The table is full' : 'Add AI player'),
         h('span', { class: 'muted small' }, 'It runs in this browser tab, so keep this tab open while you play.')));
     }, { live: true, cls: 'wide' });
   }
+  // ---- Developer: the AI's plan, saved responses, scenarios and change log (dev mode only; it shows the AI's hand) ----
+  function aiSnap(a) { try { const f = aiFrames[a.id]; return f && f.contentWindow && f.contentWindow.KT && f.contentWindow.KT.aiSnapshot ? f.contentWindow.KT.aiSnapshot() : null; } catch (e) { return null; } }
+  function aiPlanPanel() {
+    const list = myAIs().filter(a => aiFrames[a.id]);
+    if (!list.length) return h('aside', { id: 'log', class: 'aiplan' }, h('header', null, h('h2', null, 'AI plans'), h('button', { class: 'x', onclick: () => { G.aiPlanOpen = false; render(); } }, '✕')), h('p', { class: 'muted' }, 'No AI players run in this tab.'));
+    G.aiPlanTab = list.some(a => a.id === G.aiPlanTab) ? G.aiPlanTab : list[0].id;
+    const a = list.find(x => x.id === G.aiPlanTab), sn = aiSnap(a);
+    const body = h('div', { class: 'loglist aiplanbody', 'data-scroll': 'aiplan' });
+    const sec = (title, ...kids) => h('section', { class: 'aps' }, h('h3', null, title), ...kids);
+    if (!sn || !sn.plan) body.append(h('p', { class: 'muted' }, 'This AI hasn’t made a plan yet (the game hasn’t started).'));
+    else {
+      const p = sn.plan;
+      body.append(h('p', { class: 'apsum' }, h('b', null, sn.deck || '?'), ` · ${sn.arch.join(', ')} · bracket ${sn.bracket} · ${sn.level}`));
+      body.append(sec('Win route', h('p', null, h('b', null, p.route.route), ` in ~${p.route.turns} turns — ${p.route.why}`), h('ul', null, p.routes.slice(1).map(r => h('li', { class: 'muted' }, `${r.route}: ~${r.turns} turns (${r.why})`)))));
+      body.append(sec('Threats to my plan', h('ul', null, p.threats.map(x => h('li', null, h('b', null, x.name), ` ${x.score} — ${x.why}; could kill me in ~${x.clockOnMe} turns`)))));
+      body.append(sec('Reading the opponents', h('ul', null, p.reads.map(r => h('li', null, h('b', null, `${r.name} (${r.cmdr || '?'})`), `: ${r.arch}. Answer on sight: ${r.kill.join(', ') || '—'}. ${r.note || ''}`)))));
+      body.append(sec('Next turns', h('ol', null, p.milestones.map(m => h('li', null, `${m.text} (≈${m.mana} mana)`)))));
+      body.append(sec('This turn', p.steps.length ? h('ul', { class: 'apsteps' }, p.steps.map(x => h('li', { class: x.done ? 'done' : x.failed ? 'fail' : '' }, (x.done ? '✓ ' : x.failed ? '✗ ' : '• ') + x.label, h('span', { class: 'muted' }, ' — ' + x.why)))) : h('p', { class: 'muted' }, 'Not its turn.'),
+        p.hold ? h('p', null, h('b', null, 'Keeping mana for: '), `${p.hold.name} (${p.hold.why})`) : null));
+      body.append(sec('Saved responses (trigger list)', p.responses.length ? h('ul', null, p.responses.map(x => h('li', { class: x.fired ? 'done' : '' }, (x.fired ? '✓ ' : '◦ ') + x.label + (x.skips ? ` (checked ${x.skips}×, not yet)` : '')))) : h('p', { class: 'muted' }, 'Nothing held.')));
+      body.append(sec('Backup scenarios', h('ul', null, p.scenarios.map(x => h('li', null, `${Math.round(x.p * 100)}% · ${x.label}`)))));
+      const turns = Object.entries(sn.turns || {}).slice(-4).reverse();
+      body.append(sec('Planned vs. did', h('ul', null, turns.map(([n, x]) => h('li', null, h('b', null, `Turn ${n}: `), `did ${x.did.length} of ${x.planned.length} planned`, x.failed.length ? h('span', { class: 'bad' }, ' · refused: ' + x.failed.join('; ')) : null, h('div', { class: 'muted small' }, 'planned: ' + x.planned.join('; ')))))));
+    }
+    if (sn) body.append(sec('Change log (newest first)', h('ul', { class: 'aplog' }, sn.log.slice().reverse().slice(0, 120).map(e => h('li', { class: 'k-' + e.kind }, h('time', null, `t${e.turn} ${e.phase}`), ' ', h('b', null, e.kind), ' ', e.text)))));
+    return h('aside', { id: 'log', class: 'aiplan' }, h('header', null, h('h2', null, 'AI plans'), h('button', { class: 'x', onclick: () => { G.aiPlanOpen = false; render(); } }, '✕')),
+      list.length > 1 ? h('div', { class: 'chips' }, list.map(x => h('button', { class: 'chip' + (x.id === G.aiPlanTab ? ' set' : ''), onclick: () => { G.aiPlanTab = x.id; render(); } }, x.name))) : null, body);
+  }
+  setInterval(() => { if (G.aiPlanOpen && S() && S().dev) G.render(); }, 1500);
   function manageAIModal(pid) {
     const a = aiOf(pid); if (!a) return;
     openModal(`${nameOf(pid)} — AI settings`, b => {
       const p = S().players[pid]; if (!p) { b.append(h('p', null, 'That AI left the table.')); return; }
       b.append(h('h4', null, 'Skill'), h('div', { class: 'skills' }, SKILLS.map(([k, l, d]) => h('button', { class: 'skill' + (p.ai && p.ai.skill === k ? ' on' : ''), onclick: () => { aiPost(a.id, { t: 'skill', v: k }); G.toast(`${p.name} will play on ${l}.`); setTimeout(refreshModal, 1500); } }, h('b', null, l), h('span', null, d)))));
       b.append(h('h4', null, 'Deck'), h('p', { class: 'muted small' }, `Playing ${p.deckName || '—'}. Choosing another deck restarts its side of the game.`),
-        h('div', { class: 'aidecks' }, G.decks().map(d => h('button', { class: 'dk' + (d.name === p.deckName ? ' on' : ''), title: d.name === p.deckName ? 'Playing this deck now' : '', onclick: () => { aiPost(a.id, { t: 'deck', deck: d }); G.toast(`${p.name} switches to ${d.name}.`); closeModal(); } }, h('img', { src: d.sleeve || BACK, alt: '' }), h('span', null, h('b', null, d.name))))));
+        h('div', { class: 'aidecks' }, aiDecks().map(d => h('button', { class: 'dk' + (d.name === p.deckName ? ' on' : ''), title: d.name === p.deckName ? 'Playing this deck now' : '', onclick: () => { aiPost(a.id, { t: 'deck', deck: d }); G.toast(`${p.name} switches to ${d.name}.`); closeModal(); } }, h('img', { src: d.sleeve || BACK, alt: '' }), h('span', null, h('b', null, d.name))))));
       b.append(h('div', { class: 'row' }, h('button', { class: 'ghost danger', onclick: () => choose(`Remove ${p.name}?`, `${p.name} leaves the table and its cards go with it.`, [{ label: 'Remove', primary: true, fn: () => { aiPost(a.id, { t: 'remove' }); closeModal(); G.toast(`${p.name} is leaving the table.`); } }, { label: 'Cancel', fn: () => {} }]) }, 'Remove this AI')));
     }, { live: true });
   }
@@ -1694,7 +1723,7 @@
       h('div', { class: 'cmt' }, m.text),
       m.kind === 'a' && m.why && m.why.length ? h('ul', { class: 'why' }, m.why.map(w => h('li', null, w))) : null,
       m.kind === 'say' && m.why && m.why.length && s.players[m.pid] && s.players[m.pid].ai && G.seated() ? h('button', { class: 'ghost small legal' + (lastSay[m.pid] === m.id ? ' latest' : ''), onclick: () => G.act({ type: 'aiAsk', to: m.pid, text: 'Is this legal?', re: m.id }) }, 'Is this legal?') : null))
-      : h('p', { class: 'muted' }, ais.length ? 'The AI explains its moves here.' : 'No AI players yet.'));
+      : h('p', { class: 'muted' }, ais.length ? 'Ask the AI about the rules or a move it made. It keeps its hand and plans to itself.' : 'No AI players yet.'));
     // Follow new messages only while you're reading the latest ones (scrolling up to read stays put).
     let touched = false;
     for (const ev of ['wheel', 'touchstart', 'pointerdown', 'keydown']) list.addEventListener(ev, () => { touched = true; }, { passive: true });
@@ -2555,7 +2584,7 @@
     const view = h('div', { class: 'app' + (G.logOpen || G.aiOpen ? ' withlog' : '') + (COARSE ? ' touch' : '') },
       topBar(), tabsBar(),
       G.targeting ? h('div', { class: 'target' }, `Click the card to attach ${G.targeting.name} to — Esc to cancel `, h('button', { onclick: () => { G.targeting = null; render(); } }, 'Cancel')) : null,
-      main, G.aiOpen ? aiPanel() : logPanel(), handBar(), mulliganPanel());
+      main, G.aiPlanOpen && S().dev && S().hostPid === KEY ? aiPlanPanel() : G.aiOpen ? aiPanel() : logPanel(), handBar(), mulliganPanel());
     const ae = document.activeElement, aeId = ae && ae.id && root.contains(ae) && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) ? ae.id : null;
     const sel = aeId && ae.selectionStart != null ? [ae.selectionStart, ae.selectionEnd] : null;
     root.replaceChildren(view);

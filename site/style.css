@@ -964,3 +964,18 @@ button.small { padding: 3px 9px; font-size: 13px; }
 .asgn b { min-width: 24px; text-align: center; }
 
 .card .tag.chosen { top: 40px; bottom: auto; background: #3a2d10; color: #f3d68a; }
+
+/* AI plan panel (developer debugging) */
+.aiplan .aiplanbody { font-size: 13px; }
+.aiplan .aps { margin: 0 0 10px; }
+.aiplan .aps h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; margin: 8px 0 4px; opacity: .75; }
+.aiplan ul, .aiplan ol { margin: 0; padding-left: 18px; }
+.aiplan li { margin: 2px 0; }
+.aiplan li.done { opacity: .6; }
+.aiplan li.fail, .aiplan .bad { color: #e05555; }
+.aiplan .aplog li { list-style: none; margin-left: -18px; border-bottom: 1px solid rgba(127,127,127,.15); padding: 2px 0; }
+.aiplan .aplog time { opacity: .6; font-size: 11px; }
+.aiplan .aplog .k-mistake b, .aiplan .aplog .k-refused b, .aiplan .aplog .k-error b { color: #e05555; }
+.aiplan .aplog .k-replan b, .aiplan .aplog .k-plan b { color: #4a8fe0; }
+.aiplan .aplog .k-response b { color: #3aa76d; }
+.aiplan .apsum { margin: 4px 0 8px; }
