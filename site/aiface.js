@@ -49,6 +49,7 @@
     fetch: { what: 'Search for basic lands', ai: 'executor.onTodo → colors my hand needs' },
     search: { what: 'Search the library for a card', ai: 'executor.onTodo → missing combo piece, key card, needed color' },
     cascade: { what: 'Cascade / discover N: reveal and maybe cast free (discover: or put it into my hand)', ai: 'executor.onTodo → cast it unless it has no good target' },
+    handToTop: { what: 'Put N cards from my hand on top of my library (Brainstorm)', ai: 'executor.onTodo → brain.worstCards' },
     dig: { what: 'Reveal until N matching cards (Illuna, Auspicious Starrix, The Regalia) → battlefield / hand / either', ai: 'executor.onTodo → battlefield when I may choose' },
     fromHand: { what: 'Put a card from hand onto the battlefield', ai: 'executor.onTodo → best for the plan' },
     fromGy: { what: 'Return a card from my graveyard', ai: 'executor.onTodo → most valuable' }

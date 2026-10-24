@@ -277,7 +277,7 @@
     });
     savePriv();
     const land = cards.every(isLand);
-    const r = await act({ type: 'enter', zone, from, cards: send, tapped: !!opts.tapped, pos: opts.pos, row: opts.row, land: !!opts.playLand, tg: opts.tg, mode: opts.mode, x: opts.x, wardPaid: !!opts.wardPaid, fromPool: opts.fromPool, cast: !!opts.cast, alt: opts.alt, via: opts.via, msg: msgFor(zone, Object.assign({ land }, opts), from) });
+    const r = await act({ type: 'enter', zone, from, cards: send, tapped: !!opts.tapped, pos: opts.pos, row: opts.row, land: !!opts.playLand, tg: opts.tg, mode: opts.mode, x: opts.x, wardPaid: !!opts.wardPaid, fromPool: opts.fromPool, cast: !!opts.cast, alt: opts.alt, via: opts.via, sacCost: opts.sacCost, msg: msgFor(zone, Object.assign({ land }, opts), from) });
     if (r.ok) lastAct = { zone, ids, t: Date.now() };
     if (!r.ok) {
       // Only put the cards back if the table really refused. If we just never heard back, look at the board:
@@ -327,10 +327,11 @@
     const n = Math.max(1, t.n || 1), want = String(t.what || 'card');
     const fits = c => !c.d ? false : want === 'card' || window.Cards.matchesWhat(Object.assign({ zone: 'library', owner: KEY, counters: {}, face: 0 }, c), want);
     const hits = [], rest = [];
-    for (const c of P.library) { if (hits.length >= n) break; if (fits(c)) hits.push(c.id); else rest.push(c.id); }
+    for (const c of P.library) { if (hits.length >= n) break; if (fits(c)) hits.push(c.id); else if (!t.top) rest.push(c.id); if (t.top) break; }
     return { hits, rest, names: hits.map(id => (P.library.find(c => c.id === id) || {}).d).filter(Boolean).map(d => d.n) };
   };
   G.digFinish = async function (t, hits, rest, dest) {
+    if (t.top && !hits.length) { if (dest === 'bottom' && P.library.length) { P.library.push(P.library.shift()); savePriv(); log(`${t.src}: put the top card of their library on the bottom`); } else log(`${t.src}: the top card stays`); return; }
     if (t.rest === 'bottom') { const r = take(P.library, rest); shuffle(r); P.library.push(...r); savePriv(); }
     else if (rest.length) await G.fromLibrary(rest, 'exile', {});
     if (!hits.length) { log(`${t.src}: revealed ${plural(rest.length, 'card')} and found nothing`); return; }

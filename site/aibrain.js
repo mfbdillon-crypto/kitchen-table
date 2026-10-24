@@ -436,6 +436,15 @@
     if (perm && /aura/i.test(Rr.typeLine(card)) && Cd.targetReqs(card, mode).some(r => r.gy || /graveyard/.test(r.text || ''))) return null;
     const cost = this.costOf(card);
     const srcs = extra.sources || this.sources();
+    // Additional sacrifice cost: the least useful permanent of that kind (never the commander or a key card).
+    let sacCost;
+    const sc = Cd.sacCost && Cd.sacCost(card);
+    if (sc) {
+      const fod = this.bf(this.me).filter(c => Cd.matchesWhat(c, sc) && !c.cmdr && !this.isKey(c) && !(R().isType(c, 'land') && this.bf(this.me).filter(x => R().isType(x, 'land')).length <= 4));
+      const f = this.worstPermanents(fod, 1)[0];
+      if (!f || (!f.token && this.value(f) > 6 && !this.profile.arch.includes('aristocrats'))) return null;
+      sacCost = [f.id];
+    }
     let x = 0;
     if (cost.x) { x = Math.max(0, Math.floor((this.manaNow(srcs) - Cd.costTotal(cost, 0)) / cost.x)); if (x < 1) return null; }
     // "As an additional cost to cast this spell, pay X life" (Toxic Deluge): enough to kill what matters, never below 8 life.
@@ -461,8 +470,10 @@
     if (this.selfHarm(eff, x, card) >= this.life(this.me) - 3) return null;
     const mana = Cd.costTotal(cost, x) + wardMana;
     const o = { card, id: card.id, name: Rr.cardName(card), mode, eff, x, pay, tg: t.tg, reqs: t.reqs, desc: t.desc, cost, mana, roles: rl, perm, when,
-      wardPaid: t.tg.flat().some(q => q.c && s.cards[q.c] && s.cards[q.c].ctrl !== this.me && this.kw(s.cards[q.c]).has('ward')), from: card.zone };
+      wardPaid: t.tg.flat().some(q => q.c && s.cards[q.c] && s.cards[q.c].ctrl !== this.me && this.kw(s.cards[q.c]).has('ward')), from: card.zone, sacCost };
+    if (sacCost && t.tg.flat().some(q => q.c === sacCost[0])) return null;
     o.score = this.scoreOption(o);
+    if (sacCost) { const f = s.cards[sacCost[0]]; o.score -= f ? this.value(f) * (this.profile.arch.includes('aristocrats') ? 0.2 : 0.6) : 0; o.desc = o.desc.concat(['sacrificing ' + (f ? Rr.cardName(f) : '?')]); }
     return o;
   };
   // Mutate (702.140): cast it for its mutate cost onto a non-Human creature I own — it keeps every ability and fires

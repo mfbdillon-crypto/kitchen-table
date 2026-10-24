@@ -762,7 +762,20 @@
       if (ans == null) return;
       wardPaid = ans;
     }
-    const opts = { tg, mode: mode || undefined, x: x || undefined, wardPaid: wardPaid || undefined, alt: alt ? alt.kind : undefined };
+    // Additional sacrifice cost (Village Rites, Bone Splinters, Harrow): choose what to sacrifice.
+    let sacCost;
+    const sc = CD.sacCost && CD.sacCost(card);
+    if (sc) {
+      const ok = Object.values(S().cards).filter(o => o.zone === 'battlefield' && o.ctrl === KEY && CD.matchesWhat(o, sc));
+      if (!ok.length) { G.toast(`${R.cardName(card)} needs you to sacrifice ${/^[aeiou]/.test(sc) ? 'an' : 'a'} ${sc}, and you don’t control one.`, 'err'); return; }
+      const id = await new Promise(res => openModal(`${R.cardName(card)}: sacrifice ${/^[aeiou]/.test(sc) ? 'an' : 'a'} ${sc}`, b => {
+        b.append(h('p', { class: 'muted' }, `As an additional cost to cast ${R.cardName(card)}, sacrifice ${/^[aeiou]/.test(sc) ? 'an' : 'a'} ${sc} you control (601.2f).`));
+        b.append(h('div', { class: 'pkchoices pics' }, ok.map(o => targetThumb({ c: o.id }, false, () => { closeModal(true); res(o.id); }))));
+      }, { onClose: () => res(null) }));
+      if (!id) return;
+      sacCost = [id];
+    }
+    const opts = { tg, mode: mode || undefined, x: x || undefined, wardPaid: wardPaid || undefined, alt: alt ? alt.kind : undefined, sacCost };
     if (wardPaid && wardMana) { const cst = JSON.parse(JSON.stringify(payCost)); cst.g += wardMana; if (!(await autoPay(card, x, cst))) return; }
     else if (!(await autoPay(card, x, JSON.parse(JSON.stringify(payCost))))) return;
     opts.fromPool = G.lastFromPool;
@@ -1824,12 +1837,28 @@
     if (t.k === 'dig') {
       const f = G.digFind(t);
       const go = async dest => { await G.digFinish(t, f.hits, f.rest, dest); ack(); setTimeout(pumpAsks, 50); };
+      if (t.top && !f.hits.length) {
+        const top = G.P.library[0];
+        if (!t.mayBottom || !top) { go('top'); return; }
+        choose(t.src, `The top card of your library is ${top.d.n}. Put it on the bottom of your library?`, [{ label: 'Leave it on top', primary: true, fn: () => go('top') }, { label: 'Put it on the bottom', fn: () => go('bottom') }]);
+        return;
+      }
       if (!f.hits.length || t.dest !== 'either') { go(t.dest === 'either' ? 'battlefield' : t.dest); return; }
       choose(t.src, `You exiled cards until ${f.names.join(', ')}. Put it onto the battlefield or into your hand?`, [
         { label: 'Onto the battlefield', primary: true, fn: () => go('battlefield') }, { label: 'Into your hand', fn: () => go('hand') }]);
       return;
     }
     // "Look at the top N cards…": the look window, with the card's instructions on top.
+    if (t.k === 'handToTop') {
+      const n = Math.min(t.n || 1, G.P.hand.length), sel = [];
+      if (!n) { ack(); return pumpAsks(); }
+      openModal(`${t.src}: put ${n} card${n > 1 ? 's' : ''} from your hand on top of your library`, b => {
+        b.append(h('p', { class: 'muted' }, 'The first one you pick ends up on top.'));
+        b.append(h('div', { class: 'strip pick' }, G.P.hand.map(c => cardEl(handCard(c), { noMenu: true, cls: sel.includes(c.id) ? 'sel' : '', onClick: () => { const i = sel.indexOf(c.id); if (i >= 0) sel.splice(i, 1); else if (sel.length < n) sel.push(c.id); refreshModal(); } }))));
+        b.append(h('div', { class: 'row' }, h('button', { class: 'primary', disabled: sel.length !== n, onclick: () => { closeModal(true); G.handToLibrary(sel.slice(), 'top'); ack(); setTimeout(pumpAsks, 50); } }, `Put ${n} on top`)));
+      }, { live: true, sticky: true, noEsc: true });
+      return;
+    }
     if (t.k === 'look') {
       G.toast(`${t.src}: ${String(t.text || '').replace(/^./, m => m.toUpperCase())}`, 'info');
       lookModal('look', t.n || 1, () => { ack(); setTimeout(pumpAsks, 50); });

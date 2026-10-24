@@ -62,6 +62,11 @@
         const k = STEP_KEY[R.PHASES[i]]; if (!k) continue;
         evs.push({ type: 'step', step: k, player: T.active });
         if (k === 'main1') loreUp(s, T.active, evs, notes);
+        if ((k === 'main1' || k === 'main2') && s.delayedMana && s.delayedMana.length) {
+          const due = s.delayedMana.filter(x => x.pid === T.active && (x.after < T.n || k === 'main2' && x.after === T.n && x.step !== 'main2'));
+          for (const x of due) { R.addPool(s, x.pid, Array(x.n).fill('C')); notes.push(`${nameOf(s, x.pid)} added {C}×${x.n} (${x.src})`); }
+          s.delayedMana = s.delayedMana.filter(x => !due.includes(x));
+        }
         // 724.2: the monarch draws a card at the beginning of their end step.
         if (k === 'end' && s.table && s.table.monarch === T.active) { R.todo(s, T.active, { k: 'draw', n: 1, src: 'the monarch' }); notes.push(`${nameOf(s, T.active)} draws a card for being the monarch`); }
       }
@@ -651,6 +656,12 @@
           if (cs.length) notes.push(`${srcName} untapped ${R.listNames(cs.map(cardName))}`); break;
         }
         case 'skipUntap': { const cs = cards(o.what); for (const c of cs) c.skipUntap = true; if (cs.length) notes.push(`${R.listNames(cs.map(cardName))} won’t untap during ${cs.length > 1 ? 'their controllers’' : 'its controller’s'} next untap step (${srcName})`); break; }
+        case 'fog': {
+          if (o.what) { for (const c of cards(o.what)) { c.fogBy = s.turn.n; if (o.to) c.fogTo = s.turn.n; notes.push(`Combat damage ${o.to ? 'to and ' : ''}by ${cardName(c)} is prevented this turn (${srcName})`); } break; }
+          s.turn.fog = { n: s.turn.n, non: o.non || null };
+          notes.push(`All combat damage${o.non ? ' by non-' + o.non.replace(/^./, x => x.toUpperCase()) + ' creatures' : ''} is prevented this turn (${srcName})`);
+          break;
+        }
         case 'extraTurn': { s.extraTurns = (s.extraTurns || []).concat([by]); notes.push(`${nameOf(s, by)} will take an extra turn after this one (${srcName}, 500.7)`); break; }
         case 'tap': { const cs = cards(o.what); for (const c of cs) c.tapped = true; if (cs.length) notes.push(`${srcName} tapped ${R.listNames(cs.map(cardName))}`); break; }
         case 'addMana': {
@@ -742,7 +753,8 @@
           const src = s.cards[srcId];
           const n = o.n === 'mut' ? Math.max(0, ((src && src.mut) || [1]).length - 1) : 1;
           if (!n) { notes.push(`${srcName}: nothing to reveal`); break; }
-          R.todo(s, by, { k: 'dig', what: o.what, n, dest: o.dest, tapped: !!o.tapped, rest: o.rest, src: srcName });
+          const what = o.chosen ? ((src && src.chosen) ? src.chosen + ' ' : '') + o.what : o.what;
+          R.todo(s, by, { k: 'dig', what, n, dest: o.dest, tapped: !!o.tapped, rest: o.rest, top: !!o.top, mayBottom: !!o.mayBottom, src: srcName });
           notes.push(`${srcName}: ${nameOf(s, by)} reveals cards until ${n > 1 ? n + ' ' + o.what + ' cards' : (/^[aeiou]/.test(o.what) ? 'an ' : 'a ') + o.what + ' card'}`);
           break;
         }
@@ -794,6 +806,22 @@
         case 'bounceOwn': R.todo(s, by, { k: 'returnOwn', n: 1, what: o.what, src: srcName }); break;
         case 'pay': { st.did = pay(o.cost); notes.push(st.did ? `${nameOf(s, by)} paid ${o.cost} (${srcName})` : `${nameOf(s, by)} couldn’t pay ${o.cost} (${srcName})`); break; }
         case 'modes': { let off = 0; for (const mi of (opt.mode || [0])) { const md = o.modes[mi]; if (!md) continue; runList(md.ops, off); off += md.nTargets || 0; } break; }
+        // Nykthos: mana of the color I have the most devotion to (700.5) — the color is chosen as it resolves.
+        case 'addDevotion': {
+          const dev = { W: 0, U: 0, B: 0, R: 0, G: 0 };
+          for (const c of Object.values(s.cards)) { if (c.zone !== 'battlefield' || c.ctrl !== by || c.faceDown || !c.d) continue; const mc = (R.face(c) || {}).mc || ''; for (const m of mc.match(/\{[^}]+\}/g) || []) for (const col of 'WUBRG') if (m.includes(col)) dev[col]++; }
+          const [col, n] = Object.entries(dev).sort((a, b) => b[1] - a[1])[0];
+          if (n > 0) R.addPool(s, by, Array(n).fill(col));
+          notes.push(`${nameOf(s, by)} added ${n} ${({ W: 'white', U: 'blue', B: 'black', R: 'red', G: 'green' })[col]} mana (devotion, ${srcName})`);
+          break;
+        }
+        case 'delayedMana': {
+          const t = (legal[0] || [])[0], c = t && t.c && s.cards[t.c];
+          const n = c && c.d ? (+c.d.cmc || 0) : 0;
+          if (n) { s.delayedMana = (s.delayedMana || []).concat([{ pid: by, n, after: s.turn.n, src: srcName }]); notes.push(`${nameOf(s, by)} will add {C}×${n} at the beginning of their next main phase (${srcName})`); }
+          break;
+        }
+        case 'handToTop': R.todo(s, by, { k: 'handToTop', n: val(o.n), src: srcName }); break;
         case 'look': R.todo(s, by, { k: 'look', n: val(o.n), reveal: !!o.reveal, text: o.text, src: srcName }); break;
         case 'addlCost': case 'altCost': case 'choose': case 'rest': break;
         case 'manual': st.manual.push(o.text); break;

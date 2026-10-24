@@ -1,6 +1,4 @@
-# AI ↔ table interface sheet
 
-Generated from `site/aiface.js`. The AI checks every answer against this sheet before sending it (a bad answer is replaced by the safe default and logged as an `interface` entry in the AI plan log); `test/ai_face.test.js` fails if the engine asks something that is not listed here. In the game, Developer debugging → **AI plans** shows the same sheet plus a live “Talk with the table” list of every question, job and action.
 
 ## Questions the table asks (`s.ask` → `{ type: "answer", id, … }`)
 
@@ -35,6 +33,7 @@ Generated from `site/aiface.js`. The AI checks every answer against this sheet b
 | `fetch` | Search for basic lands | executor.onTodo → colors my hand needs |
 | `search` | Search the library for a card | executor.onTodo → missing combo piece, key card, needed color |
 | `cascade` | Cascade / discover N: reveal and maybe cast free (discover: or put it into my hand) | executor.onTodo → cast it unless it has no good target |
+| `handToTop` | Put N cards from my hand on top of my library (Brainstorm) | executor.onTodo → brain.worstCards |
 | `dig` | Reveal until N matching cards (Illuna, Auspicious Starrix, The Regalia) → battlefield / hand / either | executor.onTodo → battlefield when I may choose |
 | `fromHand` | Put a card from hand onto the battlefield | executor.onTodo → best for the plan |
 | `fromGy` | Return a card from my graveyard | executor.onTodo → most valuable |

@@ -1272,6 +1272,12 @@
       if (s.turn.active && !/^Main/.test(PHASES[s.turn.phase])) return `${cardName(c)} can be cast only in one of your main phases (307.1).`;
       if (stackCards(s).length) return `${cardName(c)} can be cast only while the stack is empty (307.1).`;
     }
+    // Additional sacrifice cost (601.2f): it has to be a permanent of that kind you control.
+    if (C && a && a.cast && !c.faceDown && C.sacCost && C.sacCost(c)) {
+      const want = C.sacCost(c), id = Array.isArray(a.sacCost) ? a.sacCost[0] : null, f = id && s.cards[id];
+      if (!f) return `${cardName(c)} needs you to sacrifice ${/^[aeiou]/.test(want) ? 'an' : 'a'} ${want} as you cast it.`;
+      if (f.zone !== 'battlefield' || f.ctrl !== pid || !C.matchesWhat(f, want)) return `${cardName(f)} isn’t ${/^[aeiou]/.test(want) ? 'an' : 'a'} ${want} you control.`;
+    }
     if (!C || !a || !a.tg) return null;
     const reqs = C.targetReqs(c, a.mode, a.alt);
     const tg = cleanTargets(a.tg, reqs.length);
@@ -1291,6 +1297,10 @@
     c.tg = cleanTargets(a && a.tg, c.reqs.length);
     c.castBy = pid;
     c.alt = a && typeof a.alt === 'string' && /^[a-z-]{3,20}$/.test(a.alt) ? a.alt : null;
+    if (C && !c.faceDown && C.sacCost && C.sacCost(c) && a && Array.isArray(a.sacCost) && s.cards[a.sacCost[0]]) {
+      const f = s.cards[a.sacCost[0]]; c.sacked = { name: cardName(f), pw: (C.pt(s, f) || [0])[0], mv: +((f.d || {}).cmc) || 0 };
+      moveOne(s, f, 'graveyard', 'top', { sac: true }, []); log(s, pid, `sacrificed ${c.sacked.name} to cast ${cardName(c)}`, 'auto');
+    }
     // "As an additional cost to cast this spell, pay X life" (Toxic Deluge).
     if (C && !c.faceDown && c.x && /as an additional cost to cast this spell, pay x life/i.test(C.text(c)) && s.players[pid]) { s.players[pid].life -= c.x; log(s, pid, `paid ${c.x} life to cast ${cardName(c)}`, 'auto'); }
     if (s.turn && s.turn.active) { const T = s.turn; T.stats = T.stats || { attacked: {}, died: 0, gained: {}, lost: {}, spells: {}, drew: {} }; T.stats.spells[pid] = (T.stats.spells[pid] || 0) + 1; if (root.Engine) root.Engine.emit({ type: 'cast', player: pid, card: c, nth: T.stats.spells[pid] }); }
@@ -1662,8 +1672,12 @@
         for (const b of blockers) if (deals(b)) { const pw = Math.max(0, (C.pt(s, b) || [0])[0]); if (pw > 0) ev.push({ src: b, c: a.id, n: pw }); }
       }
       // All combat damage in a step happens at once (510.2).
+      // Fogs (615.1): combat damage prevented this turn.
+      const T0 = s.turn, fog = T0.fog && T0.fog.n === T0.n ? T0.fog : null;
+      const prevented = e => (fog && (!fog.non || !isType(e.src, fog.non))) || e.src.fogBy === T0.n || (e.c && s.cards[e.c] && s.cards[e.c].fogTo === T0.n);
       for (const e of ev) {
         const k = kwOf(e.src);
+        if (prevented(e)) { summary.push(`${e.n} combat damage from ${cardName(e.src)} was prevented`); continue; }
         if (e.c && s.cards[e.c] && C.protectedFrom(s.cards[e.c], e.src, s)) { summary.push(`${cardName(s.cards[e.c])}’s protection prevented ${e.n} damage from ${cardName(e.src)}`); continue; }
         dealt.add(e.src.id);
         if (e.p) {

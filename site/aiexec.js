@@ -197,7 +197,7 @@
       return r.ok !== false;
     }
     if (o.pay && o.pay.length) { const r = await io.tapPay([...new Set(o.pay)]); if (r && r.ok === false) { this.lastErr = r.err; return false; } }
-    const opts = { tg: o.tg, mode: o.mode, x: o.x, wardPaid: o.wardPaid, fromPool: [], alt: o.alt || undefined };
+    const opts = { tg: o.tg, mode: o.mode, x: o.x, wardPaid: o.wardPaid, fromPool: [], alt: o.alt || undefined, sacCost: o.sacCost || undefined };
     let r;
     if (o.card.zone === 'hand') r = await io.castFromHand(o.card.id, opts);
     else r = await io.castPublic(o.card.id, opts);
@@ -281,7 +281,7 @@
       const abs = C().abilities(c);
       for (let i = 0; i < abs.length; i++) {
         const ab = abs[i];
-        if (!ab.tap || ab.sac || ab.manaAb || ab.crew || ab.equip || ab.loyalty !== undefined) continue;
+        if (!ab.tap || ab.sac || ab.sacOther || ab.discard || ab.manaAb || ab.crew || ab.equip || ab.loyalty !== undefined) continue;
         const pay = C().pay(ab.mana, B.sources().filter(x => x.id !== c.id), 0); if (!pay) continue;
         const eff = C().effectsIn(ab.text);
         if (!eff.understood || !eff.effects.some(e => ['dmg', 'draw', 'life', 'counters', 'tap', 'token', 'scry'].includes(e.k))) continue;
@@ -353,9 +353,23 @@
         B.note('did', `${t.k} ${top.length}: kept ${decisions.filter(d => d.dest === 'top').length} on top`);
         return;
       }
+      if (t.k === 'handToTop') {
+        const ids = B.worstCards(hand(), t.n || 1).map(c => c.id);
+        await io.handToTop(ids);
+        B.note('did', `put ${ids.length} card${ids.length > 1 ? 's' : ''} from my hand on top of my library (${t.src})`);
+        return;
+      }
       if (t.k === 'look') {
         const top = io.libTop(t.n || 1);
         const text = String(t.text || '').toLowerCase();
+        // "Put them back in any order": all stay on top, best first.
+        if (/put them back in any order|put them back on top/.test(text)) {
+          const wantT = c => { const cc = Object.assign({ zone: 'library', counters: {}, face: 0 }, c); return (B.isKey(cc) ? 10 : 0) + ((+c.d.cmc || 0) <= B.manaNow() + 1 ? 2 : 0) + (/\bland\b/i.test(R().typeLine(cc)) && B.bf(me).filter(x => R().isType(x, 'land')).length < 5 ? 3 : 0); };
+          const order = top.slice().sort((a, b) => wantT(b) - wantT(a));
+          await io.applyLook('look', top.length, order.map(c => ({ id: c.id, dest: 'top' })));
+          B.note('did', `looked at ${top.length} and put them back: ${order.map(c => c.d.n).join(', ')}`);
+          return;
+        }
         const pickN = /put (?:two|2) of them into your hand/.test(text) ? 2 : /into your hand/.test(text) ? 1 : 0;
         const want = c => { const cc = Object.assign({ zone: 'library', counters: {}, face: 0 }, c); return (B.isKey(cc) ? 10 : 0) + (roles(cc).has('ramp') ? 3 : 0) + (roles(cc).has('removal') ? 2 : 0) + ((+c.d.cmc || 0) <= B.manaNow() + 1 ? 2 : 0); };
         const filt = (text.match(/(?:reveal|put) (?:a|an|up to \w+) ([a-z ]+?) cards? from among/) || [])[1];
@@ -401,7 +415,14 @@
       if (t.k === 'dig') {
         const f = await io.digFind(t);
         // "Onto the battlefield or into your hand": permanents I can use go down; the rest to hand.
-        const dest = t.dest !== 'either' ? t.dest : 'battlefield';
+        let dest = t.dest !== 'either' ? t.dest : 'battlefield';
+        // One-card reveal that missed (Lurking Predators): bottom a land I don't need or an expensive card.
+        if (t.top && !f.hits.length) {
+          const top = (io.libTop(1) || [])[0];
+          const lands = B.bf(me).filter(c => R().isType(c, 'land')).length;
+          const bottom = t.mayBottom && top && (/\bland\b/i.test(((top.d.faces || [])[0] || {}).t || '') ? lands >= 6 : (+top.d.cmc || 0) > lands + 2 && !B.isKey(Object.assign({ zone: 'library', counters: {}, face: 0 }, top)));
+          dest = bottom ? 'bottom' : 'top';
+        }
         await io.digFinish(t, f.hits, f.rest, dest);
         B.note('did', `${t.src}: revealed until ${f.names.join(', ') || 'nothing'}${f.hits.length ? ' → ' + (dest === 'hand' ? 'hand' : 'battlefield') : ''}`);
         return;

@@ -599,6 +599,11 @@
       return neg ? !sub : sub;
     }));
   }
+  // "As an additional cost to cast this spell, sacrifice a creature" (Village Rites, Bone Splinters, Harrow…) → 'creature'.
+  function sacCost(c) {
+    const m = text(c).toLowerCase().match(/as an additional cost to cast this spell, sacrifice (?:a|an) ([a-z ]+?)(?: or discard a card)?\./);
+    return m ? m[1].trim() : null;
+  }
   // Cost reductions (601.2f): "This spell costs {1} less to cast for each creature on the battlefield" (Blasphemous Act),
   // "costs {X} less, where X is the greatest power among creatures you control" (The Great Henge), affinity, and statics
   // on my permanents: "Artifact spells you cast cost {1} less to cast", "Angel spells you cast cost {2} less"…
@@ -818,6 +823,6 @@
   // Does this permanent have flash, or is it an instant? (can be cast at any time you have priority)
   function instantSpeed(c) { return /\binstant\b/i.test(typeLine(c)) || has(c, 'flash'); }
 
-  root.Cards = { costReduction, KEYWORDS, colorsOf, face, typeLine, isType, nameOf, text, rawText, keywords, has, statics, pt, parseCost, costOf, manaValue, costTotal, manaSource, pay,
+  root.Cards = { sacCost, costReduction, KEYWORDS, colorsOf, face, typeLine, isType, nameOf, text, rawText, keywords, has, statics, pt, parseCost, costOf, manaValue, costTotal, manaSource, pay,
     setState, notCreatureNow, wardCost, targetReqs, targetsIn, legalTarget, targetChoices, reqLabel, protections, protectedFrom, blockProblem, matchesWhat, helpfulTarget, orderChoices, modesOf, effectsIn, effectsOf, abilities, triggers, instantSpeed, isPermanentCard, toNum, spellText };
 })(typeof window !== 'undefined' ? window : globalThis);

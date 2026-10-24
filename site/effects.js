@@ -143,6 +143,12 @@
     if ((m = s.match(/^tap (?:up to (\w+) )?(target .+|this|it|that creature|all creatures your opponents control|each creature your opponents control|all lands that player controls)$/))) { const what = targetOf(m[2], st); st.lastObj = what; return [wrap({ op: 'tap', what })]; }
     // "It doesn't untap during its controller's next untap step" (Archipelagore, Frost Breath…).
     if ((m = s.match(/^(it|that creature|those creatures|they|that permanent|those permanents) (?:doesn't|don't|do not) untap during (?:its|their) controllers?'s? next untap step$/))) return [wrap({ op: 'skipUntap', what: st.lastObj || { k: 'ev' } })];
+    // Fogs (615): "Prevent all combat damage that would be dealt this turn [by non-Elf creatures]", Kor Haven, Maze of Ith.
+    if ((m = s.match(/^prevent all combat damage that would be dealt this turn(?: by (non-?[a-z]+) creatures)?$/))) return [wrap({ op: 'fog', non: m[1] ? m[1].replace(/^non-?/, '') : null })];
+    if ((m = s.match(/^prevent all combat damage that would be dealt (to and dealt by|by) (target attacking creature|that creature|target creature|it) this turn$/))) { const what = /^target/.test(m[2]) ? targetOf(m[2], st) : (st.lastObj || (st.ti > 0 ? { k: 't', i: st.ti - 1 } : { k: 'ev' })); return [wrap({ op: 'fog', what, to: /to and/.test(m[1]) })]; }
+    // Mana Drain: "At the beginning of your next main phase, add an amount of {C} equal to that spell's mana value."
+    if (/^at the beginning of your next main phase, add an amount of \{c\} equal to that spell's mana value$/.test(s)) return [wrap({ op: 'delayedMana' })];
+    if ((m = s.match(/^put (\w+) cards? from your hand on top of your library(?: in any order)?$/))) return [wrap({ op: 'handToTop', n: amt(m[1]) || 1 })];
     if (/^(?:you )?take an extra turn after this one$/.test(s)) return [wrap({ op: 'extraTurn' })];
     if ((m = s.match(/^tap or untap (target .+|another target .+)$/))) return [wrap({ op: 'tapUntap', what: targetOf(m[1], st) })];
     // "Each player this attacked this turn loses the game" (Angel of Destiny), "each player with exactly 13 life loses the game".
@@ -276,18 +282,26 @@
     // battlefield or into your hand." (Illuna, Auspicious Starrix, The Regalia): one effect, done on the owner's device.
     const t1 = t0.replace(/(?:exile|reveal) cards from the top of your library until you (?:exile|reveal) (a|an|x) ((?:nonland |non-?[a-z]+ )*(?:permanent|creature|land|artifact|enchantment|nonland)) cards?(, where x is the number of times this creature has mutated)?\. put (?:that card|those [a-z ]*cards|it) (onto the battlefield(?: tapped)?(?: or into your hand)?|into your hand)(?: and the rest on the bottom of your library in a random order)?\./g,
       (all, a, what, mut, dest) => `__dig:${what.trim()}:${mut ? 'mut' : 1}:${/or into your hand/.test(dest) ? 'either' : /battlefield/.test(dest) ? 'battlefield' : 'hand'}:${/tapped/.test(dest) ? 1 : 0}:${/rest on the bottom/.test(all) ? 'bottom' : 'exile'}__.`);
+    // "Reveal the top card of your library. If it's a creature card, put it onto the battlefield. Otherwise, you may put that
+    // card on the bottom of your library." (Lurking Predators, Herald's Horn): a one-card dig.
+    const t1a = t1.replace(/choose a color\. add an amount of mana of that color equal to your devotion to that color\./g, '__devotion__.');
+    const t1b = t1a.replace(/(?:reveal|look at) the top card of your library\. if it's an? ([a-z ]+?) card( of the chosen type)?, (you may )?(?:reveal it and )?put it (onto the battlefield|into your hand)\.(?: otherwise, you may put (?:that card|it) on the bottom of your library\.)?/g,
+      (all, what, chosen, may, dest) => `__top:${what.trim()}:${chosen ? 1 : 0}:${/battlefield/.test(dest) ? 'battlefield' : 'hand'}:${/otherwise/.test(all) ? 1 : 0}__.`);
     // "That player may pay {2}. If they don't, you create a Treasure token." (Smothering Tithe, Rhystic Study): the other
     // player chooses whether to pay; if they don't, the rest happens.
-    const t2 = t1.replace(/\b(that player|its controller|they|that opponent) may pay ((?:\{[^}]+\})+)\. if (?:they|that player|the player|he or she|its controller) (?:doesn't|don't|do not), ([^.]+)\./g, (all, w, cost, rest) => `__payor|${w}|${cost}|${rest}__.`);
+    const t2 = t1b.replace(/\b(that player|its controller|they|that opponent) may pay ((?:\{[^}]+\})+)\. if (?:they|that player|the player|he or she|its controller) (?:doesn't|don't|do not), ([^.]+)\./g, (all, w, cost, rest) => `__payor|${w}|${cost}|${rest}__.`);
     // "where X is …" applies to the clause before it.
     const sentences = t2.replace(/\.?\n/g, '. ').split(/(?<=\.)\s+|(?<=\.)$/).map(x => x.trim()).filter(Boolean);
     const ops = [];
     let understood = true;
     for (let sent of sentences) {
       const dg = sent.match(/^__dig:([a-z -]+):(mut|1):(either|battlefield|hand):([01]):(bottom|exile)__\.?$/);
-      if (/^as an additional cost to cast this spell, pay x life\.?$/.test(sent)) continue;
+      if (/^as an additional cost to cast this spell, (?:pay x life|sacrifice (?:a|an) [a-z ]+?(?: or discard a card)?)\.?$/.test(sent)) continue;   // paid as it's cast (601.2f)
       // Cost changes and "can't be countered" are about casting it, not what it does (601.2f, 101.2).
       if (/^this(?: spell)? costs? (?:\{[^}]+\})+ (?:less|more) to cast\b|^this spell can't be countered\.?$|^affinity for /.test(sent)) continue;   // paid as it's cast (601.2f)
+      if (/^__devotion__\.?$/.test(sent)) { ops.push({ op: 'addDevotion' }); continue; }
+      const tc = sent.match(/^__top:([a-z -]+):([01]):(battlefield|hand):([01])__\.?$/);
+      if (tc) { ops.push({ op: 'dig', what: tc[1], n: 1, top: true, chosen: tc[2] === '1', dest: tc[3], mayBottom: tc[4] === '1', rest: 'top', tapped: false }); continue; }
       const po = sent.match(/^__payor\|([^|]+)\|([^|]+)\|(.+)__\.?$/);
       if (po) { const inner = parse(po[3] + '.', opts); ops.push({ op: 'payOrElse', who: who(po[1]), cost: po[2], ops: inner.ops, text: po[3] }); if (!inner.understood) understood = false; continue; }
       if (dg) { ops.push({ op: 'dig', what: dg[1], n: dg[2] === 'mut' ? 'mut' : 1, dest: dg[3], tapped: dg[4] === '1', rest: dg[5] }); continue; }
@@ -321,6 +335,10 @@
         if (sm) subject = sm[1];
         else if (subject && /^(gains?|loses?|draws?|discards?|mills?|sacrifices?)\b/.test(p)) p = (subject.startsWith('target') ? 'that player' : subject) + ' ' + p;
         const r = clause(p, st);
+        // The rest of a "look at the top N" ("put one of them into your hand and the rest on the bottom", "put them back in
+        // any order") is done in the look window: it goes with the look.
+        const lk = ops.length && ops[ops.length - 1].op === 'look' ? ops[ops.length - 1] : null;
+        if (!r && lk && /\b(them|those cards|of them|the rest|that card|the other|it)\b|^you may shuffle/.test(p)) { lk.text = (lk.text || '') + '. ' + p; continue; }
         if (!r) { understood = false; ops.push({ op: 'manual', text: p.replace(/^./, x => x.toUpperCase()) }); continue; }
         for (const o of r) { if (xvar && o.op === 'pump' && /x/.test(String(o.p) + String(o.t))) o.xv = xvar; if (xvar && (o.n && o.n.v === 'X')) o.n = xvar; if (xvar && o.spec && (o.spec.p === 'x' || (o.spec.n && o.spec.n.v === 'X'))) { o.spec.x = xvar; if (o.spec.n && o.spec.n.v === 'X') o.spec.n = xvar; } ops.push(o); }
       }

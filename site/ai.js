@@ -41,6 +41,7 @@
     searchTake: (ids, t) => G.fetchLands(ids, t),
     cascadeReveal: mv => G.cascadeReveal(mv),
     cascadeDecline: id => G.cascadeDecline(id),
+    handToTop: ids => G.handToLibrary(ids, 'top'),
     digFind: t => G.digFind(t),
     digFinish: (t, hits, rest, dest) => G.digFinish(t, hits, rest, dest),
     fromHand: (ids, zone, o) => G.fromHand(ids, zone, o),
