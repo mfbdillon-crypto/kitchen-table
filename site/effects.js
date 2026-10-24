@@ -27,6 +27,7 @@
     if (/^(it|that creature|that card|that permanent|them|those cards|those creatures|that land|that token|the token|that spell)$/.test(s)) return { k: 'ev' };
     if (/^(enchanted|equipped) (creature|permanent|land|artifact)$/.test(s)) return { k: 'attached' };
     let m;
+    if ((m = s.match(/^any number of (?:other )?target (.+)$/))) return { k: 't', upTo: true, n: 99, what: m[1] };
     if ((m = s.match(/^(?:up to (\w+) )?(?:(\w+) )?(?:other |another )?target (.+)$/))) return { k: 't', upTo: !!m[1], n: amt(m[1] || m[2] || 1) || 1, what: m[3] };
     if (s === 'any target') return { k: 't', what: 'any target' };
     if ((m = s.match(/^each (other )?(.+?)(?: you control| your opponents control| an opponent controls| target player controls| that player controls)?$/))) return { k: 'each', other: !!m[1], what: m[2], ctrl: /you control/.test(s) ? 'you' : /opponents? control/.test(s) ? 'opp' : /that player controls/.test(s) ? 'evPlayer' : 'any' };
@@ -123,6 +124,7 @@
     if ((m = body.match(/^loses? life equal to (.+)$/))) return [wrap({ op: 'life', who: subj, n: variable(m[1]), sign: -1 })];
     if ((m = body.match(/^loses? (\d+) life for each (.+)$/))) return [wrap({ op: 'life', who: subj, n: { v: 'count', what: m[2], ctrl: 'any', times: +m[1] }, sign: -1 })];
     if ((m = body.match(/^(?:each )?(?:sacrifices?) (an?|one|two|three) (.+?)(?: of (?:their|his or her) choice)?$/))) return [wrap({ op: 'sacrifice', who: subj, n: amt(m[1]), what: m[2].replace(/(?<!s)s$/, '') })];
+    if ((m = s.match(/^sacrifice this unless you (?:sacrifice (a|an|one|two) ([a-z ]+)|pay ((?:\{[^}]+\})+))$/))) return [wrap(m[3] ? { op: 'sacUnlessPay', cost: m[3] } : { op: 'sacUnless', n: amt(m[1]), what: m[2] })];
     if ((m = body.match(/^sacrifices? (this|it|that creature|that permanent|enchanted creature|another permanent|another creature)$/))) return [wrap({ op: 'sacrifice', who: subj, n: 1, what: m[1] === 'this' ? { k: 'self' } : /another/.test(m[1]) ? m[1].replace('another ', '') : obj(m[1]), other: /another/.test(m[1]) })];
     if ((m = body.match(/^scry (\d+|x|one|two|three)$/))) return [wrap({ op: 'scry', who: subj, n: amt(m[1]) })];
     if ((m = body.match(/^surveil (\d+|one|two|three)$/))) return [wrap({ op: 'surveil', who: subj, n: amt(m[1]) })];
@@ -136,6 +138,9 @@
     if ((m = s.match(/^shuffle (?:your|their) graveyard into (?:your|their) library$/))) return [wrap({ op: 'shuffleGy', who: subj })];
     if ((m = s.match(/^untap (?:up to (\w+) )?(lands|lands you control|all lands you control|target (.+)|this|it|that creature|all creatures you control)$/))) return [wrap({ op: 'untap', what: m[3] ? { k: 't', i: st.ti++, what: m[3] } : /^lands/.test(m[2]) ? { k: 'chooseUntap', n: amt(m[1]) || 99, what: 'land' } : /all/.test(m[2]) ? { k: 'each', what: m[2].replace(/^all /, '').replace(/ you control$/, ''), ctrl: 'you' } : obj(m[2]) })];
     if ((m = s.match(/^tap (?:up to (\w+) )?(target .+|this|it|that creature|all creatures your opponents control|each creature your opponents control|all lands that player controls)$/))) return [wrap({ op: 'tap', what: targetOf(m[2], st) })];
+    if ((m = s.match(/^tap or untap (target .+|another target .+)$/))) return [wrap({ op: 'tapUntap', what: targetOf(m[1], st) })];
+    // "Each player this attacked this turn loses the game" (Angel of Destiny), "each player with exactly 13 life loses the game".
+    if ((m = s.match(/^each player (?:this attacked this turn|with exactly (\d+) life) loses the game$/))) return [wrap({ op: 'loseGame', attacked: !m[1], life: m[1] ? +m[1] : null })];
     if ((m = s.match(/^add ((?:\{[wubrgc]\})+)$/))) return [wrap({ op: 'addMana', units: m[1].match(/[wubrgc]/g).map(x => x.toUpperCase()) })];
     if ((m = s.match(/^add \{([wubrgc])\} for each (.+)$/)) && !/\b(?:it|this way|removed|that|those)\b/.test(m[2])) return [wrap({ op: 'addMana', units: { v: 'X', each: m[1].toUpperCase() }, n: { v: 'count', what: m[2].replace(/ you control$/, ''), ctrl: /you control/.test(m[2]) ? 'you' : 'any' } })];
     if ((m = s.match(/^add (one|two|three) mana of any (?:one )?color$/))) return [wrap({ op: 'addMana', units: Array(amt(m[1])).fill('WUBRG') })];
@@ -166,7 +171,7 @@
     // Zone changes.
     if ((m = s.match(/^destroy (.+)$/))) { const what = targetOf(m[1].replace(/\. it can't be regenerated$|\. they can't be regenerated$/, ''), st); if (what) return [wrap({ op: 'destroy', what })]; }
     if ((m = s.match(/^(exile|destroy) (?:a|the) creature with the greatest power among creatures (target opponent|target player|that player|an opponent|each opponent) controls$/))) { const w = who(m[2]); if (w && w.k === 't') w.i = st.ti++; return [wrap({ op: 'biggest', act: m[1], who: w || { k: 'eachOpp' } })]; }
-    if ((m = s.match(/^exile (.+?), then return (?:it|that card|those cards|them) to the battlefield(?: tapped)? under (its owner's|their owners'|your) control$/))) return [wrap({ op: 'flicker', what: targetOf(m[1], st), control: /your/.test(m[2]) ? 'you' : 'owner' })];
+    if ((m = s.match(/^exile (.+?), then return (?:it|that card|those cards|them|those permanents|the exiled cards?) to the battlefield(?: tapped)? under (its owner's|their owners'|their owner's|your) control$/))) return [wrap({ op: 'flicker', what: targetOf(m[1], st), control: /your/.test(m[2]) ? 'you' : 'owner' })];
     if ((m = s.match(/^exile (.+)$/)) && !/top|library/.test(m[1])) { const what = targetOf(m[1], st); if (what) return [wrap({ op: 'move', what, to: 'exile' })]; }
     if ((m = s.match(/^return (.+?) (?:from (?:your|a|their) graveyard )?to (?:its owner's|their owners'|their owner's|your|their) hands?$/))) { const what = targetOf(m[1], st); if (what) return [wrap({ op: 'move', what, to: 'hand' })]; }
     if ((m = s.match(/^return (.+?) from (?:your|a|their) graveyard to the battlefield( tapped)?(?: under your control)?$/))) { const what = targetOf(m[1], st); if (what) return [wrap({ op: 'move', what, to: 'battlefield', tapped: !!m[2], control: 'you' })]; }
@@ -239,7 +244,7 @@
     s = String(s || '').trim().replace(/\.$/, '');
     const w = who(s);
     if (w) { if (w.k === 't') w.i = st.ti++; return w; }
-    if (/^(?:any target|target .+|up to \w+ target .+|\w+ target .+|another target .+)$/.test(s)) {
+    if (/^(?:any target|target .+|up to \w+ target .+|\w+ target .+|another target .+|any number of (?:other )?target .+)$/.test(s)) {
       const o = obj(s); if (o && o.k === 't') { o.i = st.ti++; return o; }
       return { k: 't', i: st.ti++, what: s };
     }
@@ -271,6 +276,11 @@
         ops.push({ op: cm[3] ? 'instead' : 'if', cond: cm[1], ops: inner.ops });
         if (!inner.understood) understood = false;
         continue;
+      }
+      // Blink: "exile X, then return it/those cards to the battlefield under …" stays one clause.
+      if (/^exile .+?,? then return (?:it|that card|those cards|them|those permanents) to the battlefield/.test(sent)) {
+        const r = clause(sent.replace(/,? then /, ', then '), st);
+        if (r) { ops.push(...r); continue; }
       }
       let xvar = null;
       const wx = sent.match(/,? where x is (.+?)\.?$/);

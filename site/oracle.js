@@ -103,6 +103,7 @@
     }
     if (/^this leaves the battlefield$/.test(e)) return { type: 'leave', self: true };
     if (/^this is put into your graveyard from anywhere|^this is put into a graveyard from anywhere/.test(e)) return { type: 'toGraveyard', self: true };
+    if ((m = e.match(/^(?:one or more|a) ((?:[a-z]+ )*?)cards? (?:are|is) put into (your|an opponent's|a) graveyards? from (?:anywhere|your library)$/))) return { type: 'toGraveyard', self: false, what: (m[1] || '').trim() || 'card', who: /your/.test(m[2]) ? 'you' : /opponent/.test(m[2]) ? 'opp' : 'any', many: /one or more/.test(e) };
     // Combat.
     if (/^this attacks$/.test(e)) return { type: 'attack', self: true };
     if (/^this attacks or blocks$/.test(e)) return { type: 'attack', self: true, alsoBlock: true };
@@ -117,7 +118,7 @@
     if (/^this deals damage/.test(e)) return { type: 'dealsDamage', self: true };
     if (/^this is dealt damage/.test(e)) return { type: 'dealtDamage', self: true };
     // Spells.
-    if ((m = e.match(/^(you|a player|an opponent|each opponent) casts? (?:a|an|your first|their first|your second|a|an)? ?(.*?)(?:spell|spells)(?: each turn)?(?: from (?:your|their) (?:hand|graveyard))?(?:, | that |$)/)) || (m = e.match(/^(you|a player|an opponent) casts? (.*)$/))) {
+    if ((m = e.match(/^(you|a player|an opponent|each opponent) casts? (?:an|a|your first|their first|your second)?\b ?(.*?)(?:spell|spells)(?: each turn)?(?: from (?:your|their) (?:hand|graveyard))?(?:, | that |$)/)) || (m = e.match(/^(you|a player|an opponent) casts? (.*)$/))) {
       return { type: 'cast', who: m[1] === 'you' ? 'you' : /opponent/.test(m[1]) ? 'opp' : 'any', what: (m[2] || '').trim(), first: /first/.test(e), second: /second/.test(e) };
     }
     if (/^this becomes the target of a spell or ability/.test(e)) return { type: 'targeted', self: true, oppOnly: /an opponent controls/.test(e) };
@@ -154,6 +155,8 @@
   }
   // Split "When this enters, if you control …, you may draw a card." into event, intervening "if", optional, effect.
   function parseTrigger(line) {
+    // "Whenever you cast an Aura, Equipment, or Vehicle spell, …": the type list's commas aren't the event's end.
+    line = line.replace(/\b(casts? an? [a-z]+(?:, [a-z]+)*),? or ([a-z]+ spells?)/i, (m0, a, b) => a.replace(/, /g, ' or ') + ' or ' + b);
     const m = line.match(/^(when|whenever|at)\s+(.+?),\s+(.+)$/i);
     if (!m) return null;
     let evText = (m[1].toLowerCase() === 'at' ? 'at ' : '') + m[2], rest = m[3];
@@ -288,7 +291,7 @@
       }
       if (/^choose (?:one|two|three|one or more|one or both|any number)\b/i.test(line)) { modal = { kind: isSpell ? 'spell' : 'modal', text: line, modes: [], pick: line }; m.abilities.push(modal); continue; }
       const trig = /^(when|whenever|at)\b/i.test(line) ? parseTrigger(line) : null;
-      const MODAL = /choose (?:one|two|three|one or more|one or both|any number)\b[^.]*(?:—|\.)?\s*$/i;
+      const MODAL = /choose (?:one|two|three|one or more|one or both|any number|up to (?:one|two|three|x))\b[^.]*(?:—|\.)?\s*$/i;
       if (trig) { const a = Object.assign({ kind: 'triggered', text: line, abilityWord }, trig); m.abilities.push(a); if (MODAL.test(a.effect || '')) { a.modes = []; modal = a; } continue; }
       const act = parseActivated(line);
       if (act) { const a = Object.assign({ kind: act.isMana ? 'mana' : 'activated', text: line, abilityWord }, act); m.abilities.push(a); if (MODAL.test(a.effect || '')) { a.modes = []; modal = a; } continue; }
@@ -312,8 +315,9 @@
         // Modal: "choose one/two/one or more/any number —" (+ commander "may choose both").
         const h = String(t).toLowerCase(), mm = h.match(/choose (one or more|one or both|any number|up to (\w+)|\w+)/);
         const nw = { one: 1, two: 2, three: 3, four: 4 };
-        const choose = !mm ? 1 : /one or more|any number|one or both/.test(mm[1]) ? { min: 1, max: a.modes.length } : mm[2] ? { min: 1, max: nw[mm[2]] || 1 } : nw[mm[1]] || 1;
-        const pre = h.replace(/choose [^.—]*(?:—|\.)/, '').replace(/if you control a commander[^.]*\./, '').replace(/you may choose the same mode more than once\.?/, '').replace(/^\s*\./, '').trim();
+        // "Choose up to X, where X is the number of times you chose a mode for that spell" (Riku of Many Paths).
+        const choose = !mm ? 1 : /one or more|any number|one or both/.test(mm[1]) ? { min: 1, max: a.modes.length } : mm[2] === 'x' ? { min: 0, max: 'X', modesOfSpell: /number of times you chose a mode/.test(h) } : mm[2] ? { min: /^up to/.test(mm[1]) ? 0 : 1, max: nw[mm[2]] || 1 } : nw[mm[1]] || 1;
+        const pre = h.replace(/choose [^—]*—/, '').replace(/choose [^.—]*(?:—|\.)/, '').replace(/if you control a commander[^.]*\./, '').replace(/you may choose the same mode more than once\.?/, '').replace(/^\s*\./, '').trim();
         const preOps = pre ? E.parse(pre) : { ops: [], understood: true, targets: 0 };
         const modes = a.modes.map(x => { const r = E.parse(x.replace(/^[^—]{1,30} — /, '')); return { text: x, ops: r.ops, understood: r.understood, nTargets: r.targets }; });
         a.ops = preOps.ops.concat([{ op: 'modes', choose, both: /may choose both/.test(h), repeat: /same mode more than once/.test(h), modes }]);
@@ -384,6 +388,10 @@
       case 'chapter': return ev.type === 'chapter' && ev.card && ev.card.id === src.id && a.chapter.includes(ev.n);
       case 'counter': return ev.type === 'counter' && (E.kind === 'any' || ev.kind === E.kind) && (E.self ? ev.card && ev.card.id === src.id : ev.card && ev.card.ctrl === ctrl && (!E.what || whatOk(E.what, ev.card)));
       case 'cycle': return ev.type === 'cycle' && ev.player === ctrl && (!E.self || (ev.card && ev.card.id === src.id));
+      // "Whenever one or more land cards are put into your graveyard from anywhere" (The Gitrog Monster).
+      case 'toGraveyard': if (ev.type !== 'toGraveyard' || !ev.card) return false;
+        if (E.self) return ev.card.id === src.id;
+        return (E.who !== 'you' || ev.card.owner === ctrl) && (E.who !== 'opp' || ev.card.owner !== ctrl) && (!E.what || C().matchesWhat(Object.assign({}, ev.card, { zone: 'graveyard' }), E.what));
       default: return false;
     }
   }

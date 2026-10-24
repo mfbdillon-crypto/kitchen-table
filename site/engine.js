@@ -259,7 +259,8 @@
     if (onceTurn) { T.modeUsed = T.modeUsed && T.modeUsed.n === T.n ? T.modeUsed : { n: T.n }; }
     const off = onceTurn ? (T.modeUsed[q.src] || []) : [];
     if (mo && q.mode == null) {
-      const max = typeof mo.choose === 'number' ? mo.choose : mo.choose.max;
+      let max = typeof mo.choose === 'number' ? mo.choose : mo.choose.max;
+      if (max === 'X') { const sp = q.ctx && s.cards[q.ctx.c]; max = Math.min(mo.modes.length, mo.choose.modesOfSpell ? ((sp && sp.mode) || []).length || 1 : (q.ctx && q.ctx.n) || 1); }
       const min = typeof mo.choose === 'number' ? mo.choose : mo.choose.min;
       if (onceTurn && off.length >= mo.modes.length) return 'drop';
       if (isAI(s, q.ctrl) || q.timeout) {
@@ -481,7 +482,7 @@
         else c.dmg = (c.dmg || 0) + n;
         if (kws.has('deathtouch')) c.dtd = true;
       }
-      if (kws.has('lifelink') && s.players[from.ctrl]) s.players[from.ctrl].life += n;
+      if (kws.has('lifelink') && s.players[from.ctrl]) R.gainLife(s, from.ctrl, n);
       st.last += n;
     };
     const badge = (c, b) => { c.eot = (c.eot || []).concat([b]).slice(-20); };
@@ -538,7 +539,7 @@
         case 'mill': for (const p of players(o.who)) R.todo(s, p, { k: 'mill', n: val(o.n), src: srcName }); break;
         case 'life': {
           const n = val(o.n); const ps = players(o.who);
-          for (const p of ps) { const P = s.players[p]; if (!P) continue; P.life += o.sign * n; R.alertChecks(s, p); }
+          for (const p of ps) { const P = s.players[p]; if (!P) continue; if (o.sign > 0) R.gainLife(s, p, n); else P.life -= n; R.alertChecks(s, p); }
           st.last = o.sign < 0 ? n * ps.length : n;
           notes.push(`${R.listNames(ps.map(p => nameOf(s, p)))} ${o.sign > 0 ? 'gained' : 'lost'} ${n} life (${srcName})`);
           break;
@@ -700,6 +701,16 @@
         case 'roll': { const r = 1 + Math.floor(Math.random() * o.d); st.last = r; notes.push(`${nameOf(s, by)} rolled a d${o.d}: ${r} (${srcName})`); break; }
         case 'fromHand': R.todo(s, by, { k: 'fromHand', n: val(o.n), filter: o.filter, tapped: !!o.tapped, src: srcName }); break;
         case 'fromGy': R.todo(s, by, { k: 'fromGy', n: val(o.n), filter: o.filter, dest: o.dest || 'hand', tapped: !!o.tapped, src: srcName }); break;
+        case 'sacUnless': R.todo(s, by, { k: 'sacUnless', n: val(o.n), what: o.what, srcId, src: srcName }); notes.push(`${nameOf(s, by)} sacrifices ${o.what === 'land' ? 'a land' : o.what} or ${srcName}`); break;
+        case 'sacUnlessPay': { const c0 = s.cards[srcId]; if (!c0 || c0.zone !== 'battlefield') break; if (pay(o.cost)) notes.push(`${nameOf(s, by)} paid ${o.cost} to keep ${srcName}`); else { R.moveOne(s, c0, 'graveyard', 'top', { sac: true }, notes); notes.push(`${nameOf(s, by)} couldn’t pay ${o.cost}, so ${srcName} was sacrificed`); } break; }
+        case 'tapUntap': for (const c of cards(o.what)) { c.tapped = c.ctrl !== by; if (!c.tapped) c.manaAt = null; notes.push(`${srcName} ${c.tapped ? 'tapped' : 'untapped'} ${cardName(c)}`); } break;
+        case 'loseGame': {
+          const K = s.combat;
+          const losers = s.seats.filter(p => p !== by && R.alive(s, p) && (o.attacked ? !!(K && K.n === s.turn.n && Object.entries(K.att || {}).some(([id, x]) => id === srcId && (x.def.p === p))) : (s.players[p] || {}).life === o.life));
+          for (const p of losers) { s.players[p].life = Math.min(s.players[p].life, 0); s.players[p].lostWhy = srcName; notes.push(`${nameOf(s, p)} loses the game (${srcName})`); }
+          if (!o.attacked && s.players[by] && s.players[by].life === o.life) { s.players[by].life = 0; notes.push(`${nameOf(s, by)} loses the game (${srcName})`); }
+          break;
+        }
         case 'bounceOwn': R.todo(s, by, { k: 'returnOwn', n: 1, what: o.what, src: srcName }); break;
         case 'pay': { st.did = pay(o.cost); notes.push(st.did ? `${nameOf(s, by)} paid ${o.cost} (${srcName})` : `${nameOf(s, by)} couldn’t pay ${o.cost} (${srcName})`); break; }
         case 'modes': { let off = 0; for (const mi of (opt.mode || [0])) { const md = o.modes[mi]; if (!md) continue; runList(md.ops, off); off += md.nTargets || 0; } break; }

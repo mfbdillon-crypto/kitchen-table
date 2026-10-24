@@ -84,7 +84,7 @@
     const key = card.d.n + ':' + (card.face || 0);
     if (ROLE_CACHE.has(key)) return ROLE_CACHE.get(key);
     const Cd = C(), Rr = R();
-    const t = low(Cd.text(card)), tl = low(Rr.typeLine(card));
+    let t = low(Cd.text(card)); const tl = low(Rr.typeLine(card));
     const r = new Set();
     const isLandCard = /\bland\b/.test(tl.split('//')[0]);
     if (isLandCard) r.add('land');
@@ -92,7 +92,12 @@
     if (/\binstant\b/.test(tl) || /\bflash\b/.test(t)) r.add('instant');
     if (!isLandCard && Cd.manaSource && Cd.manaSource(card)) r.add('ramp');
     if (/search your library for (?:up to \w+ )?(?:a |an |two )?(?:basic )?(?:land|forest|plains|island|swamp|mountain)/.test(t) || /put (?:a|up to \w+) land cards? from your hand onto the battlefield/.test(t) || /play an additional land|additional land on each/.test(t) || /create (?:a|two|three|\w+) (?:tapped )?treasure/.test(t)) r.add('ramp');
-    if (/\bdraws? (?:a|two|three|four|\w+|x|that many) cards?\b|\bdraw cards equal\b/.test(t) && !/each player draws|target player draws/.test(t)) r.add('draw');
+    if ((/\bdraws? (?:a|two|three|four|\w+|x|that many) cards?\b|\bdraw cards equal\b/.test(t) && !/each player draws|target player draws/.test(t)) || /(?:put|puts) (?:that card|one|those cards|it|them|one of them|a pile|one pile|the chosen pile|two of them|any number of [a-z ]+) (?:of them )?into your hand|\binvestigate\b/.test(t)) r.add('draw');
+    // For permanents, only what happens when they enter counts as removal (an activated ability isn't a spell I can cast in response).
+    const isPerm = !/\b(instant|sorcery)\b/.test(tl.split('//')[0]);
+    const eff0 = t;
+    const t2 = isPerm ? (t.match(/when [^.]*enters[^.]*\.[^.]*\.?/g) || []).join(' ') : t;
+    if (isPerm) { const keep = t; t = t2; /* removal family on ETB text */ }
     if (/(?:destroy|exile) (?:up to \w+ )?(?:another )?target (?:creature|permanent|nonland permanent|artifact|enchantment|planeswalker|attacking|tapped|nonartifact|nonblack|creature or planeswalker|artifact or enchantment)/.test(t) ||
       /deals? (?:\d+|x) damage to (?:any target|target creature|target attacking)/.test(t) || /target creature (?:an opponent controls )?gets -\d+\/-\d+/.test(t) || /(?:destroy|exile) target/.test(t)) r.add('removal');
     if (/return target (?:creature|nonland permanent|permanent|artifact|enchantment)[^.]*to (?:its|their) owner'?s? hand/.test(t)) { r.add('bounce'); r.add('removal'); }
@@ -100,6 +105,7 @@
     if (/(?:destroy|exile) all (?:other )?(?:creatures|nonland permanents|permanents|nontoken creatures|artifacts|enchantments|attacking creatures)|deals? (?:\d+|x) damage to each creature|all creatures get -|each creature gets -|return all (?:nonland permanents|creatures|attacking creatures)|each player sacrifices (?:all|the rest|.*creatures)/.test(t) && !/you control get|creatures you control\b(?! and)/.test(t.split('.')[0] || '')) r.add('wipe');
     if (/^(?:.*\n)?(?:[^\n]*)\bcounter target (?:[a-z ]+ )?spell|counter target (?:activated|triggered)/.test(t)) r.add('counter');
     if ((/(?:gains?|have|has) (?:hexproof|indestructible|protection|shroud)/.test(t) || /phase out|teferi's protection|heroic intervention/.test(t)) && !/creature$/.test(tl) && !isLandCard) r.add('protection');
+    t = eff0;
     if (/search your library for (?:a|an|up to \w+|two)? ?(?:card|creature|artifact|enchantment|instant|sorcery|planeswalker|legendary|[a-z]+ card)/.test(t) && !/\bland\b|forest|plains|island|swamp|mountain/.test(t.match(/search your library for[^.,]*/)?.[0] || '')) r.add('tutor');
     if (/return (?:target |a |up to \w+ |another )?[^.]*card[^.]* from your graveyard|from your graveyard (?:to|onto)|you may cast [^.]*from your graveyard/.test(t)) r.add('recursion');
     if (/\bcreate\b[^.]*\btokens?\b/.test(t)) r.add('token');
@@ -298,7 +304,8 @@
     for (const c of this.myCommanders()) for (const x of (c.d && (c.d.ci || c.d.col)) || C().colorsOf(c)) set.add(x);
     return [...set].filter(x => 'WUBRG'.includes(x)).join('');
   };
-  P.manaNow = function (srcs) { return sum(srcs || this.sources(), x => x.amount); };
+  // A Signet needs one mana fed in to make two: it only adds one more, and nothing on its own.
+  P.manaNow = function (srcs) { const l = srcs || this.sources(); const plain = sum(l.filter(x => !x.filter), x => x.amount); return plain + (plain > 0 ? l.filter(x => x.filter).length : 0); };
   P.costOf = function (c) {
     const cost = C().costOf(c);
     if (c.zone === 'command' && c.cmdr) cost.g += 2 * ((this.s.tax || {})[c.id] || 0);
@@ -324,7 +331,7 @@
   // A target's importance: a player close to losing or a permanent that matters to the top threat.
   P.targetScore = function (t) {
     const s = this.s;
-    if (t.p) { const th = this.threatOf(t.p); return 10 - this.life(t.p) / 8 + th * 0.5; }
+    if (t.p) { const th = this.threatOf(t.p); const l = this.life(t.p); return 10 - l / 8 + th * 0.5 + (t.p !== this.me && l <= 3 ? 12 : 0); }
     const c = s.cards[t.c]; if (!c) return 0;
     let v = this.value(c);
     if (c.ctrl !== this.me) v *= 1 + Math.min(1, this.threatOf(c.ctrl) / 10);
@@ -446,6 +453,20 @@
     o.score = this.scoreOption(o);
     return o;
   };
+  // Why a card in hand isn't being cast (for the end-of-turn note in the plan log).
+  P.whyNot = function (card) {
+    const Cd = C(), Rr = R();
+    if (Rr.isType(card, 'land')) return null;
+    const mode = this.modeFor(card); if (mode === undefined) return 'no mode with a useful target';
+    const eff = Cd.effectsOf(card, mode), perm = Cd.isPermanentCard(card), rl = roles(card);
+    if (!perm && rl.has('counter')) return 'counterspell (kept for a response)';
+    if (!perm && !(eff.understood && eff.effects.length)) { const so = root.Engine && root.Engine.spellOps ? root.Engine.spellOps(this.s, Object.assign({}, card, { mode })) : null; if (!(so && so.understood && so.ops.length) && !rl.has('wipe') && !rl.has('draw')) return 'the table can’t carry out its effect by itself'; }
+    const cost = this.costOf(card); if (!this.payFor(cost, this.sources(), cost.x ? 1 : 0, card)) return `needs ${Cd.costTotal(cost, cost.x ? 1 : 0)} mana${cost.W || cost.U || cost.B || cost.R || cost.G ? ' (colors)' : ''} — have ${this.sources().map(x => x.name + ':' + x.colors + (x.only ? '(only ' + x.only + ')' : '') + (x.filter ? '(filter)' : '')).join(', ') || 'none'}`;
+    const t = this.chooseTargets(card, mode, eff, {}); if (!t) return 'no good target';
+    const o = this.option(card, 'main'); if (o && o.score <= 0) return o.wipe ? 'wipe not worth it: ' + o.wipe.reason : 'not worth it now';
+    if (!o && Cd.instantSpeed(card)) return 'kept for instant speed';
+    return o ? 'lower priority than other plays' : 'not castable now';
+  };
   P.modeFor = function (card) {
     const Cd = C();
     const md = Cd.modesOf(card);
@@ -478,8 +499,9 @@
     const turn = s.turn.n, round = Math.ceil(turn / Math.max(1, s.seats.length));
     const lands = this.bf(this.me).filter(c => R().isType(c, 'land')).length;
     let v = (card.d && +card.d.cmc) || 0;
-    if (o.perm && this.isCre(card)) v += 1.5;
-    if (this.isKey(card)) v += 4;
+    if (o.perm && this.isCre(card)) v += 1.5 + (this.desperate() ? 3 + this.pt(card)[1] * 0.5 : 0);
+    if (this.desperate() && (rl.has('removal') || rl.has('fog') || rl.has('wipe'))) v += 3;
+    if (this.isKey(card)) v += o.perm || rl.has('draw') || rl.has('ramp') || rl.has('tutor') ? 4 : 0;
     if (this.isProtect(card)) v += 1.5;
     if (card.cmdr) {
       const role = prof.cmdrRole || 'value';
@@ -498,7 +520,10 @@
     if (this.isFinisher(card)) v += this.finishReady() ? 5 : -1;
     if (rl.has('tutor')) v += this.comboMissing() ? 3 : 1;
     // Removal: worth the threat it answers (to my plan).
-    if ((rl.has('removal') || rl.has('bounce') || rl.has('edict')) && o.tg.some(l => l[0] && l[0].c)) v += 1.5 + Math.max(0, ...o.tg.flat().filter(q => q.c).map(q => this.targetScore(q))) * 0.6;
+    if ((rl.has('removal') || rl.has('bounce') || rl.has('edict')) && o.tg.some(l => l[0] && l[0].c)) {
+      const best = Math.max(0, ...o.tg.flat().filter(q => q.c).map(q => this.targetScore(q) * (s.cards[q.c] && (s.cards[q.c].token ? 1 : rl.has('bounce') && !/destroy|exile/.test(low(C().text(card))) ? (s.cards[q.c].cmdr ? 0.35 : 0.45) : 1))));
+      v += 1.5 + best * 0.6;
+    }
     if (rl.has('wipe')) { const w = this.wipeCheck(card); v = w.good ? 6 + w.margin : -50; o.wipe = w; }
     // Combo piece: big bonus when it completes (or nearly completes) a combo the bracket allows.
     const cp = this.comboPiece(card); if (cp) v += cp.complete ? 30 : 3;
@@ -622,6 +647,8 @@
           const missing = z.filter(x => x === 'library').length + z.filter(x => x === 'graveyard').length * 0.6;
           const inHand = z.filter(x => x === 'hand' || x === 'command').length;
           const tutors = this.handCards().filter(c => roles(c).has('tutor')).length;
+          // Assembled already but nobody has won: the table can't run the loop by itself, so it isn't a win route.
+          if (z.every(x => x === 'battlefield')) { if (best === 99) bw = `${k.cards.join(' + ')} is assembled, but the loop has to be finished by hand — playing for value`; continue; }
           const turns = Math.max(0, missing - tutors) * 4 + inHand * 0.8 + 1;
           if (turns < best) { best = Math.round(turns); bw = `${k.cards.join(' + ')} (${k.note}): ${k.cards.map((n, i) => n + ' in ' + z[i]).join(', ')}`; }
         }
@@ -709,7 +736,7 @@
     this.plan = plan;
     const diff = this.diffPlans(old, plan);
     const newTurn = old && old.turn !== plan.turn;
-    if (!old || (newTurn && plan.steps.length)) this.note('plan', `Turn ${s.turn.n} plan: ${plan.route.route} in ~${plan.route.turns} turns (${plan.route.why}). Moves: ${plan.steps.filter(x => !['abilities', 'end'].includes(x.kind)).map(x => x.label).join('; ') || '-'}. Holding: ${plan.responses.map(x => x.name).join(', ') || '-'}. Main threat: ${plan.target ? R().nameOf(s, plan.target.pid) : '-'}.`, this.planData(plan));
+    if (!old || (newTurn && plan.steps.length)) this.note('plan', `Turn ${s.turn.n} plan: ${plan.route.route} in ~${plan.route.turns} turns (${plan.route.why}). Moves: ${plan.steps.filter(x => !['abilities', 'end'].includes(x.kind)).map(x => x.label).join('; ') || '-'}. Holding: ${[...new Set(plan.responses.map(x => x.name))].join(', ') || '-'}. Main threat: ${plan.target ? R().nameOf(s, plan.target.pid) : '-'}.`, this.planData(plan));
     else if (newTurn) { if (diff && /holding|route|target/.test(diff)) this.note('replan', `Opponent's turn (${why}): ${diff}`, this.planData(plan)); }
     else if (diff) this.note('replan', `Changed plan (${why}): ${diff}`, this.planData(plan));
     return plan;
@@ -736,7 +763,10 @@
     const s = this.s, me = this.me, L = this.L, Rr = R();
     const routes = this.routes();
     const route = routes[0];
-    const target = this.threats[0] || null;
+    // Keep the same main target unless another opponent is clearly more dangerous (no flip-flopping every look).
+    let target = this.threats[0] || null;
+    const prevT = this.plan && this.plan.target && this.threats.find(x => x.pid === this.plan.target.pid);
+    if (prevT && target && prevT !== target && target.score < prevT.score * 1.2 + 0.5) target = prevT;
     const myTurn = s.turn.active === me;
     const plan = { at: Date.now(), turn: s.turn.n, route, routes: routes.slice(0, 4), target, threats: this.threats.map(t => ({ pid: t.pid, name: Rr.nameOf(s, t.pid), score: +t.score.toFixed(1), clockOnMe: +t.clockOnMe.toFixed(1), why: `power ${t.power}, engines ${t.engines}${t.comboNear.length ? ', combo close: ' + t.comboNear.map(k => k.cards.join('+')).join('; ') : ''}${t.interfere ? ', fights my plan ' + t.interfere.toFixed(1) : ''}` })),
       reads: this.opps().map(p => { const r = this.reads[p]; return { pid: p, name: Rr.nameOf(s, p), cmdr: r.cmdr.join(' + '), arch: r.arch.join(', '), kill: [...r.kill].slice(0, 6), note: r.note }; }),
@@ -789,7 +819,10 @@
     if (pending) { const lc = this.view.hand.find(c => c.id === pending.id); const m = lc && Cd.manaSource(Object.assign({ zone: 'battlefield' }, lc)); if (m && !/enters (?:the battlefield )?tapped/i.test(Cd.text(lc))) srcs = srcs.concat([{ id: lc.id, amount: m.amount, colors: m.colors, units: m.units, name: lc.d.n, pending: true }]); }
     const cands = this.handCards().concat(this.cmdZone()).concat(this.gyCastables()).map(c => this.option(c, 'main', { sources: srcs })).filter(Boolean).filter(o => o.score > 0);
     // What I'd like to hold up: the best answer in hand for an opponent's turn.
+    // Last round's held answer: did it get used? (adapts how much mana it keeps open)
+    if (this.holding && this.holding.turn !== T.n) { this.holdWaste = this.holding.fired ? Math.max(0, (this.holdWaste || 0) - 1) : (this.holdWaste || 0) + 1; if (!this.holding.fired) this.note('replan', `Held ${this.holding.name} all round and didn't need it (held mana wasted ${this.holdWaste}× in a row — keeping less open)`); this.holding = null; }
     const hold = L.hold ? this.holdChoice(srcs) : null;
+    if (this.desperate() && !(this.plan && this.plan.desperateNoted === s.turn.n)) { plan.desperateNoted = s.turn.n; this.note('plan', `Desperate: the next attacks (~${this.incomingNext().toFixed(0)} damage) could kill me at ${this.life(this.me)} life — casting blockers and answers now`); }
     const pickSet = sources => {
       const chosen = []; let left = sources.slice();
       const order = cands.slice().sort((a, b) => (b.score / Math.max(1, b.mana * 0.6)) - (a.score / Math.max(1, a.mana * 0.6)));
@@ -820,8 +853,11 @@
     }
     // Equipment and auras on the plan's creature; vehicles to crew; planeswalkers; tap abilities.
     let left = set.left.filter(x => !x.pending);
-    for (const eq of this.bf(this.me).filter(c => Rr.isType(c, 'equipment') && !(c.attachedTo && s.cards[c.attachedTo] && s.cards[c.attachedTo].zone === 'battlefield'))) {
-      const best = this.voltronTarget(); if (!best) break;
+    // Equipment that gives shroud (Lightning Greaves) goes on last — after it, nothing else can target that creature.
+    const eqs = this.bf(this.me).filter(c => Rr.isType(c, 'equipment') && !(c.attachedTo && s.cards[c.attachedTo] && s.cards[c.attachedTo].zone === 'battlefield'))
+      .sort((a, b) => (/equipped creature has[^.]*shroud/i.test(Cd.text(a)) ? 1 : 0) - (/equipped creature has[^.]*shroud/i.test(Cd.text(b)) ? 1 : 0));
+    for (const eq of eqs) {
+      const best = this.voltronTarget(true); if (!best) break;
       const ab = Cd.abilities(eq).find(x => x.equip); if (!ab) continue;
       const pay = Cd.pay(ab.mana, left, 0); if (!pay) continue;           // only what the mana left after my spells can pay
       const used = new Set(pay); left = left.filter(x => !used.has(x.id));
@@ -861,8 +897,10 @@
     return 6 + (this.isCre(o.card) ? 1 : 0);
   };
   // Creatures without haste that don't help this combat go down after combat (hide information); not on Easy.
+  // About to die next turn: cast blockers and answers now, hold nothing back but a fog or protection.
+  P.desperate = function () { const s = this.s; if (!s || !s.turn) return false; const k = s.turn.n + ':' + s.rev; if (this._despK !== k) { this._despK = k; this._desp = this.incomingNext() >= this.life(this.me); } return this._desp; };
   P.castInMain2 = function (o) {
-    if (this.level === 'easy') return false;
+    if (this.level === 'easy' || this.desperate()) return false;
     const c = o.card;
     if (!this.isCre(c) || this.kw(c).has('haste') || o.roles.has('anthem') || o.roles.has('ramp') || o.card.cmdr && this.profile.cmdrRole === 'engine') return false;
     if (o.roles.has('wipe')) return false;
@@ -901,8 +939,8 @@
     pick.why = needed.size ? `makes ${[...needed].join('/')} I need` : 'best land';
     return pick;
   };
-  P.voltronTarget = function () {
-    const my = this.creatures(this.me);
+  P.voltronTarget = function (equip) {
+    const my = this.creatures(this.me).filter(c => !equip || !this.kw(c).has('shroud'));
     if (!my.length) return null;
     const cm = my.find(c => c.cmdr && c.owner === this.me);
     if (this.profile.arch.includes('voltron') && cm) return cm;
@@ -915,7 +953,7 @@
     const drains = this.bf(this.me).filter(c => roles(c).has('deathDrain')).length;
     if (!drains) return null;
     const mult = this.bf(this.me).some(c => nameOfCard(c) === 'Teysa Karlov') ? 2 : 1;
-    const fodder = this.creatures(this.me).filter(c => !outlets.includes(c)).length;
+    const fodder = this.creatures(this.me).filter(c => !outlets.includes(c) && !roles(c).has('deathDrain') && !c.cmdr && !this.isProtect(c)).length;
     const dmg = fodder * drains * mult;
     const p = this.opps().find(x => this.life(x) <= dmg);
     return p ? { pid: p, why: `${fodder} creatures × ${drains} drain × ${mult} ≥ ${this.life(p)} life` } : null;
@@ -936,13 +974,15 @@
       const exposed = this.bf(this.me).filter(x => this.isProtect(x) || this.isKey(x));
       const oppOpen = Math.max(0, ...this.opps().map(p => this.oppMana(p)));
       const nearWin = Math.max(0, ...this.threats.map(t => t.nearWin));
-      if (rl.has('counter')) { v = 3 + nearWin * 2 + (this.threats[0] ? this.threats[0].score * 0.2 : 0); why = 'counter the next spell that matters'; }
+      if (rl.has('counter')) { const top = this.threats[0]; v = 4 + nearWin * 2 + (top ? top.score * 0.3 + top.engines * 0.8 + Math.min(4, (this.s.players[top.pid] || {}).handCount || 0) * 0.3 : 0); why = 'counter the next spell that matters'; }
       else if (rl.has('protection')) { v = exposed.length ? 2.5 + sum(exposed, x => this.value(x)) * 0.15 : 0; why = `protect ${exposed.map(x => R().cardName(x)).slice(0, 2).join(', ')}`; }
       else if (rl.has('removal')) { v = 2 + nearWin * 1.5; why = 'kill a threat on their turn'; }
       else if (rl.has('fog')) { v = this.incomingNext() >= this.life(this.me) * 0.6 ? 5 : 0.5; why = 'survive their attack'; }
       else if (this.isCre(c)) { v = 1.5; why = 'flash it in at end of turn'; }
       else if (rl.has('draw')) { v = 1.2; why = 'draw at end of turn'; }
       v *= this.L.risk;
+      // Held mana that keeps going unused is worth less next time (it adapts to how this table plays).
+      v /= 1 + (this.holdWaste || 0) * 0.6;
       if (oppOpen === 0 && rl.has('counter')) v *= 0.8;
       if (v > (best ? best.value : 0.5)) best = { id: c.id, name: R().cardName(c), value: v, pay, why };
     }
@@ -1020,7 +1060,7 @@
       let o = null, why = '';
       if (r.ev === 'cast' && top && top.ctrl !== me) {
         const m = this.counterWorth(top);
-        if (!m) continue;
+        if (!m) { if (root.KT_AI_DEBUG) this.note('debug', `counter? ${R().cardName(top)}: not worth it`); continue; }
         o = this.option(card, 'instant', { counterTarget: top.id }); why = m;
       } else if (r.ev === 'target' && top && top.ctrl !== me) {
         const mineT = (top.tg || []).flat().filter(t => t.c && s.cards[t.c] && s.cards[t.c].ctrl === me && s.cards[t.c].zone === 'battlefield').map(t => t.c);
@@ -1053,7 +1093,7 @@
       } else if (r.ev === 'blocks' && ctx.blocks) {
         o = this.combatTrick(card); why = 'wins the fight';
       }
-      if (!o) { r.skips = (r.skips || 0) + 1; continue; }
+      if (!o) { r.skips = (r.skips || 0) + 1; if (root.KT_AI_DEBUG) this.note('debug', `${r.key}: no (${why || 'condition not met'}) top=${top ? R().cardName(top) : '-'}`); continue; }
       return { response: r, option: o, why };
     }
     return null;
@@ -1066,7 +1106,7 @@
     const rd = this.reads[top.ctrl] || this.readOpp(top.ctrl);
     const targetsMine = (top.tg || []).flat().filter(t => (t.c && s.cards[t.c] && (s.cards[t.c].ctrl === me || (s.cards[t.c].zone === 'stack' && s.cards[t.c].ctrl === me))) || t.p === me);
     if (rl.has('wipe')) { const w = sum(this.creatures(me), c => this.value(c)), t = sum(this.opps().map(p => sum(this.creatures(p), c => this.value(c)))); if (w >= t * 0.8 && w > 8) return `${nm} would wipe my better board`; }
-    if (targetsMine.some(t => t.c && s.cards[t.c] && (this.isProtect(s.cards[t.c]) || this.isKey(s.cards[t.c]) || s.cards[t.c].zone === 'stack'))) return `${nm} targets ${targetsMine.map(t => Rr.cardName(s.cards[t.c])).join(', ')}`;
+    if (targetsMine.some(t => t.c && s.cards[t.c] && (this.isProtect(s.cards[t.c]) || this.isKey(s.cards[t.c]) || s.cards[t.c].zone === 'stack' || s.cards[t.c].cmdr || this.value(s.cards[t.c]) >= 7))) return `${nm} targets ${targetsMine.map(t => Rr.cardName(s.cards[t.c])).join(', ')}`;
     if (rd.comboNear.some(k => k.missing.includes(n))) return `${nm} completes ${R().nameOf(s, top.ctrl)}’s combo`;
     if (rd.kill.has(n)) return `${nm} is ${Rr.nameOf(s, top.ctrl)}’s engine`;
     if (top.cmdr && rd.counter.includes('commander') && this.threatOf(top.ctrl) >= (this.threats[0] || {}).score) return `${nm} is the top threat’s commander`;
@@ -1082,6 +1122,10 @@
       if (unblocked.length && sum(unblocked, a => this.pt(a)[0] + boost) >= this.life(me) * 0.6) return `${nm} would make the attack on me deadly`;
     }
     if (rl.has('counter') && targetsMine.length) return `${nm} counters my spell`;
+    // Mana kept open for this counter all round: on the last opponent turn before mine, use it on their best spell.
+    const seats = Rr._int.rotate(s, s.turn.active);
+    const lastBeforeMe = seats[(seats.indexOf(me) - 1 + seats.length) % seats.length] === s.turn.active;
+    if (lastBeforeMe && this.holding && this.holding.counter && !this.holding.fired && (mv >= 4 || top.cmdr || rl.has('wipe') || rl.has('draw') && mv >= 3) && top.ctrl === s.turn.active) return `${nm} is the best spell this round, and I kept mana open for it`;
     return null;
   };
   // A permanent an opponent controls that must be answered now (combo complete, finisher, engine of the top threat).
@@ -1331,7 +1375,11 @@
         const text = q ? q.effect : '';
         const ops = root.Effects ? root.Effects.parse(text).ops : [];
         const intent = ask.reqs.map((r, k) => this.opIntent(ops, k, text));
+        const blink = ops.some(o => o.op === 'flicker');
+        // Blink only what gains from it: no tokens (they'd vanish), yes to enters-the-battlefield value and tapped mana rocks.
+        const blinkOk = id => { const c = s.cards[id]; if (!c || c.token || c.ctrl !== me) return false; const tx = low(C().text(c)); return /when [^.]*enters/.test(tx) || (c.tapped && C().manaSource(c) && !R().isType(c, 'land')) || (c.dmg || 0) > 0 || (c.counters && c.counters['-1/-1']); };
         const tg = ask.reqs.map((r, k) => {
+          if (blink && r.upTo && r.n > 1) { const pick = r.choices.filter(x => x.c && blinkOk(x.c)); return pick; }
           const ch = r.choices.slice();
           const fromThem = t => t.p ? t.p !== me : s.cards[t.c] && s.cards[t.c].ctrl !== me;
           const pool = intent[k] === 'theirs' ? ch.filter(fromThem) : ch.filter(t => !fromThem(t));
@@ -1389,7 +1437,7 @@
       route: p.route, routes: p.routes, target: p.target ? R().nameOf(this.s, p.target.pid) : null, threats: p.threats, reads: p.reads, milestones: p.milestones,
       steps: p.steps.map(x => ({ label: x.label, why: x.why, done: !!x.done, failed: x.failed || null })), hold: p.hold || null,
       responses: p.responses.map(x => ({ label: x.label, fired: !!x.fired, skips: x.skips || 0 })), scenarios: p.scenarios.map(x => ({ label: x.label, p: +x.p.toFixed(2) })) } : null,
-      turns: this.turnPlans, log: this.log.slice(-200) };
+      turns: this.turnPlans, log: this.log.slice(-200), wire: (this.wire || []).slice(-60) };
   };
 
   root.AIBrain = Brain;

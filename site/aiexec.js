@@ -12,10 +12,18 @@
   const roles = c => root.AIBrain.roles(c);
 
   function Exec(brain, io) {
-    this.B = brain; this.io = io;
+    this.B = brain;
+    // The adapter's table-changing calls are logged on the wire too.
+    const self = this, wrapped = Object.assign({}, io);
+    for (const k of ['castFromHand', 'castPublic', 'playLand', 'tapPay', 'move', 'fromHand', 'discard']) {
+      if (typeof io[k] !== 'function') continue;
+      wrapped[k] = async (...args) => { let r; try { r = await io[k](...args); } catch (e) { r = { ok: false, err: e.message }; } self.wire('out', `${k} ${JSON.stringify(args).slice(0, 90)} → ${r && r.ok === false ? 'refused: ' + r.err : 'ok'}`); return r; };
+    }
+    this.io = wrapped;
     this.state = {};           // per turn: step key -> 'done' | 'failed:<err>'
     this.firedAt = {};
     this.tried = new Set();
+    this.askTries = {};
     brain.doneCheck = key => !!this.markOf(key);
   }
   const E = Exec.prototype;
@@ -31,7 +39,15 @@
     this.mark(step.key, 'done');
     return true;
   };
-  E.act = async function (a) { try { const r = await this.io.act(a); return r || { ok: true }; } catch (e) { return { ok: false, err: e.message }; } };
+  // Everything said between the AI and the table, for the dev panel's "Talk with the table" list.
+  E.wire = function (dir, text) { const B = this.B; B.wire = B.wire || []; B.wire.push({ t: Date.now(), dir, text: String(text).slice(0, 200) }); if (B.wire.length > 150) B.wire.splice(0, B.wire.length - 150); };
+  E.act = async function (a) {
+    let r;
+    try { r = (await this.io.act(a)) || { ok: true }; } catch (e) { r = { ok: false, err: e.message }; }
+    const brief = Object.entries(a).filter(([k]) => k !== 'type').map(([k, v]) => `${k}=${typeof v === 'object' ? JSON.stringify(v).slice(0, 60) : v}`).join(' ');
+    this.wire('out', `${a.type} ${brief} → ${r.ok === false ? 'refused: ' + r.err : 'ok'}`);
+    return r;
+  };
 
   // ---------------- one action ----------------
   // Returns true when it did something (the caller waits for the table to update before the next step).
@@ -48,11 +64,18 @@
     B.think(this.view());
     // 1) The table is asking me something.
     for (const ask of (s.ask || []).filter(a => a.pid === me)) {
+      this.wire('in', `question ${ask.kind}${ask.name ? ' (' + ask.name + ')' : ''}`);
       if (ask.kind === 'manual') { B.note('manual', `couldn't finish by hand: ${ask.name} — “${(ask.text || []).join('. ')}”`); await this.act({ type: 'answer', id: ask.id }); return true; }
-      const ans = B.answerAsk(ask);
-      B.note('answer', `${ask.kind} for ${ask.name || 'the table'}: ${JSON.stringify(Object.assign({}, ans, { why: undefined }))} (${ans.why || ''})`);
-      const r = await this.act(Object.assign({ type: 'answer', id: ask.id }, ans));
-      if (r.ok === false) { B.note('refused', `answer ${ask.kind}: ${r.err}`); const fb = await this.act({ type: 'answer', id: ask.id, yes: false, tg: ask.reqs ? ask.reqs.map(rq => rq.upTo ? [] : rq.choices.slice(0, rq.n)) : undefined, modes: ask.modes ? [...Array(ask.min).keys()] : undefined, order: ask.items ? ask.items.map(x => x.id) : undefined }); if (fb.ok === false) B.note('refused', `fallback answer: ${fb.err}`); }
+      // The interface sheet (aiface.js) checks every answer; a bad one becomes the safe default.
+      const tries = (this.askTries[ask.id] = (this.askTries[ask.id] || 0) + 1);
+      let ans; try { ans = tries > 2 ? {} : B.answerAsk(ask); } catch (e) { ans = {}; B.note('error', `answer ${ask.kind}: ${e.message}`); }
+      const why = ans.why; delete ans.why;
+      const face = root.KT_AI_FACE;
+      const v = face ? face.vet(ask, ans) : { ans, problem: '' };
+      if (v.problem) B.note('interface', `${ask.kind} answer ${JSON.stringify(ans)} rejected by the sheet (${v.problem}) — sending the safe answer ${JSON.stringify(v.ans)}`);
+      B.note('answer', `${ask.kind} for ${ask.name || 'the table'}: ${JSON.stringify(v.ans)}${why ? ' (' + why + ')' : ''}`);
+      const r = await this.act(Object.assign({ type: 'answer', id: ask.id }, v.ans));
+      if (r.ok === false && face && face.ASKS[ask.kind]) { B.note('refused', `answer ${ask.kind}: ${r.err}`); const fb = await this.act(Object.assign({ type: 'answer', id: ask.id }, face.ASKS[ask.kind].safe(ask))); if (fb.ok === false) B.note('refused', `safe answer: ${fb.err}`); }
       return true;
     }
     // Waiting for someone else's choice.
@@ -83,7 +106,7 @@
       const res = B.respond(ctx);
       if (res) {
         const ok = await this.execOption(res.option, 'instant');
-        if (ok) { res.response.fired = true; B.note('response', `${res.response.label.split('→')[0].trim()} → ${res.option.name}: ${res.why}`); return true; }
+        if (ok) { res.response.fired = true; if (B.holding) B.holding.fired = true; B.note('response', `${res.response.label.split('→')[0].trim()} → ${res.option.name}: ${res.why}`); return true; }
         B.note('refused', `response ${res.option.name} could not be cast`);
       }
     }
@@ -143,8 +166,12 @@
         // (Stop if discarding keeps drawing cards — a discard trigger that draws must not empty my library.)
         const dk = 'discards:' + s.turn.n; this.discards = this.discards || {}; this.discards[dk] = (this.discards[dk] || 0);
         if (hand.length > 7 && this.discards[dk]++ < 3) { const worst = B.worstCards(hand.map(c => Object.assign({ zone: 'hand', counters: {}, face: 0 }, c)), hand.length - 7); await io.discard(worst.map(c => c.id), 'hand size'); B.note('did', `discarded ${worst.map(c => c.d.n).join(', ')} (hand size)`); return true; }
+        const unused = B.manaNow();
+        if (plan.hold) { const hc = io.hand().find(c => c.id === plan.hold.id); B.holding = { id: plan.hold.id, name: plan.hold.name, turn: T.n, counter: !!(hc && roles(Object.assign({ zone: 'hand', counters: {}, face: 0 }, hc)).has('counter')), fired: false }; }
+        const tpx = (B.turnPlans[T.n] = B.turnPlans[T.n] || { planned: [], did: [], failed: [] }); tpx.unused = unused; tpx.held = plan.hold ? plan.hold.name : null;
         const r = await this.act({ type: 'advance', goal: 'end' });
-        this.did(st, r, `end turn${plan.hold ? ' (holding ' + plan.hold.name + ')' : ''}`);
+        const kept = unused >= 2 ? this.io.hand().map(c => Object.assign({ zone: 'hand', counters: {}, face: 0, owner: me, ctrl: me }, c)).map(c => { const w = B.whyNot(c); return w ? `${c.d.n}: ${w}` : null; }).filter(Boolean) : [];
+        this.did(st, r, `end turn${plan.hold ? ' (holding ' + plan.hold.name + ')' : ''}${unused ? `, ${unused} mana unused` : ''}${kept.length ? ' — in hand: ' + kept.join('; ') : ''}`);
         return true;
       }
     }
@@ -224,7 +251,10 @@
     if (!outlet) return null;
     const abs = C().abilities(outlet), i = abs.findIndex(a => a.sacOther);
     if (i < 0) return null;
-    const fodder = B.worstPermanents(B.creatures(this.io.me()).filter(c => c.id !== outlet.id && C().matchesWhat(c, abs[i].sacOther)), 1)[0];
+    // Never the drain creatures or the commander while anything else is left.
+    const all = B.creatures(this.io.me()).filter(c => c.id !== outlet.id && C().matchesWhat(c, abs[i].sacOther));
+    const spare = all.filter(c => !roles(c).has('deathDrain') && !c.cmdr && !B.isProtect(c));
+    const fodder = B.worstPermanents(spare.length ? spare : [], 1)[0];
     if (!fodder) return null;
     const pay = C().pay(abs[i].mana, B.sources(), 0); if (!pay) return null;
     if (pay.length) await this.io.tapPay(pay);
@@ -283,6 +313,8 @@
   E.onTodo = async function (t) {
     const io = this.io, B = this.B, s = io.s(), me = io.me();
     B.load(this.view());
+    this.wire('in', `job ${t.k}${t.n ? ' ×' + t.n : ''} (${t.src || ''})`);
+    if (root.KT_AI_FACE && !root.KT_AI_FACE.TODOS[t.k]) B.note('interface', `the table gave me a job “${t.k}” that isn't on the interface sheet — skipped`);
     const hand = () => io.hand().map(c => Object.assign({ zone: 'hand', counters: {}, face: 0, owner: me, ctrl: me }, c));
     try {
       if (t.k === 'draw') { await io.draw(t.n || 1, `drew ${t.n || 1} (${t.src})`); return; }

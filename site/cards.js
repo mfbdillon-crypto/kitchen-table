@@ -96,6 +96,24 @@
       const M = root.Oracle ? root.Oracle.model(o) : null;
       if (M) {
         for (const a of M.abilities) {
+          // "As long as you have 25 or more life, this gets +2/+2" / "As long as …, creatures you control get +2/+2".
+          if (a.kind === 'static' && (a.sub === 'conditional' || a.sub === 'selfStatic')) {
+            const tx = String(a.text || '').toLowerCase().replace(/\.$/, '');
+            let mm = tx.match(/^as long as (.+?), (other )?(?:([a-z]+) )?creatures you control get ([+-]\d+)\/([+-]\d+)(?: and have ([a-z ,]+))?$/) || tx.match(/^(other )?(?:([a-z]+) )?creatures you control get ([+-]\d+)\/([+-]\d+)(?: and have ([a-z ,]+))? as long as (.+)$/);
+            if (mm && o.ctrl === c.ctrl) {
+              const lead = /^as long as/.test(tx);
+              const cond = lead ? mm[1] : mm[6], other = lead ? mm[2] : mm[1], tribe = lead ? mm[3] : mm[2], pp = lead ? mm[4] : mm[3], tt = lead ? mm[5] : mm[4], kk = lead ? mm[6] : mm[5];
+              if (!(other && o.id === c.id) && (!tribe || matchesWhat(c, tribe.replace(/s$/, ''))) && root.Oracle.conditionHolds(s, o, cond) === true) { out.p += +pp; out.t += +tt; if (kk) addKws(out.kws, kk); }
+              continue;
+            }
+            mm = tx.match(/^(?:this|it) gets ([+-]\d+)\/([+-]\d+)(?: and has ([a-z ,]+))? as long as (.+)$/) || tx.match(/^as long as (.+?), (?:this|it) gets ([+-]\d+)\/([+-]\d+)(?: and has ([a-z ,]+))?$/);
+            if (mm && o.id === c.id) {
+              const lead = /^as long as/.test(tx);
+              const cond = lead ? mm[1] : mm[4], pp = lead ? mm[2] : mm[1], tt = lead ? mm[3] : mm[2], kk = lead ? mm[4] : mm[3];
+              if (root.Oracle.conditionHolds(s, o, cond) === true) { out.p += +pp; out.t += +tt; if (kk) addKws(out.kws, kk); }
+            }
+            continue;
+          }
           if (a.kind !== 'static' || (a.sub !== 'anthem' && a.sub !== 'grant')) continue;
           if (a.who === 'you' && o.ctrl !== c.ctrl) continue;
           if (a.who === 'opp' && o.ctrl === c.ctrl) continue;

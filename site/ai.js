@@ -94,19 +94,31 @@
   ];
   const answered = new Set();
 
-  const lastDid = re => { if (!brain) return null; for (let i = brain.log.length - 1; i >= 0; i--) { const e = brain.log[i]; if (e.kind === 'did' && (!re || re.test(e.text))) return e; } return null; };
+  const lastDid = re => { if (!brain) return null; for (let i = brain.log.length - 1; i >= 0; i--) { const e = brain.log[i]; if (e.kind === 'did' && !/searched|looked at|scry|surveil|end turn|discarded/.test(e.text) && (!re || re.test(e.text))) return e; } return null; };
   function answer(q) {
     const s = S(), t = String(q.text || '').toLowerCase();
-    const faqs = FAQ.filter(([re]) => re.test(t));
-    if (/\bwhy\b|legal|allowed|cheat/.test(t) && /(attack|block)/.test(t)) { const e = lastDid(/attacked|blocked|no attack|no blocks/); if (e) return { text: `My last combat move: ${e.text}. It followed the combat rules (508–510).` }; }
-    if (/(legal|allowed|cheat|illegal|why did you)/.test(t)) { const e = lastDid(); if (e) return { text: `My last move was: ${e.text.replace(/ \(.*\)$/, '')}. The table checked it against the rules before allowing it.` }; }
-    if (faqs.length) return { text: faqs.slice(0, 2).map(f => f[1]).join(' ') };
+    const faqs = FAQ.filter(([re]) => re.test(t)).slice(0, 2).map(f => f[1]);
+    // A card on the table the question is about (longest name wins; never cards in hidden zones).
     const pool = Object.values(s.cards).filter(c => !c.faceDown && c.d && c.zone !== 'library' && c.zone !== 'hand');
-    let card = null; for (const c of pool) { const n = cn(c).toLowerCase(); if (n.length > 3 && t.includes(n) && (!card || n.length > cn(card).length)) card = c; }
-    if (card) return { text: `${cn(card)} — ${R.typeLine(card)}: ${C.text(card).replace(/\n/g, ' ').slice(0, 320)}` };
-    if (/(plan|strategy|thinking|next|going to)/.test(t)) return { text: 'I keep my plans to myself — that’s hidden information, like a player’s hand.' };
+    let card = null; for (const c of pool) { const n = cn(c).toLowerCase(), short = n.split(',')[0]; if ((n.length > 3 && t.includes(n)) || (short.length > 4 && t.includes(short))) if (!card || n.length > cn(card).length) card = c; }
+    const cardLine = c => `${cn(c)} (${R.typeLine(c)}${C.pt(s, c) ? ', now ' + C.pt(s, c).join('/') : ''}): “${C.text(c).replace(/\n/g, ' ').slice(0, 300)}”`;
+    // "Why did you attack me / block / target that?" — my last public move of that kind, with its public reason.
+    if (/\bwhy\b|legal|allowed|cheat|illegal/.test(t)) {
+      const kind = /attack/.test(t) ? /attacked|no attack/ : /block/.test(t) ? /blocked|no blocks/ : card ? new RegExp(cn(card).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') : null;
+      const e = lastDid(kind);
+      if (e) return { text: `${/legal|allowed|cheat|illegal/.test(t) ? 'Yes, it was legal — the table checks every move before allowing it. ' : ''}${e.text.replace(/ — in hand:.*$/, '').replace(/\(holding [^)]*\)/, '')}.` };
+    }
+    // Rules questions: the rule, plus the card's text when a card is named.
+    if (faqs.length || card) {
+      const parts = [];
+      if (faqs.length) parts.push(faqs.join(' '));
+      if (card) parts.push(cardLine(card) + (/\b(does|do|is|can|will|would)\b/.test(t) ? ' The table applies this automatically when it happens.' : ''));
+      return { text: parts.join(' ') };
+    }
+    if (/(plan|strategy|thinking|next|going to|hold|holding)/.test(t)) return { text: 'I keep my plans to myself — that’s hidden information, like a player’s hand.' };
     if (/(hand|cards in|how many cards)/.test(t)) return { text: `I have ${G.P.hand.length} card${G.P.hand.length === 1 ? '' : 's'} in hand and ${G.P.library.length} in my library.` };
-    if (/(life|winning|ahead|score)/.test(t)) return { text: s.seats.map(p => `${nameOf(p)}: ${s.players[p].life}`).join(' · ') };
+    if (/(life|winning|ahead|score|poison)/.test(t)) return { text: s.seats.map(p => `${nameOf(p)}: ${s.players[p].life}${s.players[p].poison ? ' (' + s.players[p].poison + ' poison)' : ''}`).join(' · ') };
+    if (/(mana|untapped|lands)/.test(t)) { const n = Object.values(s.cards).filter(c => c.zone === 'battlefield' && c.ctrl === ME() && !c.tapped && C.manaSource(c)).length; return { text: `I have ${n} untapped mana source${n === 1 ? '' : 's'} on the battlefield — you can see them on my side of the table.` }; }
     if (/(skill|level|difficulty|how good)/.test(t)) return { text: `I’m playing on ${skill()}. The player who added me can change it.` };
     return { text: 'Ask me about the rules, a card on the table, or a move I made — I don’t share my hand or my plans.' };
   }

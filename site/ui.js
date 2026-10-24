@@ -782,7 +782,13 @@
       return true;
     }
     const srcs = Object.values(S().cards).filter(c => c.zone === 'battlefield' && c.ctrl === KEY && !c.tapped && !(R.isType(c, 'creature') && R.sick(S(), c) && !CD.keywords(c, S()).has('haste')))
-      .map(c => { const m = CD.manaSource(c); return m && !m.sac ? { id: c.id, amount: m.amount, colors: m.colors, units: m.units } : null; }).filter(Boolean);
+      .map(c => {
+        const m = CD.manaSource(c); if (!m || m.sac) return null;
+        // "Spend this mana only to cast an Angel spell" (Giada…): used first for those spells, never for others.
+        const only = (CD.text(c).toLowerCase().match(/spend this mana only to cast (?:an? )?([a-z ]+?) spells?/) || [])[1] || null;
+        if (only && !CD.matchesWhat(card, only)) return null;
+        return { id: c.id, amount: m.amount, colors: m.colors, units: m.units, rank: only ? -1 : R.isType(c, 'land') ? 0 : R.isType(c, 'creature') ? 2 : 1 };
+      }).filter(Boolean).sort((a, b) => a.rank - b.rank);
     const pool = (G.me() && G.me().pool) || [];
     const ids = CD.pay(cost, pool.map((u, i) => ({ id: 'pool:' + i, amount: 1, colors: u })).concat(srcs), x);
     if (!ids) { G.toast('Not enough untapped mana to pay for that automatically — tap your mana yourself, then cast it again.', 'err'); return false; }
@@ -1692,11 +1698,13 @@
       body.append(sec('Next turns', h('ol', null, p.milestones.map(m => h('li', null, `${m.text} (≈${m.mana} mana)`)))));
       body.append(sec('This turn', p.steps.length ? h('ul', { class: 'apsteps' }, p.steps.map(x => h('li', { class: x.done ? 'done' : x.failed ? 'fail' : '' }, (x.done ? '✓ ' : x.failed ? '✗ ' : '• ') + x.label, h('span', { class: 'muted' }, ' — ' + x.why)))) : h('p', { class: 'muted' }, 'Not its turn.'),
         p.hold ? h('p', null, h('b', null, 'Keeping mana for: '), `${p.hold.name} (${p.hold.why})`) : null));
-      body.append(sec('Saved responses (trigger list)', p.responses.length ? h('ul', null, p.responses.map(x => h('li', { class: x.fired ? 'done' : '' }, (x.fired ? '✓ ' : '◦ ') + x.label + (x.skips ? ` (checked ${x.skips}×, not yet)` : '')))) : h('p', { class: 'muted' }, 'Nothing held.')));
+      body.append(sec('Saved responses (trigger list)', p.responses.length ? h('ul', { class: 'apresp' }, p.responses.map(x => h('li', { class: x.fired ? 'done' : '' }, (x.fired ? '✓ ' : '◦ ') + x.label + (x.skips ? ` (checked ${x.skips}×, not yet)` : '')))) : h('p', { class: 'muted' }, 'Nothing held.')));
       body.append(sec('Backup scenarios', h('ul', null, p.scenarios.map(x => h('li', null, `${Math.round(x.p * 100)}% · ${x.label}`)))));
       const turns = Object.entries(sn.turns || {}).slice(-4).reverse();
       body.append(sec('Planned vs. did', h('ul', null, turns.map(([n, x]) => h('li', null, h('b', null, `Turn ${n}: `), `did ${x.did.length} of ${x.planned.length} planned`, x.failed.length ? h('span', { class: 'bad' }, ' · refused: ' + x.failed.join('; ')) : null, h('div', { class: 'muted small' }, 'planned: ' + x.planned.join('; ')))))));
     }
+    if (sn && sn.wire && sn.wire.length) body.append(sec('Talk with the table (newest first)', h('ul', { class: 'aplog' }, sn.wire.slice().reverse().slice(0, 40).map(w => h('li', { class: w.dir === 'in' ? 'k-plan' : /refused/.test(w.text) ? 'k-refused' : '' }, h('b', null, w.dir === 'in' ? 'table → AI ' : 'AI → table '), w.text)))));
+    if (window.KT_AI_FACE) body.append(h('details', { class: 'aps' }, h('summary', null, 'Interface sheet (what the table can ask the AI, and how it answers)'), h('pre', { class: 'apsheet' }, window.KT_AI_FACE.sheet())));
     if (sn) body.append(sec('Change log (newest first)', h('ul', { class: 'aplog' }, sn.log.slice().reverse().slice(0, 120).map(e => h('li', { class: 'k-' + e.kind }, h('time', null, `t${e.turn} ${e.phase}`), ' ', h('b', null, e.kind), ' ', e.text)))));
     return h('aside', { id: 'log', class: 'aiplan' }, h('header', null, h('h2', null, 'AI plans'), h('button', { class: 'x', onclick: () => { G.aiPlanOpen = false; render(); } }, '✕')),
       list.length > 1 ? h('div', { class: 'chips' }, list.map(x => h('button', { class: 'chip' + (x.id === G.aiPlanTab ? ' set' : ''), onclick: () => { G.aiPlanTab = x.id; render(); } }, x.name))) : null, body);

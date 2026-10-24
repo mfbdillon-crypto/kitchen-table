@@ -176,6 +176,7 @@
       c.faceDown = keepDown;
       if (from === 'limbo' && opts.backFace) c.face = 1;
       enterBattlefield(s, c);
+      enterCounters(s, c, notes);
     }
     if ((to === 'exile' || to === 'stack') && keepDown && !c.faceDown) { c.faceDown = true; c.d = null; }
     if (opts.row && ROWS.includes(opts.row) && to === 'battlefield') c.row = opts.row;
@@ -186,6 +187,44 @@
     } else c.seq = ++s.seq;
   }
 
+  // Gaining life, with replacement effects (616): "you gain that much life plus 1 instead" (Angel of Vitality),
+  // "twice that much" (Boon Reflection, Rhox Faithmender), and "your opponents can't gain life" (Erebos).
+  function gainLife(s, pid, n) {
+    const P = s.players[pid]; if (!P || n <= 0) return 0;
+    const C = root.Cards;
+    let plus = 0, mult = 1;
+    if (C) for (const o of Object.values(s.cards)) {
+      if (o.zone !== 'battlefield' || o.faceDown || !o.d) continue;
+      const t = C.text(o).toLowerCase();
+      if (o.ctrl !== pid && /your opponents can't gain life/.test(t)) return 0;
+      if (o.ctrl === pid && /players? can't gain life|you can't gain life/.test(t) && !/opponents/.test(t)) return 0;
+      if (o.ctrl !== pid) continue;
+      let m = t.match(/if you would gain life, you gain that much life plus (\d+|one|two) instead/);
+      if (m) plus += /^\d+$/.test(m[1]) ? +m[1] : m[1] === 'two' ? 2 : 1;
+      if (/if you would gain life, you gain twice that much life instead/.test(t)) mult *= 2;
+    }
+    const got = (n + plus) * mult;
+    P.life += got;
+    return got;
+  }
+  // 614.1c: "Each other Angel you control enters with an additional +1/+1 counter on it for each Angel you already control"
+  // (Giada), "Each other creature you control enters with an additional +1/+1 counter on it" (and similar).
+  function enterCounters(s, c, notes) {
+    const C = root.Cards; if (!C || c.faceDown || !(isType(c, 'creature'))) return;
+    let add = 0;
+    for (const o of Object.values(s.cards)) {
+      if (o.zone !== 'battlefield' || o.faceDown || o.id === c.id || o.ctrl !== c.ctrl || !o.d) continue;
+      const t = C.text(o).toLowerCase();
+      const m = t.match(/each other ([a-z ]+?) you control enters(?: the battlefield)? with (an|one|two|three) additional \+1\/\+1 counters? on it(?: for each ([a-z ]+?) you already control)?/);
+      if (!m) continue;
+      const what = m[1].replace(/ies$/, 'y').replace(/s$/, '');
+      if (what !== 'creature' && !C.matchesWhat(c, what)) continue;
+      const per = { an: 1, one: 1, two: 2, three: 3 }[m[2]] || 1;
+      if (m[3]) { const w2 = m[3].replace(/ies$/, 'y').replace(/s$/, ''); add += per * Object.values(s.cards).filter(x => x.zone === 'battlefield' && x.ctrl === c.ctrl && x.id !== c.id && (w2 === 'creature' ? isType(x, 'creature') : C.matchesWhat(x, w2))).length; }
+      else add += per;
+    }
+    if (add > 0) { c.counters['+1/+1'] = (c.counters['+1/+1'] || 0) + add; if (notes) notes.push(`${cardName(c)} entered with ${add} additional +1/+1 counter${add > 1 ? 's' : ''}`); }
+  }
   // "This land enters tapped." (an unconditional line on the card) — 614.1c / 305.7
   function entersTapped(c, s) {
     if (c.faceDown || !root.Cards) return false;
@@ -1490,11 +1529,11 @@
         case 'life': {
           const n = e.n === 'LOST' ? lostThisWay : val(e.n);
           const who = e.who === 'you' ? [by] : e.who === 'each opponent' ? s.seats.filter(p => p !== by) : e.who === 'each player' ? s.seats.slice() : T.filter(t => t.p).map(t => t.p);
-          for (const p of who) { s.players[p].life += e.sign * n; if (e.sign < 0) lostThisWay += n; alertChecks(s, p); }
+          for (const p of who) { if (e.sign > 0) gainLife(s, p, n); else s.players[p].life -= n; if (e.sign < 0) lostThisWay += n; alertChecks(s, p); }
           if (who.length) notes.push(`${who.map(p => nameOf(s, p)).join(', ')} ${e.sign > 0 ? 'gained' : 'lost'} ${n} life (${srcName})`);
           break;
         }
-        case 'lifeEqPow': for (const t of T) { const who = ctrlOf[t.c]; const pw = powers[t.c] || 0; if (pw > 0 && who && s.players[who]) { s.players[who].life += pw; notes.push(`${nameOf(s, who)} gained ${pw} life`); } } break;
+        case 'lifeEqPow': for (const t of T) { const who = ctrlOf[t.c]; const pw = powers[t.c] || 0; if (pw > 0 && who && s.players[who]) { gainLife(s, who, pw); notes.push(`${nameOf(s, who)} gained ${pw} life`); } } break;
         case 'fetchCtrl': for (const t of T) { const who = ctrlOf[t.c]; if (who && s.players[who]) { todo(s, who, { k: 'fetch', n: 1, dest: 'battlefield', tapped: e.tapped, optional: true, src: srcName }); notes.push(`${nameOf(s, who)} may search for a basic land (${srcName})`); } } break;
         case 'fetch': todo(s, by, { k: 'fetch', n: e.n, dest: e.dest, tapped: e.tapped, split: e.split, src: srcName }); notes.push(`${nameOf(s, by)} searches for ${e.n === 1 ? 'a basic land' : e.n + ' basic lands'} (${srcName})`); break;
         case 'scry': todo(s, by, { k: 'scry', n: val(e.n), src: srcName }); break;
@@ -1613,7 +1652,7 @@
           else { t.dmg = (t.dmg || 0) + e.n; if (k.has('deathtouch')) t.dtd = true; summary.push(`${cardName(e.src)} dealt ${e.n} damage to ${cardName(t)}`); }
           if (root.Engine) root.Engine.emit({ type: 'combatDamage', card: e.src, to: 'creature', target: t.id, player: e.src.ctrl, n: e.n });
         }
-        if (k.has('lifelink') && s.players[e.src.ctrl]) s.players[e.src.ctrl].life += e.n;
+        if (k.has('lifelink') && s.players[e.src.ctrl]) gainLife(s, e.src.ctrl, e.n);
       }
       for (const p of s.seats) alertChecks(s, p);
       // The damage line first, then what died from it (state-based actions, 704.3).
@@ -1694,7 +1733,7 @@
   }
 
   const _int = { moveOne, makeToken, tokenD, todo, log, cardName, nameOf, stackCards, stackTop, startPrio, nextHolder: (s, n) => nextHolder(s, n), PHASES, PI: n => PHASES.indexOf(n),
-    isType, typeLine, alive: (s, p) => alive(s, p), live: (s, p) => live(s, p), addPool, unitsOf, passTurn, sba, alertChecks, rotate, face, rowFor, listNames,
+    gainLife: (s, p, n) => gainLife(s, p, n), isType, typeLine, alive: (s, p) => alive(s, p), live: (s, p) => live(s, p), addPool, unitsOf, passTurn, sba, alertChecks, rotate, face, rowFor, listNames,
     clearMods, cleanTargets, wardFor, targetText, sick, combatDamage: (s, n) => combatDamage(s, n) };
   root.Rules = { _int, PHASES, ROWS, PUBLIC_ZONES, KEYWORD_COUNTERS, SUGGESTED_COUNTERS, MAX_SEATS, START_LIFE,
     newState, apply, canAct, zoneCards, cardName, typeLine, isType, face, rowFor, ptOf, rid, listNames, nameOf,
