@@ -1,0 +1,30 @@
+import { chromium } from '/home/claude/.npm-global/lib/node_modules/playwright/index.mjs';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url); const mock = require('./mock.js');
+const b = await chromium.launch(); const wait = ms => new Promise(r => setTimeout(r, ms)); const errs = [];
+async function seat(name, vp, touch, t) {
+  const ctx = await b.newContext({ viewport: vp, hasTouch: !!touch, isMobile: !!touch }); await mock(ctx); const p = await ctx.newPage();
+  p.on('pageerror', e => errs.push(name + ': ' + e.message));
+  await p.goto('http://localhost:8090/?t=' + t); await p.fill('#welcomename', name); await p.click('text=Join the table');
+  await p.waitForFunction(() => KT.me && KT.me(), null, { timeout: 20000 });
+  await p.click(touch ? '#top .menubtn' : '#top >> text=Decks'); if (touch) await p.click('.menu >> text=Decks');
+  await p.setInputFiles('#importfile', 'test/deck.csv'); await p.waitForSelector('text=Imported');
+  await p.click('.dline:has-text("Alesha") .star', { force: true }); await p.click('text=Play this deck', { force: true }); await wait(700);
+  await p.evaluate(async () => { KT.openingHand(); KT.keep(); const ls = KT.P.hand.filter(KT.isLand).map(c => c.id); await KT.fromHand(ls.slice(0, 3), 'battlefield');
+    const c = KT.P.library.filter(x => /Creature/.test(x.d.faces[0].t)).slice(0, 4).map(x => x.id); await KT.fromLibrary(c, 'battlefield'); await KT.mill(2);
+    const cr = Object.values(KT.S.cards).find(x => x.zone === 'battlefield' && x.owner === KT.KEY && /Creature/.test(x.d.faces[0].t)); if (cr) { await KT.tap([cr.id], true); await KT.counter(cr.id, '+1/+1', 2); } });
+  return { ctx, p };
+}
+const L = [];
+for (const n of ['Marissa', 'Alex', 'Sam', 'Jo']) L.push(await seat(n, { width: 1280, height: 720 }, false, 'views4e'));
+await L[0].p.click('text=Start game'); await wait(600);
+await L[0].p.mouse.move(640, 700); await L[0].p.screenshot({ path: 'test/v_1280_board.png' });
+await L[0].p.click('#tabs >> text=All players'); await wait(400); await L[0].p.screenshot({ path: 'test/v_1280_all.png' });
+const P1 = await seat('Pat', { width: 844, height: 390 }, true, 'viewsphe'); const P2 = await seat('Quin', { width: 844, height: 390 }, true, 'viewsphe');
+await P1.p.click('#top >> text=Start game').catch(() => {}); await wait(600);
+await P1.p.screenshot({ path: 'test/v_phone_board.png' });
+await P1.p.locator('.brow.creatures .card').first().tap(); await wait(400); await P1.p.screenshot({ path: 'test/v_phone_enlarge.png' });
+await P1.p.keyboard.press('Escape').catch(() => {}); await P1.p.evaluate(() => document.querySelector('.overlay .x')?.click()); await wait(200);
+await P1.p.click('#hand .handle'); await wait(400); await P1.p.screenshot({ path: 'test/v_phone_drawer.png' });
+const U = await seat('Upr', { width: 390, height: 844 }, true, 'viewsupe'); await U.p.screenshot({ path: 'test/v_phone_upright.png' });
+console.log('ERRORS', errs); await b.close();

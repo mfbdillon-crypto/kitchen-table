@@ -1,0 +1,53 @@
+// Browser test of the lobby: an automatic game code, the centred lobby with house rules and Start, no joining after the
+// start, and each board's Board / Log / Split tabs.
+import { chromium } from '/home/claude/.npm-global/lib/node_modules/playwright/index.mjs';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url); const mock = require('./mock.js');
+const wait = ms => new Promise(r => setTimeout(r, ms));
+const br = await chromium.launch(); const ctx = await br.newContext({ viewport: { width: 1366, height: 820 } }); await mock(ctx);
+const p = await ctx.newPage(); const errs = [];
+p.on('pageerror', e => errs.push('page: ' + e.message));
+p.on('console', m => { if (m.type() === 'error' && !/ERR_TUNNEL|Failed to load resource|net::/.test(m.text())) errs.push('console: ' + m.text().slice(0, 200)); });
+const results = []; const check = (name, ok, info) => results.push(`${ok ? 'PASS' : 'FAIL'} ${name}${info ? ' — ' + info : ''}`);
+await p.goto('http://localhost:8090/');
+await wait(800);
+const code = await p.evaluate(() => new URLSearchParams(location.search).get('t'));
+check('a game code is made', /^kt-[a-z0-9]{6}$/.test(code || ''), code);
+await p.fill('#welcomename', 'Marissa'); await p.click('text=Join the table');
+await p.waitForFunction(() => KT.me && KT.me(), null, { timeout: 20000 });
+await wait(800);
+const box = await p.evaluate(() => { const r = document.querySelector('.lobby'); if (!r) return null; const b = r.getBoundingClientRect(); return { w: b.width, h: b.height, cx: b.left + b.width / 2, cy: b.top + b.height / 2, W: innerWidth, H: innerHeight }; });
+check('lobby shows, centred, about a quarter of the screen', box && Math.abs(box.cx - box.W / 2) < 30 && Math.abs(box.cy - box.H / 2) < 60 && box.w * box.h > 0.18 * box.W * box.H && box.w * box.h < 0.45 * box.W * box.H, JSON.stringify(box));
+check('remembers the code', await p.evaluate(c => JSON.parse(localStorage.getItem('kt:lastTable')) === c, code));
+await p.evaluate(async () => { const h = await KT.importPrecon(window.KT_PRECONS[2], () => {}); await KT.useDeck(h); await KT.importPrecon(window.KT_PRECONS[6], () => {}); });
+await p.evaluate(() => { const d = KT.decks().find(x => x.src === window.KT_PRECONS[6].id); KT.addAI('Chandra', d, 'easy'); });
+await p.waitForFunction(() => KT.S.seats.length === 2 && KT.S.seats.every(x => KT.S.players[x].libCount > 0), null, { timeout: 60000 });
+await wait(600);
+await p.selectOption('.lobby select', '30'); await wait(600);
+await p.screenshot({ path: '/home/claude/mtg/test/shots/lobby.png' });
+const startBtn = p.locator('.lobby button', { hasText: 'Start game' });
+check('Start is ready', await startBtn.isEnabled());
+await startBtn.click(); await wait(1500);
+check('house rule: 30 life', await p.evaluate(() => KT.S.seats.every(x => KT.S.players[x].life === 30)), await p.evaluate(() => KT.S.seats.map(x => KT.S.players[x].life).join(',')));
+check('lobby gone', (await p.locator('.lobby').count()) === 0);
+// A second player opening the link now can only watch.
+const p2 = await ctx.newPage();
+await p2.goto('http://localhost:8090/?t=' + code + '&fresh=1');
+await p2.evaluate(() => { try { sessionStorage.setItem('kt:tabplayer', '1'); } catch (e) {} });
+const r2 = await p.evaluate(() => Rules.apply(JSON.parse(JSON.stringify(KT.S)), 'pZZZ', { type: 'join', name: 'Late' }));
+check('no joining after the start', r2.ok === false && /already started/.test(r2.err), r2.err);
+await p2.close();
+// Board tabs.
+await p.evaluate(() => { if (KT.P.phase === 'none') KT.openingHand(); KT.keep(); });
+await wait(1500);
+await p.evaluate(() => { KT.tab = 'me'; KT.render(); }); await wait(300);
+await p.locator('.board .btabs button', { hasText: 'Log' }).first().click(); await wait(400);
+check('log tab', await p.locator('.board .blogwrap').count() > 0 && await p.locator('.board .field').count() === 0);
+await p.locator('.board .btabs button', { hasText: 'Split' }).first().click(); await wait(400);
+const split = await p.evaluate(() => { const f = document.querySelector('.bsplit .field'), l = document.querySelector('.bsplit .blogwrap'); return f && l ? [Math.round(f.getBoundingClientRect().width), Math.round(l.getBoundingClientRect().width)] : null; });
+check('split 70/30', split && split[0] > split[1] * 1.8 && split[0] < split[1] * 3, JSON.stringify(split));
+await p.screenshot({ path: '/home/claude/mtg/test/shots/split.png' });
+await p.locator('.board .btabs button', { hasText: 'Board' }).first().click();
+console.log(results.join('\n'));
+console.log('ERRORS', JSON.stringify(errs.slice(0, 10)));
+await br.close();

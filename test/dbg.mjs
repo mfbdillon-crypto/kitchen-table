@@ -1,0 +1,13 @@
+import { chromium } from '/home/claude/.npm-global/lib/node_modules/playwright/index.mjs';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url); const mock = require('./mock.js');
+const browser = await chromium.launch(); const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } }); await mock(ctx); const page = await ctx.newPage();
+await page.goto('http://localhost:8090/?t=dbg'); await page.fill('#welcomename', 'M'); await page.click('text=Join the table');
+await page.waitForFunction(() => KT.me && KT.me(), null, { timeout: 20000 });
+await page.click('#top >> text=Decks'); await page.setInputFiles('#importfile', 'test/deck.csv'); await page.waitForSelector('text=Imported'); await page.click('text=Play this deck');
+await new Promise(r=>setTimeout(r,800)); await page.evaluate(()=>{KT.openingHand(); KT.keep();}); await new Promise(r=>setTimeout(r,500));
+const vis = () => page.evaluate(() => !document.getElementById('preview').hidden);
+console.log('start', await vis());
+await page.mouse.move(200, 840); console.log('over hand card', await vis(), await page.evaluate(()=>document.elementFromPoint(200,840).className));
+await page.mouse.move(2, 898); console.log('corner', await vis(), await page.evaluate(()=>document.elementFromPoint(2,898).className));
+await browser.close();

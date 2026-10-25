@@ -1,0 +1,12 @@
+import { chromium } from '/home/claude/.npm-global/lib/node_modules/playwright/index.mjs';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url); const mock = require('./mock.js');
+const b = await chromium.launch(); const ctx = await b.newContext({ viewport: { width: 1440, height: 900 } }); await mock(ctx); const p = await ctx.newPage();
+p.on('pageerror', e => console.log('PAGEERROR', e.message)); p.on('console', m => console.log('CONSOLE', m.type(), m.text().slice(0,150)));
+await p.goto('http://localhost:8090/?t=q2'); await p.fill('#welcomename', 'M'); await p.click('text=Join the table');
+await p.waitForFunction(() => KT.me && KT.me(), null, { timeout: 20000 });
+await p.click('#top >> text=Decks'); await p.setInputFiles('#importfile', 'test/deck.csv'); await p.waitForSelector('text=Imported'); await p.click('text=Play this deck'); await new Promise(r => setTimeout(r, 800)); await p.click('#hand >> text=Draw opening hand'); await new Promise(r => setTimeout(r, 300));
+console.log('buttons:', await p.evaluate(() => [...document.querySelectorAll('#top button')].map(b => b.textContent).join(' | ')));
+await p.click('#top button:has-text("Phone")'); await new Promise(r => setTimeout(r, 800));
+console.log('modal?', await p.evaluate(() => !!document.querySelector('.modal')), await p.evaluate(() => (document.querySelector('.qr')||{}).innerHTML?.slice(0,60)));
+await b.close();

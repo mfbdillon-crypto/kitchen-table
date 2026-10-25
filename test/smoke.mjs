@@ -1,0 +1,12 @@
+import { chromium } from '/home/claude/.npm-global/lib/node_modules/playwright/index.mjs';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url); const mock = require('./mock.js');
+const br = await chromium.launch(); const ctx = await br.newContext({ viewport: { width: 1280, height: 800 } }); await mock(ctx);
+const p = await ctx.newPage(); const errs = [];
+p.on('pageerror', e => errs.push(e.message)); p.on('console', m => { if (m.type() === 'error') errs.push('console: ' + m.text()); });
+await p.goto('http://localhost:8090/?t=smoke' + Date.now() % 1000); await p.fill('#welcomename', 'Marissa'); await p.click('text=Join the table');
+await p.waitForFunction(() => KT.me && KT.me(), null, { timeout: 20000 });
+console.log('seated', await p.evaluate(() => KT.status));
+await new Promise(r => setTimeout(r, 1500));
+console.log('errors', errs.filter(e => !/ERR_TUNNEL/.test(e)));
+await br.close();

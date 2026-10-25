@@ -1,0 +1,28 @@
+import { chromium } from '/home/claude/.npm-global/lib/node_modules/playwright/index.mjs';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url); const mock = require('./mock.js');
+const wait = ms => new Promise(r => setTimeout(r, ms)); const errs = [];
+const b = await chromium.launch(); const T = 'pr' + Date.now() % 100000;
+async function seat(name) { const ctx = await b.newContext({ viewport: { width: 1440, height: 900 } }); await mock(ctx); const p = await ctx.newPage(); p.on('pageerror', e => errs.push(name + ': ' + e.message));
+  await p.goto('http://localhost:8090/?t=' + T); await p.fill('#welcomename', name); await p.click('text=Join the table'); await p.waitForFunction(n => KT.me && KT.me() && KT.me().name === n, name, { timeout: 20000 }); return p; }
+const M = await seat('Marissa'); const A = await seat('Alex');
+await M.click('#top >> text=Decks'); await M.setInputFiles('#importfile', 'test/deck.csv'); await M.waitForSelector('text=Imported');
+await M.screenshot({ path: 'test/pp_deck_nocmdr.png' });
+await M.click('.dline:has-text("Alesha") .star'); await wait(300);
+await M.screenshot({ path: 'test/pp_deck_cmdr.png' });
+await M.click('.cmdpanel >> text=Choose print'); await M.waitForSelector('.printgrid .print');
+console.log('prints shown:', await M.locator('.printgrid .print').count(), '| filters:', (await M.locator('.pfilters .chip').allTextContents()).join(', '));
+await M.screenshot({ path: 'test/pp_picker.png' });
+await M.click('.pfilters >> text=Reskins'); await wait(200);
+console.log('reskins:', (await M.locator('.printgrid .print .pmeta').allTextContents()).map(t => t.slice(0, 80)));
+await M.click('.pfilters >> text=All'); await M.click('.print:has-text("Secret Lair")'); await wait(200);
+console.log('finish options for SLD:', (await M.locator('.pfoot .chip').allTextContents()).join(', '));
+await M.click('.pfoot >> text=Foil (holo)'); await wait(200); await M.screenshot({ path: 'test/pp_picker_selected.png' });
+await M.click('text=Use this print'); await wait(400);
+console.log('deck commander now:', await M.evaluate(() => { const d = KT.decks()[0].cards.find(c => c.cmdr).d; return d.pr.setName + ' / fin=' + d.fin + ' / ' + d.faces[0].img.split('/').pop(); }));
+await M.screenshot({ path: 'test/pp_deck_after.png' });
+await M.click('text=Play this deck'); await wait(1200);
+console.log('Alex sees commander:', await A.evaluate(() => { const c = Object.values(KT.S.cards).find(c => c.zone === 'command'); return c && (c.d.faces[0].img.split('/').pop() + ' fin=' + c.d.fin); }));
+await A.click('#tabs >> text=Marissa'); await wait(300); await A.mouse.move(5, 5);
+await A.locator('.cmdcol').screenshot({ path: 'test/pp_alex_sees.png' });
+console.log('ERRORS', errs); await b.close();

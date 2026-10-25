@@ -1,0 +1,69 @@
+import { chromium } from '/home/claude/.npm-global/lib/node_modules/playwright/index.mjs';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url); const mock = require('./mock.js');
+const wait = ms => new Promise(r => setTimeout(r, ms));
+const T = 'uis' + Date.now() % 100000;
+const br = await chromium.launch(); const ctx = await br.newContext({ viewport: { width: 1366, height: 820 } }); await mock(ctx);
+const p = await ctx.newPage(); const errs = [];
+p.on('pageerror', e => errs.push('page: ' + e.message));
+await p.goto('http://localhost:8090/?t=' + T); await p.fill('#welcomename', 'Marissa'); await p.click('text=Join the table');
+await p.waitForFunction(() => KT.me && KT.me(), null, { timeout: 20000 });
+await p.evaluate(async txt => { const d = await KT.linesToDeck(Scry.parseDeckFile(txt), 'Gruul Test', () => {}); await KT.useDeck(d); }, mock.aiDeck());
+await p.evaluate(() => KT.addAI('Chandra', KT.decks()[0], 'normal'));
+await p.waitForFunction(() => KT.S.seats.some(x => KT.S.players[x].ai && KT.S.players[x].handCount > 0), null, { timeout: 40000 });
+await p.evaluate(() => { KT.openingHand(); KT.keep(); });
+// Give both sides something on the battlefield, and the human a Bolt + creature in hand.
+await p.evaluate(async () => {
+  const bolt = await Scry.named('Lightning Bolt'), bear = await Scry.named('Grizzly Bears'), giant = await Scry.named('Hill Giant');
+  KT.P.hand.unshift({ id: KT.KEY.slice(1, 9) + '-bolt1', owner: KT.KEY, d: bolt }, { id: KT.KEY.slice(1, 9) + '-bear1', owner: KT.KEY, d: bear });
+  KT.savePriv();
+  await KT.act({ type: 'enter', zone: 'battlefield', cards: [{ id: KT.KEY.slice(1, 9) + '-giant1', d: giant }] });
+});
+await p.evaluate(() => KT.act({ type: 'start' }));
+await wait(800);
+// make it the human's turn
+for (let i = 0; i < 40; i++) { const mine = await p.evaluate(() => KT.S.turn.active === KT.KEY && !KT.S.prio); if (mine) break; await p.evaluate(async () => { const s = KT.S; if (s.prio && s.prio.holder === KT.KEY) await KT.pass(); if (s.combat && !s.combat.done && s.combat.waiting.includes(KT.KEY) && !s.combat.ok[KT.KEY]) await KT.block([]); }); await wait(700); }
+await p.evaluate(() => { KT.tab = 'all'; KT.render(); });
+await wait(500);
+// Cast Lightning Bolt from the hand menu → target picker
+await p.click('#hand .card[data-id$="-bolt1"]');
+await p.click('.menu >> text=Cast');
+await p.waitForSelector('.pickbar');
+await p.screenshot({ path: 'test/s1_pick.png' });
+const chips = await p.$$eval('.pickbar .pkchoices button', bs => bs.map(b => b.textContent));
+console.log('target choices:', chips.join(' | '));
+// pick the AI player as the target
+const aiName = await p.evaluate(() => KT.S.players[KT.S.seats.find(x => KT.S.players[x].ai)].name);
+await p.click(`.pickbar .pkchoices button:text-is("${aiName}")`);
+await wait(400);
+await p.screenshot({ path: 'test/s2_waiting.png' });
+console.log('prio bar:', await p.$eval('.prio', e => e.textContent).catch(() => 'none'));
+await p.waitForFunction(() => !KT.S.prio, null, { timeout: 20000 });
+console.log('AI life after bolt:', await p.evaluate(() => KT.S.players[KT.S.seats.find(x => KT.S.players[x].ai)].life));
+// combat bar
+await p.evaluate(() => KT.act({ type: 'phase', to: Rules.PHASES.indexOf('Beginning of combat') }));
+await p.waitForSelector('.combatbar');
+await p.screenshot({ path: 'test/s3_attack.png' });
+await p.click('.board .card[data-id$="-giant1"]');
+await wait(200);
+console.log('combat bar:', await p.$eval('.combatbar', e => e.textContent));
+await p.click('.combatbar button.primary');
+await wait(3000);
+console.log('after attack:', await p.evaluate(() => KT.S.log.slice(-4).map(l => l.text).join(' | ')));
+// open the AI panel
+await p.evaluate(() => { KT.aiOpen = true; KT.render(); });
+await wait(300);
+await p.screenshot({ path: 'test/s4_aipanel.png' });
+// pass turn, let the AI play, answer its prompts, and capture a 'Respond?' bar and a block bar
+await p.evaluate(() => KT.act({ type: 'phase', dir: 'pass' }));
+let gotPrio = false, gotBlock = false;
+for (let i = 0; i < 120 && !(gotPrio && gotBlock); i++) {
+  const st = await p.evaluate(() => ({ prio: KT.S.prio && KT.S.prio.holder === KT.KEY, block: !!(KT.S.combat && !KT.S.combat.done && KT.S.combat.waiting.includes(KT.KEY) && !KT.S.combat.ok[KT.KEY]), mine: KT.S.turn.active === KT.KEY }));
+  if (st.prio && !gotPrio) { await wait(300); await p.screenshot({ path: 'test/s5_respond.png' }); gotPrio = true; console.log('respond bar:', await p.$eval('.prio', e => e.textContent).catch(() => 'none')); }
+  if (st.prio) await p.click('.prio button.primary').catch(() => {});
+  if (st.block && !gotBlock) { await wait(300); await p.screenshot({ path: 'test/s6_block.png' }); gotBlock = true; console.log('block bar:', await p.$eval('.combatbar', e => e.textContent).catch(() => 'none')); await p.click('.combatbar button.primary', { timeout: 3000 }).catch(() => console.log('   (no block button — auto no-blocks)')); }
+  if (st.mine && !st.prio) await p.evaluate(() => KT.act({ type: 'phase', dir: 'pass' }));
+  await wait(700);
+}
+console.log('ERRORS', errs);
+await br.close();

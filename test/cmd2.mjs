@@ -1,0 +1,15 @@
+import { chromium } from '/home/claude/.npm-global/lib/node_modules/playwright/index.mjs';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url); const mock = require('./mock.js');
+const b = await chromium.launch(); const ctx = await b.newContext({ viewport: { width: 1440, height: 900 } }); await mock(ctx); const p = await ctx.newPage();
+const wait = ms => new Promise(r => setTimeout(r, ms));
+await p.goto('http://localhost:8090/?t=cmd2x' + Date.now()%10000); await p.fill('#welcomename', 'M'); await p.click('text=Join the table');
+await p.waitForFunction(() => KT.me && KT.me(), null, { timeout: 20000 });
+await p.click('#top >> text=Decks'); await p.setInputFiles('#importfile', 'test/deck.csv'); await p.waitForSelector('text=Imported');
+console.log('decks after import', await p.evaluate(() => KT.decks().map(d => d.name + ':' + d.cards.filter(c => c.cmdr).map(c => c.d.n))));
+await p.click('.dline:has-text("Alesha") .star');
+console.log('after star', await p.evaluate(() => KT.decks().map(d => d.cards.filter(c => /Alesha/.test(c.d.n)).map(c => c.qty + (c.cmdr ? 'C' : '')))));
+await p.click('text=Play this deck'); await wait(1500);
+console.log('cmd zone', await p.evaluate(() => Object.values(KT.S.cards).filter(c => c.zone === 'command').map(c => c.id + ' ' + c.d.n)));
+console.log('log', await p.evaluate(() => KT.S.log.map(l => l.text)));
+await b.close();

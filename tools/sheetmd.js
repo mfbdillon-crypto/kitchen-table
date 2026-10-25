@@ -1,0 +1,12 @@
+global.window = global; require('/home/claude/mtg/site/aiface.js');
+const F = globalThis.KT_AI_FACE, e = x => String(x).replace(/\|/g, '\\|');
+const head = require('fs').readFileSync('/home/claude/kitchen-table/docs/AI_ENGINE_SHEET.md', 'utf8').split('\n').slice(0, 3).join('\n');
+const o = [head, '', '## Questions the table asks (`s.ask` → `{ type: "answer", id, … }`)', '', '| Kind | When | Answer | AI handler |', '|---|---|---|---|'];
+for (const [k, r] of Object.entries(F.ASKS)) o.push(`| \`${k}\` | ${e(r.what)} | \`${e(r.answer)}\` | ${e(r.ai)} |`);
+o.push('', '## Jobs only the owner can do (`s.todo[me]` → `todoAck`)', '', '| Kind | What | AI handler |', '|---|---|---|');
+for (const [k, r] of Object.entries(F.TODOS)) o.push(`| \`${k}\` | ${e(r.what)} | ${e(r.ai)} |`);
+o.push('', '## Moments the AI must act', '', '| When | What the AI does |', '|---|---|');
+for (const m of F.MOMENTS) o.push(`| ${e(m.when)} | ${e(m.ai)} |`);
+o.push('', '## Actions the AI sends', '', '| Action | Shape and use |', '|---|---|');
+for (const [k, v] of Object.entries(F.ACTIONS)) o.push(`| \`${k}\` | ${e(v)} |`);
+process.stdout.write(o.join('\n') + '\n');
