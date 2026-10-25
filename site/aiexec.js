@@ -111,11 +111,33 @@
         if (ok) { res.response.fired = true; if (B.holding) B.holding.fired = true; B.note('response', `${res.response.label.split('→')[0].trim()} → ${res.option.name}: ${res.why}`); return true; }
         B.note('refused', `response ${res.option.name} could not be cast`);
       }
+      // My own good triggered ability on top: copy it (Strionic Resonator, Peter Parker's Camera).
+      if (top && top.ab && top.ab.trig && top.ctrl === me && await this.copyTrigger(top)) return true;
     }
     await this.act({ type: 'pass', top: s.prio.top });
     return true;
   };
 
+  E.copyTrigger = async function (top) {
+    const B = this.B, me = this.io.me(), s = this.io.s();
+    const r = root.Effects ? root.Effects.parse(String(top.ab.text || '')) : null;
+    if (!r || !r.understood) return false;
+    const good = r.ops.some(o => ['draw', 'token', 'copyToken', 'counters', 'search', 'dig', 'life', 'extraCombat', 'fromGy', 'move'].includes(o.op) || (o.op === 'dmg' && !(o.to && o.to.k === 'you')));
+    if (!good) return false;
+    for (const c of B.bf(me)) {
+      const abs = C().abilities(c);
+      for (let i = 0; i < abs.length; i++) {
+        const ab = abs[i];
+        if (!/^copy target (?:activated or )?triggered ability you control/i.test(ab.text)) continue;
+        if (ab.tap && c.tapped) continue;
+        const pay = C().pay(ab.mana, B.sources().filter(x => !(ab.tap && x.id === c.id)), 0); if (!pay) continue;
+        if (pay.length) await this.io.tapPay(pay);
+        const res = await this.act({ type: 'activate', id: c.id, i, tg: [[{ c: top.id }]] });
+        if (res.ok !== false) { B.note('response', `copied ${R().cardName(top)}’s trigger with ${R().cardName(c)}`); return true; }
+      }
+    }
+    return false;
+  };
   E.myTurn = async function () {
     const io = this.io, B = this.B, s = io.s(), me = io.me(), Rr = R(), T = s.turn;
     const ph = Rr.PHASES[T.phase];
@@ -145,6 +167,14 @@
         const r = ex && (ex.zone === 'exile' || ex.zone === 'graveyard') ? await this.act({ type: 'move', ids: [st.id], to: 'battlefield', playLand: true, perm: st.perm })
           : st.zone === 'library' && io.playTop ? await io.playTop(st.id, st.perm) : await io.playLand(st.id);
         this.did(st, r); return true;
+      }
+      if (st.kind === 'suspend') {
+        if (!inMain) continue;
+        const pay = C().pay(C().parseCost(st.cost || ''), B.sources(), 0);
+        if (!pay) { this.mark(st.key, 'failed:no mana'); continue; }
+        if (pay.length) await io.tapPay(pay);
+        const r = await io.fromHand([st.id], 'exile', { suspend: true, fromPool: [] });
+        this.did(st, r || { ok: true }); return true;
       }
       if (st.kind === 'cast') {
         if (!inMain) continue;
@@ -392,6 +422,7 @@
     try {
       if (t.k === 'draw') { await io.draw(t.n || 1, `drew ${t.n || 1} (${t.src})`); return; }
       if (t.k === 'mill') { await io.mill(t.n || 1); return; }
+      if (t.k === 'millDmg') { const ids = io.libTop(t.n || 3).map(c => c.id); await io.mill(t.n || 3); await this.act({ type: 'millDmg', ids, to: t.to, src: t.src }); return; }
       if (t.k === 'discard') { const n = Math.min(t.n || 1, io.hand().length); const pick = t.random ? hand().sort(() => B.rng() - 0.5).slice(0, n) : B.worstCards(hand(), n); if (pick.length) await io.discard(pick.map(c => c.id), t.src); B.note('did', `discarded ${pick.map(c => c.d.n).join(', ')} (${t.src})`); return; }
       if (t.k === 'sacrifice' || t.k === 'sacUnless') {
         const list = B.bf(me).filter(c => C().matchesWhat(c, t.what || 'creature') && !c.cmdr || C().matchesWhat(c, t.what || 'creature') && B.bf(me).filter(x => C().matchesWhat(x, t.what || 'creature')).length <= (t.n || 1));
@@ -428,7 +459,7 @@
         const opts = pool.map(c => B.option(c, C().instantSpeed(c) ? 'instant' : 'main', { sources: [] }) || B.option(c, 'main', { sources: [] })).filter(Boolean).sort((a, b) => b.score - a.score);
         const o = opts[0];
         if (!o) { B.note('did', `${t.src}: nothing worth casting for free`); return; }
-        const r = o.card.zone === 'hand' ? await io.castFromHand(o.id, { tg: o.tg, mode: o.mode, alt: 'free', fromPool: [] }) : await io.castPublic(o.id, { tg: o.tg, mode: o.mode, alt: 'free', fromPool: [] });
+        const r = o.card.zone === 'hand' ? await io.castFromHand(o.id, { tg: o.tg, mode: o.mode, alt: 'free', fromPool: [] }) : await io.castPublic(o.id, { tg: o.tg, mode: o.mode, alt: 'free', fromPool: [], copy: t.copy || undefined });
         B.note('did', `${t.src}: cast ${o.name} for free${r && r.ok === false ? ' (refused: ' + r.err + ')' : ''}`);
         return;
       }

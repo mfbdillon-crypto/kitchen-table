@@ -94,7 +94,7 @@
     const isCreature = c.faceDown || isType(c, 'creature');
     if (!isCreature) return out;
     for (const o of Object.values(s.cards)) {
-      if (o.zone !== 'battlefield' || o.faceDown || !o.d) continue;
+      if (!(o.zone === 'battlefield' || o.emblem) || o.faceDown || !o.d) continue;   // emblems work from the command zone (114.4)
       const t = text(o);
       if (!t) continue;
       // Equipment / Auras attached to this creature.
@@ -305,6 +305,13 @@
         const units = best.units ? best.units.slice() : Array.from({ length: best.amount }, () => best.colors);
         best = { amount: units.length + add.length, colors: best.colors, sac: false, units: units.concat(add) };
       }
+      // Liliana of the Dark Realms' emblem: "Swamps you control have '{T}: Add {B}{B}{B}{B}.'"
+      if (/\bswamp\b/.test(tl) && Object.values(CUR.cards).some(o => o.emblem && o.ctrl === c.ctrl && /swamps you control have '\{t\}: add \{b\}\{b\}\{b\}\{b\}/i.test(text(o)))) best = { amount: 4, colors: 'B', sac: false };
+      // Heartbeat of Spring / Mana Reflection-style: each land tapped for mana adds that much again.
+      if (/\bland\b/.test(tl) && Object.values(CUR.cards).some(o => o.zone === 'battlefield' && !o.faceDown && o.d && /whenever a player taps a land for mana, that player adds one mana of any type that land produced/i.test(text(o)))) {
+        const units = best.units ? best.units.slice() : Array.from({ length: best.amount }, () => best.colors);
+        best = { amount: units.length * 2, colors: best.colors, sac: false, units: units.concat(units) };
+      }
     }
     return best;
   }
@@ -379,7 +386,7 @@
 
   // ---------- targets ----------
   // A target requirement: { n, upTo, any, kinds:[...], ctrl:'any'|'you'|'opp', non:[...], gy, flags:{}, text }
-  const KIND_WORDS = ['creature', 'planeswalker', 'artifact', 'enchantment', 'land', 'battle', 'permanent', 'player', 'opponent', 'spell', 'card', 'instant', 'sorcery'];
+  const KIND_WORDS = ['creature', 'planeswalker', 'artifact', 'enchantment', 'land', 'battle', 'permanent', 'player', 'opponent', 'spell', 'card', 'instant', 'sorcery', 'ability'];
   function parseTargetPhrase(after) {
     // after: the words following "target"
     const req = { kinds: [], ctrl: 'any', non: [], flags: {}, gy: false };
@@ -393,11 +400,12 @@
       if (/^non-?/.test(w) && w.length > 4) { req.non.push(w.replace(/^non-?/, '').replace(/s$/, '')); i++; if (endsHere && !/^(non-?[a-z]+|[a-z]+)$/.test((words[i] || '').replace(/[.,;:]$/, '')) ) break; if (endsHere && /[.;:]$/.test(words[i - 1])) break; continue; }
       if ((w === 'attacking' || w === 'blocking') && (words[i + 1] === 'or') && /^(attacking|blocking)$/.test(words[i + 2] || '')) { req.flags.combat = true; i += 3; continue; }
       if (w === 'attacking' || w === 'blocking' || w === 'tapped' || w === 'untapped' || w === 'legendary') { req.flags[w] = true; i++; continue; }
+      if (w === 'triggered' || w === 'activated') { req.flags[w] = true; i++; continue; }   // "target activated or triggered ability
       const base = w === 'sorceries' ? 'sorcery' : w.replace(/s$/, '');
       if (KIND_WORDS.includes(base)) {
         req.kinds.push(base); i++;
         // "creature, enchantment, or planeswalker": a comma continues the list when another type follows.
-        if (endsHere) { const nx = (words[i] || '').replace(/[.,;:]$/, ''); if (!(nx === 'or' || nx === 'and' || KIND_WORDS.includes(nx.replace(/s$/, '')) || /^non-?/.test(nx))) break; }
+        if (endsHere) { const nx = (words[i] || '').replace(/[.,;:]$/, ''); if (!(nx === 'or' || nx === 'and' || nx === 'activated' || nx === 'triggered' || KIND_WORDS.includes(nx.replace(/s$/, '')) || /^non-?/.test(nx))) break; }
         continue;
       }
       if (stop.test(w) && req.kinds.length) break;
@@ -541,9 +549,20 @@
       if (req.subs && !req.subs.some(t => isType(c, t))) return false;
       return req.kinds.includes('any-card') || req.kinds.some(k => k === 'permanent' ? isPermanentCard(c) : k === 'card' || isType(c, k)) && !req.non.some(k => isType(c, k));
     }
+    // Abilities on the stack (Strionic Resonator, Return the Favor): "target triggered ability you control".
+    if (c.zone === 'stack' && c.ab) {
+      if (!req.kinds.includes('ability')) return false;
+      const fl = req.flags || {};
+      if ((fl.triggered || fl.activated) && !((fl.triggered && c.ab.trig) || (fl.activated && !c.ab.trig))) return false;
+      if (req.ctrl === 'you' && c.ctrl !== by) return false;
+      if (req.ctrl === 'opp' && c.ctrl === by) return false;
+      return true;
+    }
+    if (req.kinds.includes('ability') && !req.kinds.includes('spell')) return false;
     if (req.kinds.includes('spell')) {
       if (c.zone !== 'stack' || c.ab) return false;
-      const others = req.kinds.filter(k => k !== 'spell');
+      if (req.ctrl === 'you' && c.ctrl !== by) return false;
+      const others = req.kinds.filter(k => k !== 'spell' && k !== 'ability');
       if (others.length && !others.some(k => isType(c, k))) return false;
       if (req.non.some(k => isType(c, k))) return false;
       return true;

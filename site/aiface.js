@@ -26,6 +26,7 @@
     enterOpt: { what: '“Pay 2 life or it enters tapped” / “reveal a card or it enters tapped”', answer: '{ yes: true|false }', ai: 'brain.answerAsk → enterOpt', check: a => typeof a.yes === 'boolean' ? '' : 'yes must be true or false', safe: () => ({ yes: false }) },
     legend: { what: 'Legend rule: keep one of my same-name legends (704.5j)', answer: '{ keep: cardId }', ai: 'brain.answerAsk → legend', check: (a, ask) => ask.ids.includes(a.keep) ? '' : 'keep must be one of ask.ids', safe: ask => ({ keep: ask.ids[ask.ids.length - 1] }) },
     cmdrZone: { what: 'My commander went to a graveyard/exile (or would go to my hand/library): command zone or not (903.9)', answer: '{ command: true|false }', ai: 'brain.answerAsk → cmdrZone (AI seats decide at once: always the command zone)', check: a => typeof a.command === 'boolean' ? '' : 'command must be true or false', safe: () => ({ command: true }) },
+    punisher: { what: 'Combustible Gearhulk: let its controller draw N cards, or take damage from N milled cards', answer: '{ yes: true|false } (true = they draw)', ai: 'brain.answerAsk → punisher (AI seats decide at once)', check: a => typeof a.yes === 'boolean' ? '' : 'yes must be true or false', safe: () => ({ yes: false }) },
     payLife: { what: 'Killing Wave: pay N life for each of my creatures I keep; the rest are sacrificed', answer: '{ ids: [cardId, …] } (creatures to keep)', ai: 'brain.answerAsk → payLife (AI seats are decided at resolution)', check: (a, ask) => Array.isArray(a.ids) && a.ids.every(id => ask.ids.includes(id)) ? '' : 'ids must come from ask.ids', safe: () => ({ ids: [] }) },
     payUntap: { what: 'Mudslide: pay {2} each to untap any of my tapped creatures', answer: '{ ids: [cardId, …] } (the table taps my lands for it)', ai: 'brain.answerAsk → payUntap', check: (a, ask) => Array.isArray(a.ids) && a.ids.every(id => ask.ids.includes(id)) ? '' : 'ids must come from ask.ids', safe: () => ({ ids: [] }) },
     pay: { what: '“That player may pay {2}. If they don’t, …” (Smothering Tithe): pay to stop the rest from happening', answer: '{ yes: true|false } (true: the table taps my lands for it)', ai: 'brain.answerAsk → pay', check: a => typeof a.yes === 'boolean' ? '' : 'yes must be true or false', safe: () => ({ yes: false }) },
@@ -41,6 +42,7 @@
   // The page acknowledges with { type: 'todoAck', ids } after the handler finishes.
   const TODOS = {
     draw: { what: 'Draw N cards', ai: 'page draws by itself (game.js)' },
+    millDmg: { what: 'Combustible Gearhulk: mill N, then the table deals damage equal to their total mana value', ai: 'executor.onTodo → mill, then send millDmg' },
     mill: { what: 'Mill N cards', ai: 'page mills by itself (game.js)' },
     discard: { what: 'Discard N (or at random)', ai: 'executor.onTodo → brain.worstCards' },
     sacrifice: { what: 'Sacrifice N of a kind', ai: 'executor.onTodo → least useful to my plan (never the commander if anything else)' },

@@ -12,6 +12,7 @@
 | `enterOpt` | “Pay 2 life or it enters tapped” / “reveal a card or it enters tapped” | `{ yes: true\|false }` | brain.answerAsk → enterOpt |
 | `legend` | Legend rule: keep one of my same-name legends (704.5j) | `{ keep: cardId }` | brain.answerAsk → legend |
 | `cmdrZone` | My commander went to a graveyard/exile (or would go to my hand/library): command zone or not (903.9) | `{ command: true\|false }` | brain.answerAsk → cmdrZone (AI seats decide at once: always the command zone) |
+| `punisher` | Combustible Gearhulk: let its controller draw N cards, or take damage from N milled cards | `{ yes: true\|false } (true = they draw)` | brain.answerAsk → punisher (AI seats decide at once) |
 | `payLife` | Killing Wave: pay N life for each of my creatures I keep; the rest are sacrificed | `{ ids: [cardId, …] } (creatures to keep)` | brain.answerAsk → payLife (AI seats are decided at resolution) |
 | `payUntap` | Mudslide: pay {2} each to untap any of my tapped creatures | `{ ids: [cardId, …] } (the table taps my lands for it)` | brain.answerAsk → payUntap |
 | `pay` | “That player may pay {2}. If they don’t, …” (Smothering Tithe): pay to stop the rest from happening | `{ yes: true\|false } (true: the table taps my lands for it)` | brain.answerAsk → pay |
@@ -25,6 +26,7 @@
 | Kind | What | AI handler |
 |---|---|---|
 | `draw` | Draw N cards | page draws by itself (game.js) |
+| `millDmg` | Combustible Gearhulk: mill N, then the table deals damage equal to their total mana value | executor.onTodo → mill, then send millDmg |
 | `mill` | Mill N cards | page mills by itself (game.js) |
 | `discard` | Discard N (or at random) | executor.onTodo → brain.worstCards |
 | `sacrifice` | Sacrifice N of a kind | executor.onTodo → least useful to my plan (never the commander if anything else) |

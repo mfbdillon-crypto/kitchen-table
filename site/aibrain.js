@@ -922,6 +922,14 @@
     let srcs = this.sources();
     const pending = steps.find(x => x.kind === 'land');
     if (pending) { const lc = this.view.hand.find(c => c.id === pending.id); const m = lc && Cd.manaSource(Object.assign({ zone: 'battlefield' }, lc)); if (m && !/enters (?:the battlefield )?tapped/i.test(Cd.text(lc))) srcs = srcs.concat([{ id: lc.id, amount: m.amount, colors: m.colors, units: m.units, name: lc.d.n, pending: true }]); }
+    // Suspend (702.62): a card I can't cast for a while goes into exile cheaply now and comes back free.
+    if (/^Main/.test(ph)) for (const c of this.handCards()) {
+      const sm = String(Cd.rawText(c)).match(/suspend (\d+)\s*[—-]\s*((?:\{[^}]+\})*)/i); if (!sm || +sm[1] > 4) continue;
+      if (this.mv(c) <= srcs.length + 1) continue;   // castable soon anyway
+      const sc = Cd.parseCost(sm[2]); if (!Cd.pay(sc, srcs, 0)) continue;
+      steps.push({ key: 'suspend:' + c.id, kind: 'suspend', id: c.id, cost: sm[2], label: `suspend ${Rr.cardName(c)} (${sm[1]} turns)`, why: 'too expensive to cast soon; it comes back free' });
+      break;
+    }
     const cands = this.handCards().concat(this.cmdZone()).concat(this.gyCastables()).map(c => this.option(c, 'main', { sources: srcs })).filter(Boolean).filter(o => o.score > 0);
     // What I'd like to hold up: the best answer in hand for an opponent's turn.
     // Last round's held answer: did it get used? (adapts how much mana it keeps open)
@@ -1546,6 +1554,7 @@
         return { yes: true, why: 'free to enter untapped' };
       }
       case 'legend': { const list = ask.ids.map(id => s.cards[id]).filter(Boolean).sort((a, b) => this.value(b) - this.value(a) + (a.tapped - b.tapped)); return { keep: (list[0] || {}).id || ask.ids[ask.ids.length - 1], why: 'keep the better one' }; }
+      case 'punisher': return { yes: this.life(me) <= 14, why: this.life(me) <= 14 ? 'too low on life to risk the damage' : 'cards are worth more to them than ~8 damage to me' };
       case 'cmdrZone': return { command: true, why: 'my commander is worth more in the command zone' };
       case 'payLife': {
         let life = this.life(me); const ids = [];

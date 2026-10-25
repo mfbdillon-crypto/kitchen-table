@@ -47,6 +47,7 @@
   function variable(s) {
     s = String(s || '').trim().replace(/\.$/, '');
     let m;
+    if (/^the amount of \{e\} (?:paid|you paid) this way$/.test(s)) return { v: 'lastX' };
     if ((m = s.match(/^the number of (.+?) you control$/))) return { v: 'count', what: m[1], ctrl: 'you' };
     if ((m = s.match(/^the number of (.+?) (?:your opponents control|an opponent controls)$/))) return { v: 'count', what: m[1], ctrl: 'opp' };
     if ((m = s.match(/^the number of (.+?) on the battlefield$/))) return { v: 'count', what: m[1], ctrl: 'any' };
@@ -162,6 +163,13 @@
     if (/^each attacking creature and each blocking creature doesn't untap during its controller's next untap step$/.test(s)) return [wrap({ op: 'skipUntap', what: { k: 'each', what: 'attacking creature', ctrl: 'any' } }), wrap({ op: 'skipUntap', what: { k: 'each', what: 'blocking creature', ctrl: 'any' } })];
     if ((m = s.match(/^(?:its|their) owners? shuffles? (it|them) into (?:their|its) library$/))) return [wrap({ op: 'move', what: { k: 'ev' }, to: 'library', pos: 'shuffle' })];
     if ((m = s.match(/^for each creature, its controller sacrifices it unless they pay (\w+) life$/))) return [wrap({ op: 'payLifeOrSac', n: amt(m[1]) || { v: 'X' }, what: 'creature' })];
+    // Copy a spell or an ability on the stack (Strionic Resonator, Expansion, See Double, Return the Favor).
+    if ((m = s.match(/^copy (target .+?)$/)) && /spell|ability/.test(m[1])) { const what = targetOf(m[1], st); if (what) return [wrap({ op: 'copyStack', what })]; }
+    // Mana added by an aura on a tapped land is part of paying (605.4a, Cards.manaSource): nothing to do here.
+    if (/^(?:its controller|that player) adds? (?:an )?additional (?:one mana of any color|one mana of the chosen color|\{[wubrgc]\}+)$|^that player adds one mana of any type that land produced$/.test(s)) return [wrap({ op: 'manaNote' })];
+    // Energy paid by amount: "you may pay an amount of {E} equal to that permanent's mana value" / "pay one or more {E}".
+    if (/^(?:then )?(?:you may )?pay an amount of \{e\} equal to (?:that permanent's|that card's|its) mana value$/.test(s)) return [wrap({ op: 'payEnergy', mvOf: { k: 't', i: 0 } })];
+    if (/^(?:then )?(?:you may )?pay one or more \{e\}$/.test(s)) return [wrap({ op: 'payEnergy', all: true })];
     if (/^(?:then )?note your life total$/.test(s)) return [wrap({ op: 'noteLife' })];
     if ((m = s.match(/^shuffle up to (\w+) target cards from graveyards into their owners' libraries$/))) return [wrap({ op: 'move', what: { k: 't', i: st.ti++, upTo: true, n: amt(m[1]) || 3, what: 'card from a graveyard' }, to: 'library', pos: 'shuffle' })];
     if ((m = s.match(/^put (up to \w+ target cards|target card) from (?:graveyards|a graveyard) on the bottom of (?:their|its) owners?'? librar(?:y|ies)(?: in any order)?$/))) { const n = /up to (\w+)/.exec(m[1]); return [wrap({ op: 'move', what: { k: 't', i: st.ti++, upTo: !!n, n: n ? amt(n[1]) || 1 : 1, what: 'card from a graveyard' }, to: 'library', pos: 'bottom' })]; }
@@ -345,6 +353,9 @@
   // ---------------- a whole ability ----------------
   function parse(text, opts, st0) {
     const st = st0 || { ti: 0 };
+    // "You get an emblem with "…"" (114): the quoted text is the emblem's ability, kept whole.
+    const emb = [];
+    text = String(text || '').replace(/you get an emblem with ["“]([^"”]+)["”]\.?/gi, (a, q) => { emb.push(q); return `__emblem:${emb.length - 1}__.`; });
     const t0 = String(text || '').toLowerCase().replace(/\([^)]*\)/g, '').replace(/ {2,}/g, ' ').replace(/(if you (?:do|pay)[^.]*?),? and after this phase, there is an additional combat phase/g, '$1, then after this phase, there is an additional combat phase').replace(/,? and after this phase, there is an additional combat phase/g, '. after this phase, there is an additional combat phase')
       .replace(/\bpay (two|three|four|five|six|seven|eight|nine|ten|\d+) \{e\}/g, (a, n) => 'pay ' + '{e}'.repeat(({ two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 })[n] || +n)).replace(/\bif you pay, /g, 'if you do, ').replace(/[“”]/g, '"')
       .replace(/\.?\s*(?:it|they) (?:has|have|gains?) "[^"]*"(?: until end of turn)?\.?/g, '.').trim();
@@ -360,7 +371,12 @@
     const t0g = t0i.replace(/choose up to (\w+) target cards in graveyards\. the owners of those cards shuffle them into their libraries\./g, (a, n) => `shuffle up to ${n} target cards from graveyards into their owners' libraries.`);
     // Myr Battlesphere: "you may tap X untapped Myr you control. If you do, this gets +X/+0 … and deals X damage to the player…"
     const t0x = t0g.replace(/you may tap (?:x|any number of) untapped ([a-z]+?)s? you control\. if you do, this gets \+x\/\+0 until end of turn and deals x damage to (?:the player or planeswalker it's attacking|defending player|the defending player)\./g, (a, w) => `__tapx:${w}__.`);
-    const t0s = t0x.replace(/sacrifice any number of lands\. search your library for up to that many land cards, put them onto the battlefield tapped, then shuffle\./g, '__scapeshift__.');
+    // Combustible Gearhulk: "Target opponent may have you draw three cards. If the player doesn't, you mill three cards,
+    // then this deals damage to that player equal to the total mana value of those cards."
+    const t0p = t0x.replace(/target opponent may have you draw (\w+) cards?\. if (?:the player|they|that player) (?:doesn't|don't|does not), you mill (\w+) cards?, then this deals damage to that player equal to the total mana value of those cards\./g, (a, d, m) => `__punisher:${d}:${m}__.`);
+    // Arcane Bombardment: a random instant or sorcery from the graveyard is exiled with it; then each card exiled with it is copied and may be cast free.
+    const t0b = t0p.replace(/exile an? (instant or sorcery|[a-z]+) card at random from your graveyard\. then copy each card exiled with this\. you may cast any number of the copies without paying their mana costs\./g, (a, w) => `__bombard:${w}__.`);
+    const t0s = t0b.replace(/sacrifice any number of lands\. search your library for up to that many land cards, put them onto the battlefield tapped, then shuffle\./g, '__scapeshift__.');
     const t0t = t0s.replace(/until your next turn, your life total can't change and you gain protection from everything\. all permanents you control phase out\./g, '__teferi__.');
     const t1a = t0t.replace(/choose a color\. add an amount of mana of that color equal to your devotion to that color\./g, '__devotion__.');
     const t1b = t1a.replace(/(?:reveal|look at) the top card of your library\. if it's an? ([a-z ]+?) card( of the chosen type)?, (you may )?(?:reveal it and )?put it (onto the battlefield|into your hand)\.(?: otherwise, you may put (?:that card|it) on the bottom of your library\.)?/g,
@@ -387,6 +403,19 @@
       // Cost changes and "can't be countered" are about casting it, not what it does (601.2f, 101.2).
       if (/^this(?: spell)? costs? (?:\{[^}]+\})+ (?:less|more) to cast\b|^this spell can't be countered\.?$|^affinity for /.test(sent)) continue;   // paid as it's cast (601.2f)
       { const tr = root.Rulebook && root.Rulebook.tempRule(sent); if (tr) { ops.push({ op: 'ruleFx', until: tr.until, line: tr.line }); continue; } }
+      // Vraska, Betrayal's Sting: "Target creature becomes a Treasure artifact with "…" and loses all other card types and abilities."
+      if (/^target creature becomes a treasure artifact with "[^"]*" and loses all other card types and abilities\.?$/.test(sent)) { ops.push({ op: 'becomeTreasure', what: { k: 't', i: st.ti++, n: 1, what: 'creature' } }); continue; }
+      // Avatar's Wrath: "Choose up to one target creature, then airbend all other creatures." (exile them; each owner may
+      // cast theirs for {2} while it's exiled).
+      if (/^choose up to one target creature, then airbend all other creatures\.?$/.test(sent)) { ops.push({ op: 'airbend', keep: { k: 't', i: st.ti++, n: 1, upTo: true, what: 'creature' } }); continue; }
+      const ab1 = sent.match(/^airbend (target .+?)\.?$/);
+      if (ab1) { const what = targetOf(ab1[1], st); if (what) { ops.push({ op: 'airbend', what }); continue; } }
+      const bb = sent.match(/^__bombard:([a-z ]+)__\.?$/);
+      if (bb) { ops.push({ op: 'bombard', what: bb[1] }); continue; }
+      const pu = sent.match(/^__punisher:(\w+):(\w+)__\.?$/);
+      if (pu) { ops.push({ op: 'punisher', who: { k: 't', i: st.ti++ }, draw: amt(pu[1]) || 3, mill: amt(pu[2]) || 3 }); continue; }
+      const em = sent.match(/^__emblem:(\d+)__\.?$/);
+      if (em) { ops.push({ op: 'emblem', text: emb[+em[1]] || '' }); continue; }
       const im = sent.match(/^__impulse:(\w+):(next|eot)__\.?$/);
       if (im) { ops.push({ op: 'impulse', n: amt(im[1]) || 1, until: im[2] }); continue; }
       const tt = sent.match(/^__tutortop:([a-z ]+)__\.?$/);
@@ -450,6 +479,9 @@
         for (const o of r) { if (xvar && o.op === 'pump' && /x/.test(String(o.p) + String(o.t))) o.xv = xvar; if (xvar && (o.n && o.n.v === 'X')) o.n = xvar; if (xvar && o.spec && (o.spec.p === 'x' || (o.spec.n && o.spec.n.v === 'X'))) { o.spec.x = xvar; if (o.spec.n && o.spec.n.v === 'X') o.spec.n = xvar; } ops.push(o); }
       }
     }
+    // "Choose target artifact or creature. … gain control of it": "it" is the chosen target.
+    const ch = ops.find(o => o.op === 'choose' && o.what && o.what.k === 't');
+    if (ch) for (const o of ops) { if (o === ch) continue; for (const k of ['what', 'of', 'to']) if (o[k] && o[k].k === 'ev') o[k] = ch.what; }
     return { ops, understood, targets: st.ti };
   }
 

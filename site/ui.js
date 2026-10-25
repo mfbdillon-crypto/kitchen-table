@@ -298,7 +298,7 @@
   function usableNow(c) {
     try {
       if (!c || !c.d || !myWindow()) return false;
-      if (c.zone === 'battlefield') {
+      if (c.zone === 'battlefield' || c.emblem) {
         if (c.ctrl !== KEY || c.faceDown) return false;
         return CD.abilities(c).some(a => !a.manaAb && !abilityProblem(c, a));
       }
@@ -310,6 +310,10 @@
   // Menu entries for casting/playing a card outside my hand (graveyard, exile, command zone, top of library).
   function wayItems(c, fromLib) {
     const s = S();
+    if (c.faceDown && c.zone === 'exile' && c.exPerm && c.owner === KEY && G.peek(c.id)) {
+      const d = G.peek(c.id), ws0 = window.Rulebook ? Rulebook.ways(s, KEY, c, { d }) : [];
+      return ws0.map(w => ({ label: `Foretell — ${costText(w.alt || w)} (${d.n})`, fn: async () => { await G.turnFaceUp(c.id); await new Promise(r => setTimeout(r, 300)); const now = S().cards[c.id]; if (now) castFlow(now, 'public', Object.assign({}, w.alt || { kind: w.kind, cost: w.cost }), w.via); } }));
+    }
     const ws = window.Rulebook ? Rulebook.ways(s, KEY, c, { top: !!fromLib }) : [];
     const now = new Set(waysNow(c, { top: !!fromLib }).map(w => w.via + ':' + w.kind));
     return ws.map(w => {
@@ -543,6 +547,10 @@
       ];
       return [{ note: c.zone === 'stack' ? `${nameOf(c.ctrl)} controls this spell.` : `This card belongs to ${nameOf(c.owner)}.` }];
     }
+    if (c.zone === 'command' && c.emblem) {
+      const abs = CD.abilities(c);
+      return [{ note: (c.d.faces[0].o || '').slice(0, 200) }].concat(abs.map((a, i) => { const w = abilityProblem(c, a); return { label: `${a.cost}: ${a.text.slice(0, 70)}${w ? ' — ' + w : ''}`, disabled: !!w && !devHost(), fn: () => activateFlow(c, i) }; }));
+    }
     if (c.zone === 'command') {
       const items = wayItems(c);
       if (!items.length) items.push({ note: c.cmdr ? 'Your commander can be cast from here.' : 'Nothing lets you use this card from the command zone.' });
@@ -642,6 +650,8 @@
       land ? { label: landUsed ? 'Play land (already played one this turn)' : 'Play land', fn: () => G.playLand(c.id), disabled: !!(T.active && T.active !== KEY) }
         : { label: S().prio && S().prio.holder === KEY && R.stackTop(S()) ? 'Cast in response' : 'Cast', fn: () => castFlow(c, 'hand') },
       two && land ? { label: `Play the back face (${c.d.faces[1].n})`, fn: () => G.fromHand([c.id], 'battlefield', { backFace: true, playLand: true }) } : null,
+      (() => { const raw = String(CD.rawText(handCard(c))); if (land || !/(^|\n)foretell\b/i.test(raw) || S().turn.active !== KEY) return null; return { label: 'Foretell — {2} (exile it face down; cast it later for its foretell cost)', fn: async () => { if (!(await autoPay(handCard(c), 0, CD.parseCost('{2}')))) return; await G.fromHand([c.id], 'exile', { faceDown: true, special: 'foretell', fromPool: G.lastFromPool }); } }; })(),
+      (() => { const pm = !land && String(CD.rawText(handCard(c))).match(/(?:^|\n)plot ((?:\{[^}]+\})+)/i); if (!pm) return null; return { label: `Plot — ${pm[1]} (cast it free on a later turn)`, fn: async () => { if (!(await autoPay(handCard(c), 0, CD.parseCost(pm[1])))) return; await G.fromHand([c.id], 'exile', { special: 'plot', fromPool: G.lastFromPool }); } }; })(),
       (() => { const sm = !land && String(CD.rawText(handCard(c))).match(/suspend (\d+)\s*[—-]\s*((?:\{[^}]+\})*)/i); return sm ? { label: `Suspend ${sm[1]} — ${sm[2] || 'free'}`, fn: async () => { if (sm[2] && !(await autoPay(handCard(c), 0, CD.parseCost(sm[2])))) return; await G.fromHand([c.id], 'exile', { suspend: true, fromPool: G.lastFromPool }); } } : null; })(),
       !land && /\b(morph|megamorph|disguise)\b/i.test(CD.rawText(handCard(c))) ? { label: 'Cast face down (morph, disguise…)', fn: () => G.fromHand([c.id], 'stack', { faceDown: true }) } : null,
       devHost() ? { label: G.isRevealed(c.id) ? 'Dev: stop revealing' : 'Dev: reveal to everyone', fn: () => G.toggleReveal(c.id) } : null,
@@ -777,7 +787,7 @@
   // v6: every way to cast this card from where it is (normal cost, flashback, kicker, evoke, dash, warp, overload…).
   const ALT_LABEL = { omni: 'Cast it free (Omniscience)', cmdrfree: 'Cast it free (you control a commander)', normal: 'Cast it', flashback: 'Flashback', escape: 'Escape', 'jump-start': 'Jump-start', retrace: 'Retrace', disturb: 'Disturb (back face)', harmonize: 'Harmonize',
     kicker: 'Cast with kicker', multikicker: 'Cast with multikicker', buyback: 'Cast with buyback', bargain: 'Cast with bargain', evoke: 'Evoke', dash: 'Dash', blitz: 'Blitz', overload: 'Overload',
-    surge: 'Surge', spectacle: 'Spectacle', prowl: 'Prowl', emerge: 'Emerge', madness: 'Madness', foretell: 'Foretell', plot: 'Plot', warp: 'Warp', bestow: 'Bestow', mutate: 'Mutate', prototype: 'Prototype', cleave: 'Cleave', sneak: 'Sneak' };
+    surge: 'Surge', spectacle: 'Spectacle', prowl: 'Prowl', emerge: 'Emerge', madness: 'Madness', foretell: 'Foretell', plot: 'Plot', warp: 'Warp', bestow: 'Bestow', mutate: 'Mutate', prototype: 'Prototype', cleave: 'Cleave', sneak: 'Sneak', airbend: 'Cast it for {2} (airbent)' };
   function castOptions(card, zone) {
     const m = window.Oracle && card.d ? Oracle.model(card) : null;
     const out = [];
@@ -800,7 +810,7 @@
       primary: k.kind === 'normal', fn: () => res(k) })).concat([{ label: 'Cancel', fn: () => res(null) }])));
   }
   G.castOptions = castOptions;
-  async function castFlow(c, from, forced, perm) {
+  async function castFlow(c, from, forced, perm, extraOpts) {
     const card = from === 'hand' ? handCard(c) : from === 'library' ? Object.assign({ owner: KEY, ctrl: KEY, counters: {} }, c, { zone: 'library' }) : c;
     const zone = from === 'hand' ? 'hand' : from === 'library' ? 'library' : c.zone === 'command' ? 'command' : c.zone === 'graveyard' ? 'graveyard' : c.zone === 'exile' ? 'exile' : 'public';
     let alt = forced || null;
@@ -850,7 +860,7 @@
       if (!id) return;
       sacCost = [id];
     }
-    const opts = { tg, mode: mode || undefined, x: x || undefined, wardPaid: wardPaid || undefined, alt: alt ? alt.kind : undefined, sacCost, perm: perm || undefined, top: from === 'library' || undefined };
+    const opts = { tg, mode: mode || undefined, x: x || undefined, wardPaid: wardPaid || undefined, alt: alt ? alt.kind : undefined, sacCost, perm: perm || undefined, top: from === 'library' || undefined }; if (extraOpts) Object.assign(opts, extraOpts);
     if (wardPaid && wardMana) { const cst = JSON.parse(JSON.stringify(payCost)); cst.g += wardMana; if (!(await autoPay(card, x, cst))) return; }
     else if (!(await autoPay(card, x, JSON.parse(JSON.stringify(payCost))))) return;
     opts.fromPool = G.lastFromPool;
@@ -1134,6 +1144,9 @@
       return h('div', { class: 'prio mine', role: 'alert' }, h('span', { class: 'pring' }), h('div', { class: 'ptext' }, h('b', null, `${pu.name}: `), `pay ${pu.cost} for each creature to untap it.`,
         h('div', { class: 'row wrap' }, pu.ids.filter(id => S().cards[id]).map(id => h('button', { class: 'chip' + (sel.includes(id) ? ' on' : ''), onclick: () => { const i = sel.indexOf(id); if (i >= 0) sel.splice(i, 1); else sel.push(id); render(); } }, R.cardName(S().cards[id]))))),
         h('button', { class: 'primary', onclick: () => answer(pu, { ids: sel.slice() }) }, sel.length ? `Pay for ${sel.length}` : 'Untap none')); }
+    const pn = myAsks().find(x => x.kind === 'punisher');
+    if (pn) return h('div', { class: 'prio mine', role: 'alert' }, h('span', { class: 'pring' }), h('div', { class: 'ptext' }, h('b', null, `${pn.name}: `), `let ${nameOf(pn.by)} draw ${pn.draw} cards? If you don’t, they mill ${pn.mill} and you take damage equal to those cards’ total mana value.`),
+      h('button', { class: 'primary', onclick: () => answer(pn, { yes: true }) }, `They draw ${pn.draw}`), h('button', { onclick: () => answer(pn, { yes: false }) }, 'I take the damage'));
     const cz = myAsks().find(x => x.kind === 'cmdrZone');
     if (cz) return h('div', { class: 'prio mine', role: 'alert' }, h('span', { class: 'pring' }), h('div', { class: 'ptext' }, h('b', null, `${cz.name}: `),
       cz.inZone ? `your commander went to ${cz.zone === 'exile' ? 'exile' : 'your graveyard'}. Move it to the command zone? (903.9)` : `your commander would go to your ${cz.zone}. Put it in the command zone instead? (903.9)`),
@@ -2048,6 +2061,7 @@ null,
 
   // ======================= effects that ask you something (search, scry, discard, sacrifice) =======================
   G.onTodo = (t, ack) => ask(() => {
+    if (t.k === 'millDmg') { const ids = G.P.library.slice(0, t.n || 3).map(c => c.id); G.mill(t.n || 3).then(() => G.act({ type: 'millDmg', ids, to: t.to, src: t.src })).then(() => { ack(); setTimeout(pumpAsks, 50); }); return; }
     if (t.k === 'scry' || t.k === 'surveil') {
       const n = Math.min(t.n || 1, G.P.library.length);
       if (!n) { ack(); return pumpAsks(); }
@@ -2131,7 +2145,7 @@ null,
       const pool = t.ids ? t.ids.map(id => S().cards[id]).filter(c => c && c.zone === 'exile') : t.from === 'graveyard' ? Object.values(S().cards).filter(c => c.zone === 'graveyard' && c.owner === KEY && fits(c)) : G.P.hand.map(c => handCard(c)).filter(fits);
       if (!pool.length) { G.toast(`${t.src}: nothing you could cast for free.`, 'info'); ack(); return pumpAsks(); }
       openModal(`${t.src}: cast a ${want === 'card' ? 'spell' : want} free${t.mvMax != null ? ' (mana value ' + t.mvMax + ' or less)' : ''}`, b => {
-        b.append(h('div', { class: 'strip pick' }, pool.map(c => cardEl(c, { noMenu: true, onClick: async () => { closeModal(true); await castFlow(t.from !== 'hand' ? c : G.P.hand.find(x => x.id === c.id), t.from !== 'hand' ? 'public' : 'hand', { kind: 'free', cost: '' }); ack(); setTimeout(pumpAsks, 50); } }))));
+        b.append(h('div', { class: 'strip pick' }, pool.map(c => cardEl(c, { noMenu: true, onClick: async () => { closeModal(true); await castFlow(t.from !== 'hand' ? c : G.P.hand.find(x => x.id === c.id), t.from !== 'hand' ? 'public' : 'hand', { kind: 'free', cost: '' }, undefined, t.copy ? { copy: true } : undefined); ack(); setTimeout(pumpAsks, 50); } }))));
         b.append(h('div', { class: 'row' }, h('button', { onclick: () => { closeModal(true); ack(); setTimeout(pumpAsks, 50); } }, 'Don’t cast anything')));
       }, { live: true, sticky: true, noEsc: true });
       return;

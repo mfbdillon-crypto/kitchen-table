@@ -111,6 +111,7 @@
   // A card that leaves the battlefield becomes a new object (400.7): counters, tapped status,
   // modifiers and attachments go away, and it returns to its owner's control.
   function leaveBattlefield(s, c, notes) {
+    if (c.origD) { c.d = c.origD; c.origD = null; }   // a permanent that "became" something else is itself again elsewhere (400.7)
     c.loySeen = false; c.defSeen = false; c.noUntap = false; c.skipUntap = false; c.via = null; c.gained = null; c.zeroT = false; c.zeroOk = false;
     c.counters = {}; c.tapped = false; c.mod = null; c.attachedTo = null; c.ctrl = c.owner; c.row = null;
     c.dmg = 0; c.dtd = false; c.grant = null; c.ctlT = null; c.alt = null; c.eot = null; c.chosen = null; c.animated = null; c.animPT = null; c.regen = 0; if (c.origD) { c.d = c.origD; c.origD = null; c.copyOf = null; }
@@ -161,6 +162,8 @@
     }
     if (from === 'battlefield' && to !== 'battlefield') leaveBattlefield(s, c, notes);
 
+    // 707.10a: a copy of a spell that leaves the stack (other than onto the battlefield) ceases to exist.
+    if ((c.token || c.copy) && from === 'stack' && to !== 'battlefield') { delete s.cards[c.id]; return; }
     // 111.7 / 111.8: a token that leaves the battlefield goes to its new zone for a moment (so "dies" and "leaves"
     // abilities see it), then ceases to exist the next time state-based actions are checked.
     if (c.token && from === 'battlefield' && to !== 'battlefield') {
@@ -181,7 +184,7 @@
     if (to !== 'battlefield' && to !== 'stack') c.face = 0;
     else if (from !== to && from !== 'limbo') c.face = opts.backFace ? 1 : 0;   // enters front face up unless told otherwise
     // Counters on an exiled card (suspend, etc.) go away when it leaves exile.
-    if (from === 'exile' && to !== 'exile') c.counters = {};
+    if (from === 'exile' && to !== 'exile') { c.counters = {}; c.airbent = null; c.exPerm = null; }
 
     // 708.9 / 406.3: a face-down card stays face down only on the battlefield, or when it's exiled or cast face down on purpose.
     const keepDown = to === 'battlefield' ? (from === 'battlefield' ? c.faceDown : !!opts.faceDown)
@@ -484,6 +487,19 @@
             s.cards[c.id] = c;
             c.zone = 'limbo';
             if (typeof a.via === 'string' && /^[a-z]{2,12}$/.test(a.via) && to === 'battlefield') c.via = a.via;
+            // Foretell (702.143) and plot (702.170): special actions that exile a card from the hand to cast on a later turn.
+            if (to === 'exile' && (a.special === 'foretell' || a.special === 'plot') && a.from === 'hand' && root.Cards) {
+              const raw = String(a.special === 'foretell' ? (a.textHint || '') : root.Cards.rawText(c));
+              if (a.special === 'foretell' && !/(^|\n)foretell\b/i.test(raw)) return { ok: false, err: 'That card doesn’t have foretell.' };
+              if (a.special === 'plot' && !/(^|\n)plot\b/i.test(raw)) return { ok: false, err: `${cardName(c)} doesn’t have plot.` };
+              if (a.special === 'foretell' && s.turn.active !== pid) return { ok: false, err: 'You can foretell only during your turn (702.143a).' };
+              if (a.special === 'plot' && (s.turn.active !== pid || stackCards(s).length || !/^Main/.test(PHASES[s.turn.phase]))) return { ok: false, err: 'You can plot only when you could cast a sorcery (702.170a).' };
+              const pc = a.special === 'foretell' ? root.Cards.parseCost('{2}') : root.Cards.parseCost(((raw.match(/(?:^|\n)plot ((?:\{[^}]+\})+)/i) || [])[1]) || '');
+              spendPool(s, pid, pc, 0, a.fromPool);
+              moveOne(s, c, 'exile', 'top', { by: pid, faceDown: a.special === 'foretell' }, notes);
+              c.exPerm = { kind: a.special, by: pid, turn: s.turn.n };
+              return done(a.special === 'foretell' ? 'foretold a card (exiled face down)' : `plotted ${cardName(c)} — it can be cast free as a sorcery on a later turn`);
+            }
             // Suspend (702.62a): exiled from the hand with N time counters, its suspend cost paid.
             if (to === 'exile' && a.suspend && a.from === 'hand' && root.Cards) {
               const sm = String(root.Cards.rawText(c)).match(/suspend (\d+)\s*[—-]\s*((?:\{[^}]+\})*)/i);
@@ -522,6 +538,13 @@
             if (!canAct(s, pid, c) && !steal && !finishing(s, pid)) return { ok: false, err: `You don't control ${cardName(c)}.` };
             if (c.zone === to && to !== 'battlefield') continue;
             if (to === 'stack' && ids.length === 1) { const err = castCheck(s, pid, c, a); if (err) return { ok: false, err }; }
+            // Casting a copy of a card (Arcane Bombardment, 707.12): the card stays where it is; the copy goes on the stack.
+            if (to === 'stack' && a.copy && a.cast && (c.zone === 'exile' || c.zone === 'graveyard')) {
+              const id = 'cp' + (++s.seq) + '-' + String(c.id).slice(0, 10);
+              const cp = JSON.parse(JSON.stringify(c)); Object.assign(cp, { id, token: true, copy: true, zone: 'limbo', exiledWith: null, mayPlay: null });
+              s.cards[id] = cp; moveOne(s, cp, 'stack', null, { by: pid }, notes); onCast(s, pid, cp, a);
+              names.push('a copy of ' + cardName(c)); froms.add(c.zone); continue;
+            }
             // Playing a land from exile (impulse draw): it's the land drop for the turn (305.2).
             if ((a.playLand || a.land) && to === 'battlefield' && ids.length === 1 && isType(c, 'land')) { const a2 = Object.assign({}, a); const err = landCheck(s, pid) || (root.Rulebook && !a.dev ? root.Rulebook.castBlock(s, pid, c, a2) : null); if (err) return { ok: false, err, land: true }; if (root.Rulebook) root.Rulebook.use(s, pid, a2.perm, c); s.turn.lands = s.turn.lands || {}; s.turn.lands[pid] = (s.turn.lands[pid] || 0) + 1; }
             if (to !== 'exile') c.mayPlay = null;
@@ -810,6 +833,15 @@
           if (PHASES[T.phase] === 'Cleanup') { clearMods(s); if (root.Engine) root.Engine.endOfTurn(s); }
           s.rev++; return { ok: true };
         }
+        // After milling for Combustible Gearhulk: damage to that player equal to the milled cards' total mana value.
+        case 'millDmg': {
+          need();
+          const to = s.players[a.to] ? a.to : null; if (!to) return { ok: false, err: 'bad player' };
+          const ids = (a.ids || []).slice(0, 10).filter(id => s.cards[id] && s.cards[id].zone === 'graveyard' && s.cards[id].owner === pid);
+          const n = ids.reduce((t, id) => t + (+((s.cards[id].d || {}).cmc) || 0), 0);
+          if (n > 0) { s.players[to].life -= n; alertChecks(s, to); }
+          return done(`${String(a.src || 'it').slice(0, 60)} dealt ${n} damage to ${nameOf(s, to)} (the milled cards’ total mana value)`);
+        }
         // House rules (host, before the game starts): starting life, commander damage, the free first mulligan.
         case 'house': {
           if (pid !== s.hostPid) return { ok: false, err: 'Only the host sets the house rules.' };
@@ -1005,7 +1037,7 @@
           // An activated ability of a permanent goes on the stack (602.2). Mana abilities don't (605.3).
           need();
           const src = s.cards[a.id];
-          if (!src || src.zone !== 'battlefield') return { ok: false, err: 'That isn’t on the battlefield.' };
+          if (!src || (src.zone !== 'battlefield' && !(src.emblem && src.zone === 'command'))) return { ok: false, err: 'That isn’t on the battlefield.' };
           if (src.ctrl !== pid) return { ok: false, err: `You don't control ${cardName(src)}.` };
           const C = root.Cards;
           const ab = C.abilities(src)[a.i | 0];
@@ -1349,6 +1381,8 @@
   const alive = (s, p) => !!(s.players[p] && !s.players[p].lost);
   // 704.5a / 704.5c / 903.10a: a player with 0 or less life, 10 poison counters or 21 damage from one commander loses.
   function checkLoss(s, notes) {
+    // Serra the Benevolent's emblem: "If you control a creature, damage that would reduce your life total to less than 1 reduces it to 1 instead."
+    for (const pid of s.seats || []) { const P = s.players[pid]; if (P && P.life < 1 && Object.values(s.cards).some(o => o.emblem && o.ctrl === pid && /damage that would reduce your life total to less than 1 reduces it to 1 instead/i.test(o.d.faces[0].o || '')) && Object.values(s.cards).some(o => o.zone === 'battlefield' && o.ctrl === pid && (o.faceDown || isType(o, 'creature')))) { P.life = 1; if (notes) notes.push(`${nameOf(s, pid)}’s emblem kept their life at 1`); } }
     const losing = [];
     for (const pid of s.seats) {
       const P = s.players[pid];

@@ -183,7 +183,7 @@
     if (cache.sig === sig && cache.s === s) return cache.list;
     const list = [];
     for (const c of Object.values(s.cards)) {
-      if (c.zone !== 'battlefield' || c.faceDown || !c.d) continue;
+      if (!(c.zone === 'battlefield' || c.emblem) || c.faceDown || !c.d) continue;
       for (const l of lines(c)) {
         if (/^(when|whenever|at the beginning)\b/.test(l) || /^[^"]*\{[^}]+\}[^"]*:/.test(l) && !/^you may/.test(l)) continue;   // triggers and activated abilities aren't rules
         list.push(...readLine(l, c.ctrl, c.id, R().cardName(c), s));
@@ -256,6 +256,7 @@
   function ways(s, pid, c, o) {
     o = o || {};
     const out = [];
+    if (c && c.faceDown && c.zone === 'exile' && c.exPerm && o.d) c = Object.assign({}, c, { d: o.d, faceDown: false });
     if (!c || !c.d || c.faceDown && c.zone !== 'hand') return out;
     const zone = o.zone || c.zone;
     const own = (c.owner || pid) === pid;
@@ -279,7 +280,11 @@
     if (zone === 'exile') {
       if (c.mayPlay && c.mayPlay.by === pid) add({ act: land ? 'play' : 'cast', kind: 'normal', cost: mc, via: 'mayPlay', label: land ? 'Play it' : 'Cast it from exile', src: c.mayPlay.src });
       if (c.warpedOut && own && !land) add({ act: 'cast', kind: 'normal', cost: mc, via: 'warp', label: 'Cast it from exile (warp)' });
-      if (c.exPerm && c.exPerm.by === pid) for (const k of selfCosts.filter(k => k.kind === c.exPerm.kind)) add({ act: 'cast', kind: k.kind, cost: k.cost, alt: k, via: 'self', label: k.kind });
+      if (c.airbent && own && !land) add({ act: 'cast', kind: 'airbend', cost: '{2}', alt: { kind: 'airbend', cost: '{2}' }, via: 'airbend', label: 'Cast it for {2} (airbent)' });
+      if (c.exPerm && c.exPerm.by === pid && (!s.turn || c.exPerm.turn < s.turn.n)) {
+        if (c.exPerm.kind === 'plot') add({ act: 'cast', kind: 'free', cost: '', via: 'plot', label: 'Cast it free (plotted)', sorcery: true });
+        else for (const k of selfCosts.filter(k => k.kind === c.exPerm.kind)) add({ act: 'cast', kind: k.kind, cost: k.cost, alt: k, via: 'self', label: k.kind });
+      }
     }
     if (zone === 'graveyard' && own) for (const k of selfCosts) if (!(k.kind === 'disturb' && land)) add({ act: 'cast', kind: k.kind, cost: k.cost, alt: k, via: 'self', label: k.kind });
     if (zone === 'graveyard' && own && /aftermath/i.test(C().rawText(c))) add({ act: 'cast', kind: 'normal', cost: mc, via: 'self', label: 'Cast (aftermath)' });

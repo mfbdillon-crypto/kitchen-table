@@ -313,7 +313,7 @@
     });
     savePriv();
     const land = cards.every(isLand);
-    const r = await act({ type: 'enter', zone, from, cards: send, tapped: !!opts.tapped, pos: opts.pos, row: opts.row, land: !!opts.playLand, tg: opts.tg, mode: opts.mode, x: opts.x, wardPaid: !!opts.wardPaid, fromPool: opts.fromPool, cast: !!opts.cast, alt: opts.alt, via: opts.via, perm: opts.perm, top: opts.top, suspend: opts.suspend || undefined, sacCost: opts.sacCost, mayPlay: opts.mayPlay, msg: msgFor(zone, Object.assign({ land }, opts), from) });
+    const r = await act({ type: 'enter', zone, from, cards: send, tapped: !!opts.tapped, pos: opts.pos, row: opts.row, land: !!opts.playLand, tg: opts.tg, mode: opts.mode, x: opts.x, wardPaid: !!opts.wardPaid, fromPool: opts.fromPool, cast: !!opts.cast, alt: opts.alt, via: opts.via, perm: opts.perm, top: opts.top, suspend: opts.suspend || undefined, special: opts.special || undefined, textHint: opts.special === 'foretell' ? (cards[0] && cards[0].d ? (cards[0].d.faces || []).map(f => f.o || '').join('\n').slice(0, 2000) : '') : undefined, sacCost: opts.sacCost, mayPlay: opts.mayPlay, msg: msgFor(zone, Object.assign({ land }, opts), from) });
     if (r.ok) lastAct = { zone, ids, t: Date.now() };
     if (!r.ok) {
       // Only put the cards back if the table really refused. If we just never heard back, look at the board:

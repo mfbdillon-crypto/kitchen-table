@@ -112,7 +112,7 @@
     }
     ringEvents(s, evs, notes);
     if (!evs.length) return place(s, notes);
-    const onBf = Object.values(s.cards).filter(c => c.zone === 'battlefield' && !c.faceDown && c.d);
+    const onBf = Object.values(s.cards).filter(c => (c.zone === 'battlefield' || c.emblem) && !c.faceDown && c.d);
     const leftIds = new Set(left.map(c => c.id));
     const manyDone = new Set();
     let found = 0;
@@ -968,6 +968,67 @@
         case 'ruleFx': { s.ruleFx = (s.ruleFx || []).concat([{ by, src: srcId, name: srcName, line: String(o.line).slice(0, 300), until: o.until, turn: s.turn.n }]).slice(-40); notes.push(`${srcName}: ${o.until === 'next' ? 'until ' + nameOf(s, by) + '’s next turn' : o.until === 'game' ? 'for the rest of the game' : 'this turn'}, ${o.line}`); break; }
         // "If that creature would die this turn, exile it instead" (Brutal Expulsion, Scorching Dragonfire).
         case 'dieExile': for (const c of cards(o.what)) { c.dieExile = s.turn.n; } break;
+        // Copy a spell or ability on the stack (707.10): the copy goes on top, controlled by whoever copied it.
+        case 'copyStack': for (const c of cards(o.what)) {
+          if (c.zone !== 'stack') continue;
+          const id = 'cp' + (++s.seq) + '-' + String(c.id).slice(0, 10);
+          const cp = JSON.parse(JSON.stringify(c)); Object.assign(cp, { id, token: true, copy: true, ctrl: by, seq: ++s.seq, castBy: by });
+          s.cards[id] = cp;
+          notes.push(`${nameOf(s, by)} copied ${cardName(c)}${c.ab ? '’s ability' : ''} (${srcName})`);
+        } break;
+        case 'manaNote': break;
+        case 'payEnergy': {
+          const P = s.players[by]; if (!P) break;
+          let n;
+          if (o.all) n = P.energy || 0;
+          else { const t = cards(o.mvOf)[0]; n = t ? (+((t.d || {}).cmc) || 0) : null; }
+          if (n == null || n <= 0 && !o.all || (P.energy || 0) < n || (o.all && !n)) { st.did = false; notes.push(`${nameOf(s, by)} didn’t pay energy (${srcName})`); break; }
+          P.energy -= n; st.did = true; st.lastX = n;
+          notes.push(`${nameOf(s, by)} paid ${n} energy (${srcName})`);
+          break;
+        }
+        case 'bombard': {
+          const pool = Object.values(s.cards).filter(c => c.zone === 'graveyard' && c.owner === by && C.matchesWhat(c, o.what));
+          if (pool.length) { const pick = pool[Math.floor(Math.random() * pool.length)]; R.moveOne(s, pick, 'exile', 'top', null, notes); const again = s.cards[pick.id]; if (again) again.exiledWith = srcId; notes.push(`${srcName} exiled ${cardName(pick)} at random from ${nameOf(s, by)}’s graveyard`); }
+          const ids = Object.values(s.cards).filter(c => c.zone === 'exile' && c.exiledWith === srcId).map(c => c.id);
+          for (const id of ids) R.todo(s, by, { k: 'freeCast', from: 'exile', ids: [id], copy: true, filter: 'card', src: srcName + ' (copy)' });
+          if (ids.length) notes.push(`${nameOf(s, by)} may cast copies of ${ids.length} card${ids.length > 1 ? 's' : ''} exiled with ${srcName}`);
+          break;
+        }
+        // "Target opponent may have you draw N cards. If they don't, you mill N and this deals damage equal to their total mana value."
+        case 'punisher': {
+          const p = players(o.who)[0]; if (!p) break;
+          if (isAI(s, p) || !R.live(s, p)) {
+            const yes = (s.players[p].life || 0) <= 14;   // low on life: let them draw rather than risk ~8 damage
+            punish(s, by, p, yes, o.draw, o.mill, srcName, notes);
+            break;
+          }
+          s.ask = (s.ask || []).concat([{ id: 'a' + (++s.seq), kind: 'punisher', pid: p, by, draw: o.draw, mill: o.mill, name: srcName, since: Date.now() }]);
+          break;
+        }
+        case 'becomeTreasure': for (const c of cards(o.what)) {
+          if (c.zone !== 'battlefield') continue;
+          c.origD = c.origD || c.d; const nm = cardName(c);
+          c.d = { n: nm, cmc: (c.d && c.d.cmc) || 0, faces: [{ n: nm, t: 'Artifact — Treasure', o: '{T}, Sacrifice this artifact: Add one mana of any color.', img: ((c.d.faces || [])[c.face || 0] || {}).img || '', p: '', tg: '', mc: '' }] };
+          c.face = 0; c.row = R.rowFor ? R.rowFor(c) : c.row; c.counters = {}; c.dmg = 0;
+          notes.push(`${nm} became a Treasure artifact and lost all other card types and abilities (${srcName})`);
+        } break;
+        // Airbend (Avatar's Wrath): exile; while it's exiled, its owner may cast it for {2}.
+        case 'airbend': {
+          const keep = o.keep ? new Set(cards(o.keep).map(c => c.id)) : null;
+          const list = o.what ? cards(o.what) : Object.values(s.cards).filter(c => c.zone === 'battlefield' && (c.faceDown || R.isType(c, 'creature')) && !keep.has(c.id));
+          for (const c of list) { if (c.zone !== 'battlefield') continue; R.moveOne(s, c, 'exile', 'top', null, notes); const again = s.cards[c.id]; if (again && again.zone === 'exile') again.airbent = { by: again.owner }; }
+          notes.push(`${srcName} airbent ${list.length} creature${list.length === 1 ? '' : 's'} — each owner may cast theirs from exile for {2}`);
+          break;
+        }
+        // An emblem (114): a marker in its owner's command zone whose abilities work for the rest of the game.
+        case 'emblem': {
+          const id = 'em' + (++s.seq) + '-' + by.slice(0, 6);
+          const o0 = String(o.text || '').replace(/^./, x => x.toUpperCase());
+          s.cards[id] = { id, owner: by, ctrl: by, zone: 'command', emblem: true, token: true, counters: {}, seq: ++s.seq, face: 0, d: { n: 'Emblem — ' + srcName, cmc: 0, faces: [{ n: 'Emblem — ' + srcName, t: 'Emblem', o: o0, img: '', p: '', tg: '', mc: '' }] } };
+          notes.push(`${nameOf(s, by)} got an emblem (${srcName}): “${o0}”`);
+          break;
+        }   // counted when the land pays for something (Cards.manaSource)
         case 'noteLife': { const h = s.cards[srcId]; if (h) { h.noted = (s.players[by] || {}).life || 0; notes.push(`${srcName} noted ${nameOf(s, by)}’s life total: ${h.noted}`); } break; }
         case 'handToTop': R.todo(s, by, { k: 'handToTop', n: val(o.n), src: srcName }); break;
         case 'look': R.todo(s, by, { k: 'look', n: val(o.n), reveal: !!o.reveal, text: o.text, src: srcName }); break;
@@ -1073,6 +1134,7 @@
       else notes.push(`${cardName(c)} entered as itself (no copy)`);
       return { ok: true };
     }
+    if (ask.kind === 'punisher') { punish(s, ask.by, pid, !!a.yes, ask.draw, ask.mill, ask.name, notes); return { ok: true }; }
     // 903.9: the owner chooses whether their commander goes to the command zone.
     if (ask.kind === 'cmdrZone') {
       const c = s.cards[ask.card]; if (!c) return { ok: true };
@@ -1125,6 +1187,11 @@
     }
     return { ok: true };
   }
+  function punish(s, by, p, yes, draw, mill, name, notes) {
+    const R = I();
+    if (yes) { R.todo(s, by, { k: 'draw', n: draw, src: name }); notes.push(`${nameOf(s, p)} let ${nameOf(s, by)} draw ${draw} cards (${name})`); }
+    else { R.todo(s, by, { k: 'millDmg', n: mill, to: p, src: name }); notes.push(`${nameOf(s, p)} chose damage: ${nameOf(s, by)} mills ${mill} and ${name} deals damage equal to their total mana value`); }
+  }
   // Pay N life for each creature kept (only while the life total covers it, 119.4); sacrifice the rest.
   function payLifeOrSac(s, pid, n, ids, keep, name, notes) {
     const R = I(); const P = s.players[pid]; if (!P) return;
@@ -1147,6 +1214,7 @@
       if (ask.kind === 'assign') { const K = s.combat; if (K && !K.done) { K.assign = K.assign || {}; K.assign[ask.att] = 'auto'; I().combatDamage(s, notes); } continue; }
       if (ask.kind === 'payUntap') { continue; }
       if (ask.kind === 'payLife') { s.ask.push(ask); answer(s, ask.pid, { id: ask.id, ids: [] }, notes); continue; }
+      if (ask.kind === 'punisher') { s.ask.push(ask); answer(s, ask.pid, { id: ask.id, yes: false }, notes); continue; }
       if (ask.kind === 'cmdrZone') { s.ask.push(ask); answer(s, ask.pid, { id: ask.id, command: true }, notes); continue; }
       if (ask.kind === 'pay') { s.ask.push(ask); answer(s, ask.pid, { id: ask.id, yes: false }, notes); continue; }
       if (ask.kind === 'mutate') { s.ask.push(ask); answer(s, ask.pid, { id: ask.id, top: true }, notes); continue; }

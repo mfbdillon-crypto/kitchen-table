@@ -54,5 +54,6 @@ break or tighten those rules. All tracking is silent (visible only in dev mode).
 
 ## Status
 - v8.0 stage 1 (rulebook), v8.1 stage 2 (movement checkpoint), v8.2 stage 3 (library knowledge), v8.3 stage 4 (lobby, logs, dev tools) — all live.
-- Known follow-ups: foretell/plot special actions from hand; AI suspend; Strionic Resonator (copy triggers); Combustible Gearhulk;
-  Arcane Bombardment; per-opponent knowledge of library tops; rewinding hidden zones.
+- v8.4: foretell, plot, AI suspend, copying spells and abilities, emblems, Combustible Gearhulk, Arcane Bombardment, airbend, Vraska's Treasure, energy by amount.
+- Known follow-ups:
+  per-opponent knowledge of library tops; rewinding hidden zones; ~110 rarer card clauses (see test coverage).
