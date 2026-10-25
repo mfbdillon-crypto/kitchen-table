@@ -162,6 +162,11 @@
     if ((m = body.match(/^shuffles? up to (\w+) target cards from (?:their|your) graveyard into (?:their|your) library$/))) return [wrap({ op: 'move', what: { k: 't', i: st.ti++, upTo: true, n: amt(m[1]) || 3 }, to: 'library', pos: 'shuffle' })];
     if ((m = s.match(/^(tap|untap) another target (.+)$/))) return [wrap({ op: m[1], what: targetOf('target ' + m[2], st) })];
     if ((m = s.match(/^(target .+?|it|that creature|this) phases out$/))) { const what = targetOf(m[1], st) || (m[1] === 'it' && st.ti > 0 ? { k: 't', i: st.ti - 1 } : null); if (what) return [wrap({ op: 'phaseOut', what })]; }
+    if (/^(?:and )?after this phase, there is an additional combat phase$|^there is an additional combat phase after this phase$/.test(s)) return [wrap({ op: 'extraCombat', after: 'phase' })];
+    if (/^after this main phase, there is an additional combat phase followed by an additional main phase$/.test(s)) return [wrap({ op: 'extraCombat', after: 'main' })];
+    if (/^that creature's owner can't cast spells with the same name as that creature until your next turn$/.test(s)) return [wrap({ op: 'nameLock', what: st.ti > 0 ? { k: 't', i: st.ti - 1 } : { k: 'ev' } })];
+    if ((m = s.match(/^((?:non)?[a-z]+ )?spells your opponents cast cost \{(\d+)\} more to cast until your next turn$/))) return [wrap({ op: 'costMod', n: +m[2], filter: (m[1] || '').trim() || null })];
+    if ((m = s.match(/^(.+?) loses? ([a-z ,]+?) until end of turn$/))) { const what = targetOf(m[1], st); const kws = m[2].split(/,\s*|\s+and\s+/).map(x => x.trim()).filter(Boolean); if (what && kws.length) return [wrap({ op: 'loseKw', what, kws })]; }
     if (/^the ring tempts you$/.test(s)) return [wrap({ op: 'tempt' })];
     if ((m = s.match(/^put (target .+?|that card|it|this) on top of (?:its|their) owner's library$/)) || (m = s.match(/^put (target .+? from your graveyard|that card|it) on top of your library$/))) { const what = targetOf(m[1], st); if (what) return [wrap({ op: 'move', what, to: 'library', pos: 'top' })]; }
     if ((m = s.match(/^put (target .+?|that card|it) into (?:its|their) owner's library (second|third) from the top$/))) { const what = targetOf(m[1], st); if (what) return [wrap({ op: 'move', what, to: 'library', pos: m[2] === 'second' ? 'n2' : 'n3' })]; }
@@ -329,7 +334,7 @@
   // ---------------- a whole ability ----------------
   function parse(text, opts, st0) {
     const st = st0 || { ti: 0 };
-    const t0 = String(text || '').toLowerCase().replace(/\([^)]*\)/g, '').replace(/ {2,}/g, ' ').replace(/[“”]/g, '"')
+    const t0 = String(text || '').toLowerCase().replace(/\([^)]*\)/g, '').replace(/ {2,}/g, ' ').replace(/,? and after this phase, there is an additional combat phase/g, '. after this phase, there is an additional combat phase').replace(/[“”]/g, '"')
       .replace(/\.?\s*(?:it|they) (?:has|have|gains?) "[^"]*"(?: until end of turn)?\.?/g, '.').trim();
     // "Exile/reveal cards from the top of your library until you exile a nonland permanent card. Put that card onto the
     // battlefield or into your hand." (Illuna, Auspicious Starrix, The Regalia): one effect, done on the owner's device.
@@ -340,7 +345,8 @@
     // Impulse draw: "Exile the top card of your library. Until the end of your next turn, you may play it." (Riku, Jeska's Will…)
     const t0i = t1.replace(/exile the top (card|two cards|three cards|four cards|x cards|\w+ cards) of your library\.\s*(until the end of your next turn|until end of turn|until your next end step|this turn)?,?\s*you may play (?:it|them|that card|those cards)( this turn| until end of turn| until the end of your next turn)?\./g,
       (all, n, w1, w2) => { const w = (w1 || w2 || 'this turn').trim(); const k = /next turn|next end step/.test(w) ? 'next' : 'eot'; const nn = n === 'card' ? 1 : (n.split(' ')[0]); return `__impulse:${nn}:${k}__.`; });
-    const t0t = t0i.replace(/until your next turn, your life total can't change and you gain protection from everything\. all permanents you control phase out\./g, '__teferi__.');
+    const t0s = t0i.replace(/sacrifice any number of lands\. search your library for up to that many land cards, put them onto the battlefield tapped, then shuffle\./g, '__scapeshift__.');
+    const t0t = t0s.replace(/until your next turn, your life total can't change and you gain protection from everything\. all permanents you control phase out\./g, '__teferi__.');
     const t1a = t0t.replace(/choose a color\. add an amount of mana of that color equal to your devotion to that color\./g, '__devotion__.');
     const t1b = t1a.replace(/(?:reveal|look at) the top card of your library\. if it's an? ([a-z ]+?) card( of the chosen type)?, (you may )?(?:reveal it and )?put it (onto the battlefield|into your hand)\.(?: otherwise, you may put (?:that card|it) on the bottom of your library\.)?/g,
       (all, what, chosen, may, dest) => `__top:${what.trim()}:${chosen ? 1 : 0}:${/battlefield/.test(dest) ? 'battlefield' : 'hand'}:${/otherwise/.test(all) ? 1 : 0}__.`);
@@ -372,6 +378,7 @@
       const fn = sent.match(/^__finale:([a-z ]+)__\.?$/);
       if (fn) { ops.push({ op: 'search', n: 1, filter: fn[1], mvMax: { v: 'X' }, dest: 'battlefield' }); continue; }
       if (/^__rashmi__\.?$/.test(sent)) { ops.push({ op: 'rashmi' }); continue; }
+      if (/^__scapeshift__\.?$/.test(sent)) { ops.push({ op: 'sacSearch', what: 'land', filter: 'land', tapped: true }); continue; }
       if (/^__teferi__\.?$/.test(sent)) { ops.push({ op: 'teferi' }); continue; }
       if (/^__devotion__\.?$/.test(sent)) { ops.push({ op: 'addDevotion' }); continue; }
       const tc = sent.match(/^__top:([a-z -]+):([01]):(battlefield|hand):([01])__\.?$/);

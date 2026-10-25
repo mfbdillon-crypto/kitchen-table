@@ -436,6 +436,7 @@
     if (/^an opponent lost life this turn$/.test(c)) return Object.keys(st.lost || {}).some(p => p !== me);
     if (/^you(?:'ve)? cast two or more spells this turn$/.test(c)) return ((st.spells || {})[me] || 0) >= 2;
     if (/^it wasn't put onto the battlefield with this ability$/.test(c)) return true;   // checked as it resolves (engine fromHand)
+    if (/^it's your combat phase$/.test(c)) return T.active === me && /combat|attackers|blockers|damage/i.test((root.Rules && root.Rules.PHASES[T.phase]) || '');
     if (/^it's not your turn$/.test(c)) return T.active !== me;
     if (/^it's your turn$/.test(c)) return T.active === me;
     if ((m = c.match(/^(?:it|this) has (\w+) or more ([+\-\d/]+|[a-z]+) counters on (?:it|this)$/)) || (m = c.match(/^there are (\w+) or more ([+\-\d/]+|[a-z]+) counters on (?:it|this)$/))) { const n = num(m[1]) || 0; return (((src.counters || {})[m[2]]) || 0) >= n; }

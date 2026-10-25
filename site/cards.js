@@ -81,6 +81,8 @@
     if (/(^|\n|\. )this (?:creature )?can't block\b/i.test(t) || /(^|\n|\. )this (?:creature )?can't attack or block\b/i.test(t)) set.add("can't block");
     if (/(^|\n|\. )this (?:creature )?can't attack\b/i.test(t)) set.add("can't attack");
     if (/(^|\n|\. )this (?:creature )?can't be blocked\.?($|\n)/i.test(t)) set.add('unblockable');
+    // "…lose hexproof and indestructible until end of turn" (Shadowspear).
+    if (c.loseKw && s && s.turn && c.loseKw.n === s.turn.n) for (const k of c.loseKw.kws) set.delete(k);
     return set;
   }
   const has = (c, k, s) => keywords(c, s).has(k);
@@ -226,6 +228,8 @@
         if (m && (!m[2] || o.ctrl !== who) && fits(m[1])) delta += +m[3];
       }
     }
+    // Temporary taxes (Elspeth Conquers Death): "Noncreature spells your opponents cast cost {2} more until your next turn".
+    for (const m of CUR.costMods || []) if (m.by !== who && (!m.filter || (m.filter === 'noncreature' ? !isType(c, 'creature') : matchesWhat(Object.assign({}, c, { zone: 'stack' }), m.filter)))) delta += m.n;
     r.g = Math.max(0, r.g + delta);
     return r;
   }

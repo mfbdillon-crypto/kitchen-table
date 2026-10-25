@@ -428,6 +428,7 @@
     extra = extra || {};
     if (Rr.isType(card, 'land')) return null;
     if (when === 'instant' && !Cd.instantSpeed(card)) return null;
+    if ((s.nameLocks || []).some(m => m.owner === this.me && m.name === Rr.cardName(card))) return null;
     const rl = roles(card);
     const mode = this.modeFor(card);
     if (mode === undefined) return null;

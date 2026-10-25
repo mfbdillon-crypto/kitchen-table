@@ -34,6 +34,7 @@
 | `fetch` | Search for basic lands | executor.onTodo → colors my hand needs |
 | `search` | Search the library for a card | executor.onTodo → missing combo piece, key card, needed color |
 | `cascade` | Cascade / discover N: reveal and maybe cast free (discover: or put it into my hand) | executor.onTodo → cast it unless it has no good target |
+| `sacSearch` | Scapeshift: sacrifice any number of lands, then search for that many land cards (onto the battlefield tapped) | executor.onTodo → sacrifice every land, fetch the best ones |
 | `freeCast` | You may cast a spell (of a kind, up to a mana value) from your hand or graveyard without paying its mana cost | executor.onTodo → best castable fit, cast with alt free |
 | `impulse` | Exile the top N cards; I may play them this turn / until the end of my next turn (Riku, Jeska’s Will) | executor.onTodo → io.impulse; the plan then casts or plays them from exile |
 | `handToTop` | Put N cards from my hand on top of my library (Brainstorm) | executor.onTodo → brain.worstCards |

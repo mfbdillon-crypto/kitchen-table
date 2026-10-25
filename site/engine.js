@@ -734,6 +734,18 @@
           notes.push(`${nameOf(s, by)}'s life total can't change and they have protection from everything until their next turn; ${n} permanents phased out (${srcName})`);
           break;
         }
+        case 'extraCombat': {
+          const T = s.turn;
+          // "After this phase": from inside combat it's the next combat; from a main phase, right after that main phase.
+          const inCombat = /combat|attackers|blockers|damage/i.test(R.PHASES[T.phase]);
+          if (o.after === 'main' || !inCombat) T.extraAfterMain = (T.extraAfterMain || 0) + 1; else T.extraCombat = (T.extraCombat || 0) + 1;
+          notes.push(`There will be an additional combat phase this turn (${srcName})`);
+          break;
+        }
+        case 'loseKw': { const cs = cards(o.what); for (const c of cs) c.loseKw = { n: s.turn.n, kws: o.kws }; if (cs.length) notes.push(`${R.listNames(cs.map(cardName))} lost ${o.kws.join(' and ')} until end of turn (${srcName})`); break; }
+        case 'sacSearch': R.todo(s, by, { k: 'sacSearch', what: o.what, filter: o.filter, tapped: !!o.tapped, src: srcName }); notes.push(`${nameOf(s, by)} sacrifices any number of ${o.what}s and searches for that many (${srcName})`); break;
+        case 'nameLock': for (const c of cards(o.what)) { s.nameLocks = (s.nameLocks || []).concat([{ by, owner: c.owner, name: cardName(c) }]); notes.push(`${nameOf(s, c.owner)} can’t cast spells named ${cardName(c)} until ${nameOf(s, by)}’s next turn (${srcName})`); } break;
+        case 'costMod': { s.costMods = (s.costMods || []).concat([{ by, n: o.n, filter: o.filter }]); notes.push(`${o.filter ? o.filter[0].toUpperCase() + o.filter.slice(1) + ' spells' : 'Spells'} ${nameOf(s, by)}’s opponents cast cost {${o.n}} more until ${nameOf(s, by)}’s next turn (${srcName})`); break; }
         case 'tempt': {
           const P = s.players[by]; if (!P) break;
           P.ring = Math.min(4, (P.ring || 0) + 1);
@@ -1109,6 +1121,8 @@
     }
     s.turn.stats = { attacked: {}, died: 0, gained: {}, lost: {}, spells: {}, drew: {} };
     s.turn.extraLand = {};
+    if (s.costMods) s.costMods = s.costMods.filter(m => m.by !== pid);
+    if (s.nameLocks) s.nameLocks = s.nameLocks.filter(m => m.by !== pid);
   }
   // Delayed triggers ("return it at the beginning of the next end step").
   function delayed(s, step, notes) {
@@ -1149,6 +1163,9 @@
       if (K && K.n === T.n && !K.done && Object.keys(K.att || {}).length) return;   // combat in progress
       if (ph >= PI('Cleanup')) { R.passTurn(s, T.active, [], () => ({ ok: true }), true); check(s, notes); continue; }
       let next = ph + 1;
+      // Additional combat phases (505.1a): Lightning Runner, Great Train Heist ("after this phase"), Aggravated Assault ("after this main phase … followed by an additional main phase").
+      if (R.PHASES[ph] === 'End of combat' && T.extraCombat > 0) { T.extraCombat--; s.combat = null; next = PI('Beginning of combat'); T.goal = 'combat'; notes.push(`${nameOf(s, T.active)} gets an additional combat phase`); }
+      else if (R.PHASES[ph] === 'Main 2' && T.extraAfterMain > 0) { T.extraAfterMain--; s.combat = null; next = PI('Beginning of combat'); T.goal = 'combat'; notes.push(`${nameOf(s, T.active)} gets an additional combat phase and main phase`); }
       if (R.PHASES[next] === 'Declare attackers' && T.goal === 'pass') noCombat(s);
       // 508.8: with no attackers, the declare blockers and combat damage steps are skipped.
       if ((R.PHASES[next] === 'Declare blockers' || R.PHASES[next] === 'Combat damage') && !(K && K.n === T.n && Object.keys(K.att || {}).length)) next = PI('End of combat');

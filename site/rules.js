@@ -1296,6 +1296,7 @@
       if (!f) return `${cardName(c)} needs you to sacrifice ${/^[aeiou]/.test(want) ? 'an' : 'a'} ${want} as you cast it.`;
       if (f.zone !== 'battlefield' || f.ctrl !== pid || !C.matchesWhat(f, want)) return `${cardName(f)} isn’t ${/^[aeiou]/.test(want) ? 'an' : 'a'} ${want} you control.`;
     }
+    if (a && a.cast && (s.nameLocks || []).some(m => m.owner === pid && m.name === cardName(c))) return `You can’t cast spells named ${cardName(c)} right now (Reflector Mage).`;
     if (!C || !a || !a.tg) return null;
     const reqs = C.targetReqs(c, a.mode, a.alt);
     const tg = cleanTargets(a.tg, reqs.length);

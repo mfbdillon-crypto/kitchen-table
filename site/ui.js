@@ -1865,6 +1865,15 @@
       return;
     }
     // "Look at the top N cards…": the look window, with the card's instructions on top.
+    if (t.k === 'sacSearch') {
+      const mine = Object.values(S().cards).filter(c => c.zone === 'battlefield' && c.ctrl === KEY && CD.matchesWhat(c, t.what || 'land')), sel = [];
+      openModal(`${t.src}: sacrifice any number of ${t.what || 'land'}s`, b => {
+        b.append(h('p', { class: 'muted' }, `Then you search your library for that many ${t.filter || 'land'} cards and put them onto the battlefield${t.tapped ? ' tapped' : ''}.`));
+        b.append(h('div', { class: 'pkchoices pics' }, mine.map(c => targetThumb({ c: c.id }, sel.includes(c.id), () => { const i = sel.indexOf(c.id); if (i >= 0) sel.splice(i, 1); else sel.push(c.id); refreshModal(); }))));
+        b.append(h('div', { class: 'row' }, h('button', { class: 'primary', onclick: async () => { closeModal(true); if (sel.length) { await G.move(sel.slice(), 'graveyard', null, { sac: true }); G.onTodo({ k: 'search', n: sel.length, upTo: true, filter: t.filter || 'land', dest: 'battlefield', tapped: !!t.tapped, src: t.src }, ack); } else { ack(); setTimeout(pumpAsks, 50); } } }, `Sacrifice ${sel.length}`)));
+      }, { live: true, sticky: true, noEsc: true });
+      return;
+    }
     if (t.k === 'freeCast') {
       const want = String(t.filter || 'card');
       const fits = c => !R.isType(c, 'land') && (t.mvMax == null || (+((c.d || {}).cmc) || 0) <= t.mvMax) && (want === 'card' || CD.matchesWhat(Object.assign({}, c, { zone: 'stack' }), want));

@@ -50,6 +50,7 @@
     fetch: { what: 'Search for basic lands', ai: 'executor.onTodo → colors my hand needs' },
     search: { what: 'Search the library for a card', ai: 'executor.onTodo → missing combo piece, key card, needed color' },
     cascade: { what: 'Cascade / discover N: reveal and maybe cast free (discover: or put it into my hand)', ai: 'executor.onTodo → cast it unless it has no good target' },
+    sacSearch: { what: 'Scapeshift: sacrifice any number of lands, then search for that many land cards (onto the battlefield tapped)', ai: 'executor.onTodo → sacrifice every land, fetch the best ones' },
     freeCast: { what: 'You may cast a spell (of a kind, up to a mana value) from your hand or graveyard without paying its mana cost', ai: 'executor.onTodo → best castable fit, cast with alt free' },
     impulse: { what: 'Exile the top N cards; I may play them this turn / until the end of my next turn (Riku, Jeska’s Will)', ai: 'executor.onTodo → io.impulse; the plan then casts or plays them from exile' },
     handToTop: { what: 'Put N cards from my hand on top of my library (Brainstorm)', ai: 'executor.onTodo → brain.worstCards' },

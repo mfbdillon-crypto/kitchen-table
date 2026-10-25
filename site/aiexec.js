@@ -124,6 +124,14 @@
     if (T.goal) return false;                                                            // the table is moving the turn along
     if (await this.unhandledTriggers()) return true;
     const plan = B.plan; if (!plan) return false;
+    // An additional combat phase (Lightning Runner, Aggravated Assault): attack again with what can.
+    if (ph === 'Declare attackers' && !(K && K.n === T.n) && plan.steps.some(x => x.kind === 'attack' && this.markOf(x.key))) {
+      const pa = B.planAttack(); const list = pa.list || [];
+      const r = await this.act({ type: 'attack', list: list.map(x => ({ id: x.id, p: x.p })) });
+      B.note('did', list.length && r.ok !== false ? `attacked again (extra combat) with ${list.length} creature${list.length > 1 ? 's' : ''}` : 'no attack in the extra combat');
+      if (r.ok === false && list.length) await this.act({ type: 'attack', list: [] });
+      return true;
+    }
     const inMain = /^Main/.test(ph);
     const main1 = ph === 'Main 1';
     for (const st of plan.steps) {
@@ -351,6 +359,13 @@
         const decisions = top.map(c => ({ id: c.id, dest: keep(c) ? 'top' : t.k === 'scry' ? 'bottom' : 'graveyard' }));
         await io.applyLook(t.k, top.length, decisions);
         B.note('did', `${t.k} ${top.length}: kept ${decisions.filter(d => d.dest === 'top').length} on top`);
+        return;
+      }
+      if (t.k === 'sacSearch') {
+        const mine = B.bf(me).filter(c => C().matchesWhat(c, t.what || 'land'));
+        if (mine.length) await io.move(mine.map(c => c.id), 'graveyard', { sac: true, quietSac: t.src });
+        B.note('did', `${t.src}: sacrificed ${mine.length} ${t.what || 'land'}${mine.length === 1 ? '' : 's'}`);
+        if (mine.length) await this.onTodo({ k: 'search', n: mine.length, upTo: true, filter: t.filter || 'land', dest: 'battlefield', tapped: !!t.tapped, src: t.src });
         return;
       }
       if (t.k === 'freeCast') {
