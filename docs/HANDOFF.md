@@ -1,11 +1,11 @@
 # Handoff log — pick up here (updated 2026-10-25, 14:47 Phoenix)
 
-## URGENT (14:46): the user can't connect to the game on their phone
-Being troubleshot now. Suspects, in order:
-1. The automatic game code (v8.3): opening the bare site URL on the phone makes a NEW code, so the phone lands at a different table from the computer. The phone must use the Invite link or QR (?t=kt-xxxxxx), or enter the code in the lobby's "Have an invite code?" box.
-2. Joining after the game has started is refused (v8.3) — the phone can only watch.
-3. The lobby panel or keep/mulligan in the hand bar on a narrow screen.
-Older browser tests (views, decks_ui, ux_fixes, table_strict, phone, ui_stack, counters, looks) now time out. They probably click things the lobby covers, or rely on old menus. Check `test/phone.mjs` first.
+## Phone can't connect (reported 14:46) — fixed in v8.6 (d28c99b)
+- **Cause:** since v8.3 each browser makes its own game code, so opening the plain site URL on the phone put it alone at a new table.
+- **Fix:** the welcome screen has a "Game code" box (prefilled). Typing the computer's code (shown in the lobby, kt-xxxxxx) seats you at that game at once. The Invite link / QR still work.
+- Verified locally: test/phone_join.mjs (bare link → code → seated with the host) and test/phone.mjs (phone as hand) pass.
+- Still true: joining after Start is refused (the phone can only watch). If the user still can't connect, check that first.
+- Older browser tests (views, decks_ui, ux_fixes, table_strict, ui_stack, counters, looks) time out because of the changed menus; phone.mjs has been fixed, the rest still need updating.
 
 ## Since 11:05
 - v8.5 is live (724f27b): house rules window, lobby name/join rows, deck window order, AI deck picker, mulligan in the hand bar, simpler menus, Split log on top 30%, tab order, myriad/Selvala fixes.
