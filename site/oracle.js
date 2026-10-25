@@ -56,8 +56,20 @@
   function selfRef(t, name) {
     if (!name) return t;
     let out = t;
-    for (const x of [name, name.split(',')[0], name.split(' ')[0]].filter(x => x && x.length > 2)) {
-      if (x === name.split(' ')[0] && x.length < 5) continue;
+    const first = name.split(' ')[0];
+    for (const x of [name, name.split(',')[0], first].filter(x => x && x.length > 2)) {
+      if (x === first && x !== name.split(',')[0] && x !== name) {
+        if (x.length < 5) continue;
+        // A one-word short name ("Kaalia attacks") — but not the same word used as a type: "a 3/3 green Beast creature token"
+        // (Beast Within), "Angel spells", "other Angels".
+        const esc = x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        out = out.replace(new RegExp('(^|[^A-Za-z])' + esc + "(?=(?:'s)?\\b)(?!s\\b|\\s+(?:creature|token|spell|card|permanent|or|and)s?\\b)", 'g'), (m0, pre, off, str) => {
+          const before = str.slice(Math.max(0, off - 24), off + pre.length).toLowerCase();
+          if (/(?:\b(?:a|an|other|non-?|each|another|white|blue|black|red|green|colorless|\d+\/\d+)\s*)$/.test(before)) return m0;
+          return pre + 'this';
+        });
+        continue;
+      }
       out = out.split(x + "'s").join("this's").split(x).join('this');
     }
     return out.replace(/\bthis (creature|permanent|artifact|enchantment|land|planeswalker|vehicle|aura|equipment|saga|battle|spell|token|class|case|room)\b/gi, 'this');

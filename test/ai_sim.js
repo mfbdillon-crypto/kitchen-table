@@ -53,7 +53,7 @@ async function game(gi) {
     castFromHand: (id, o) => { const c = take(P[p].hand, [id])[0]; if (!c) return { ok: false, err: 'not in hand' }; const r = act(p, Object.assign({ type: 'enter', zone: 'stack', cast: true, from: 'hand', cards: [c] }, o)); if (!r.ok) P[p].hand.push(c); return r; },
     castPublic: (id, o) => act(p, Object.assign({ type: 'move', ids: [id], to: 'stack', cast: true }, o)),
     playLand: id => { const c = take(P[p].hand, [id])[0]; if (!c) return { ok: false, err: 'not in hand' }; const r = act(p, { type: 'enter', zone: 'battlefield', land: true, from: 'hand', cards: [c] }); if (!r.ok) P[p].hand.push(c); return r; },
-    tapPay: ids => act(p, { type: 'tap', ids, tapped: true, pay: true }),
+    tapPay: ids => act(p, { type: 'tap', ids: [...ids], tapped: true, pay: true, pain: [...(ids.pain || [])] }),
     privPhase: () => P[p].phase, mulls: () => P[p].mull, bottomN: () => P[p].bottomN,
     openingHand: () => { P[p].hand = P[p].lib.splice(0, 7); P[p].phase = 'deciding'; },
     keep: () => { const n = Math.max(0, P[p].mull - 1); if (n) { P[p].phase = 'bottom'; P[p].bottomN = n; return; } P[p].phase = 'kept'; act(p, { type: 'player', patch: { kept: true } }); },

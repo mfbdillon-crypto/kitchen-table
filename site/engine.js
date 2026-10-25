@@ -461,9 +461,9 @@
         und = und && a.ops.filter(o => o.op !== 'modes').every(o => o.op !== 'manual') && [].concat(c.mode).every(i => mo.modes[i] && deep(mo.modes[i].ops));
       } else und = und && a.understood !== false;
     }
-    // A later line's "that creature" / "that spell" (Dispatch, Stubborn Denial): a spell has no event, so it means the target named
-    // before it.
-    if (sp.length > 1) { let lastT = null; const fix = x => { if (Array.isArray(x)) return x.forEach(fix); if (!x || typeof x !== 'object') return; for (const [k, v] of Object.entries(x)) { if (v && typeof v === 'object' && v.k === 'ev' && lastT && k !== 'of') x[k] = Object.assign({}, lastT); else if (v && typeof v === 'object' && v.k === 't') lastT = v; else fix(v); } if (x.of && x.of.k === 'ev' && lastT) x.of = Object.assign({}, lastT); }; const cp = JSON.parse(JSON.stringify(ops)); cp.forEach(fix); return { ops: cp, understood: und && cp.every(o => o.op !== 'manual') }; }
+    // "That creature" / "that spell" / "it" after a target (Dispatch, Stubborn Denial, Bridgeworks Battle's "then it fights"): a spell
+    // has no event, so it means the target named before it.
+    { let lastT = null; const fix = x => { if (Array.isArray(x)) return x.forEach(fix); if (!x || typeof x !== 'object') return; for (const [k, v] of Object.entries(x)) { if (v && typeof v === 'object' && v.k === 'ev' && lastT && k !== 'of') x[k] = Object.assign({}, lastT); else if (v && typeof v === 'object' && v.k === 't') lastT = v; else fix(v); } if (x.of && x.of.k === 'ev' && lastT) x.of = Object.assign({}, lastT); }; const cp = JSON.parse(JSON.stringify(ops)); cp.forEach(fix); return { ops: cp, understood: und && cp.every(o => o.op !== 'manual') }; }
     return { ops, understood: und && ops.every(o => o.op !== 'manual') };
   }
   // Spells and activated abilities whose whole text the engine understands also resolve here.
@@ -822,7 +822,15 @@
         }
         case 'counters': {
           const n = val(typeof o.n === 'number' && o.n < 0 ? -o.n : o.n) * (typeof o.n === 'number' && o.n < 0 ? -1 : 1);
+          if (o.on && o.on.k === 'ownWithCounter') {   // "remove a counter from this or another creature you control" — the one with the most to spare
+            const pick = Object.values(s.cards).filter(c => c.zone === 'battlefield' && c.ctrl === by && C.matchesWhat(c, o.on.what) && (o.on.self || c.id !== src.id) && Object.values(c.counters || {}).some(v => v > 0))
+              .sort((a, b) => (b.counters['+1/+1'] || 0) - (a.counters['+1/+1'] || 0))[0];
+            if (!pick) { st.did = false; notes.push(`${srcName}: no counter to remove`); break; }
+            const kind = pick.counters['+1/+1'] ? '+1/+1' : Object.keys(pick.counters).find(k => pick.counters[k] > 0);
+            addCounter(pick, kind, -1); st.did = true; notes.push(`${srcName} removed a ${kind} counter from ${cardName(pick)}`); break;
+          }
           const { ps, cs } = both(o.on);
+          if (n < 0) st.did = cs.some(c => Object.values(c.counters || {}).some(v => v > 0)) || ps.length > 0;
           for (const c of cs) addCounter(c, o.kind === '+1/+1|loyalty' ? (R.isType(c, 'planeswalker') ? 'loyalty' : '+1/+1') : o.kind, n);
           for (const p of ps) { const P = s.players[p]; if (P && /poison/.test(o.kind)) P.poison = Math.max(0, P.poison + n); }
           if (cs.length || ps.length) notes.push(`${srcName} ${n > 0 ? 'put' : 'removed'} ${Math.abs(n)} ${o.kind === 'any' ? '' : o.kind + ' '}counter${Math.abs(n) > 1 ? 's' : ''} ${n > 0 ? 'on' : 'from'} ${R.listNames(cs.map(cardName).concat(ps.map(p => nameOf(s, p))))}`);
@@ -1325,7 +1333,10 @@
   }
   function busy(s) {
     const R = I();
-    return !!(R.stackTop(s) || s.prio || (s.tq && s.tq.length) || (s.ask || []).some(x => x.kind !== 'manual') || s.winner);
+    // A choice a player is still making while an effect resolves (discover, a search, a sacrifice) holds the game too (608.2,
+    // 500.2) — for up to 90 seconds, so a player who left can't freeze the table.
+    const todoWait = Object.entries(s.todo || {}).some(([p, L]) => s.players[p] && !s.players[p].lost && (L || []).some(t => !t.since || Date.now() - t.since < 90000));
+    return !!(R.stackTop(s) || s.prio || (s.tq && s.tq.length) || (s.ask || []).some(x => x.kind !== 'manual') || s.winner || todoWait);
   }
   function flow(s, notes) {
     const R = I(), T = s.turn;

@@ -358,20 +358,25 @@
   function addPool(s, pid, units) { const p = s.players[pid]; if (!p || !units.length) return; p.pool = (p.pool || []).concat(units).slice(0, 60); }
   function unitsOf(c) {
     const m = root.Cards && root.Cards.manaSource(c); if (!m || m.sac) return [];
-    return Array.from({ length: m.amount }, (_, i) => (m.units ? m.units[i] : null) || m.colors);
+    return Array.from({ length: m.amount }, (_, i) => ((m.units ? m.units[i] : null) || m.colors) + (m.pain ? '!' : ''));
   }
   // Spend from the pool: chosen units if the client says which (fromPool), otherwise the best fit for the cost.
   function spendPool(s, pid, cost, x, fromPool) {
     const p = s.players[pid]; if (!p || !p.pool || !p.pool.length || !cost) return;
-    if (Array.isArray(fromPool)) { const drop = new Set(fromPool.map(n => n | 0)); p.pool = p.pool.filter((u, i) => !drop.has(i)); return; }
+    // Mana from a pain land ('!') spent on a colored pip: 1 damage (its {C} is free).
+    const colored = ['W', 'U', 'B', 'R', 'G'].filter(k => cost[k] > 0).concat(cost.ph || [], ...(cost.hy || []));
+    const hurt = n => { if (n > 0) { p.life -= n; log(s, pid, `took ${n} damage from a pain land`, 'auto'); } };
+    if (Array.isArray(fromPool)) { const drop = new Set(fromPool.map(n => n | 0)); hurt(p.pool.filter((u, i) => drop.has(i) && u.includes('!') && colored.some(k => u.includes(k))).length); p.pool = p.pool.filter((u, i) => !drop.has(i)); return; }
     const pool = p.pool.slice(), used = new Array(pool.length).fill(false);
     const take = ok => { let best = -1; for (let i = 0; i < pool.length; i++) if (!used[i] && ok(pool[i]) && (best < 0 || pool[i].length < pool[best].length)) best = i; if (best >= 0) used[best] = true; return best >= 0; };
-    for (const col of ['W', 'U', 'B', 'R', 'G', 'C']) for (let i = 0; i < (cost[col] || 0); i++) take(u => u.includes(col));
+    let pains = 0;
+    for (const col of ['W', 'U', 'B', 'R', 'G', 'C']) for (let i = 0; i < (cost[col] || 0); i++) { const before = used.slice(); if (take(u => u.includes(col)) && col !== 'C') { const k = used.findIndex((v, n) => v && !before[n]); if (k >= 0 && pool[k].includes('!')) pains++; } }
     for (const col of cost.ph || []) take(u => u.includes(col));
     for (const [a1, b1] of cost.hy || []) if (!take(u => u.includes(a1) || u.includes(b1)) && a1 === '2') { take(() => true); take(() => true); }
     let g = (cost.g || 0) + (cost.x || 0) * (x || 0);
     while (g-- > 0 && take(() => true)) {}
     p.pool = pool.filter((u, i) => !used[i]);
+    hurt(pains);
   }
   function apply0(s, pid, a) {
     if (!a || typeof a !== 'object') return { ok: false, err: 'bad action' };
@@ -593,6 +598,11 @@
                 else { const u = unitsOf(c); if (u.length) { addPool(s, pid, u); c.manaAt = key; } }
               }
             }
+          }
+          // Pain lands tapped for colored mana (Llanowar Wastes): 1 damage to their controller each.
+          if (a.tapped && a.pay && Array.isArray(a.pain)) for (const id of new Set(a.pain)) {
+            const c = s.cards[id], ms = c && c.ctrl === pid && root.Cards && root.Cards.manaSource(c);
+            if (ms && ms.pain && ids.includes(id) && s.players[pid]) { s.players[pid].life -= 1; log(s, pid, `took 1 damage from ${cardName(c)}`, 'auto'); }
           }
           if (!changed) return { ok: true };
           const one = ids.length === 1 ? cardName(s.cards[ids[0]]) : null;
@@ -1676,7 +1686,7 @@
       if (aura && aura.c && s.cards[aura.c] && s.cards[aura.c].zone !== 'battlefield') { notes.push(`${nm} enchants a card that isn’t on the battlefield — finish its effect by hand`); aura = null; }
       if (aura && s.cards[c.id]) { if (aura.c && s.cards[aura.c]) s.cards[c.id].attachedTo = aura.c; }
       // "This enters with X (or N) +1/+1 counters on it."
-      const em = C && s.cards[c.id] && C.text(s.cards[c.id]).match(/this (?:creature )?enters(?: the battlefield)? with (x|a|an|one|two|three|four|five|six|\d+) (\+1\/\+1|-1\/-1|loyalty|charge|oil) counters? on it/i);
+      const em = C && s.cards[c.id] && C.text(s.cards[c.id]).match(/this (?:creature )?enters(?: the battlefield)? with (x|a|an|one|two|three|four|five|six|\d+) (\+1\/\+1|-1\/-1|[a-z]+) counters? on it/i);
       if (em) { const n = /^x$/i.test(em[1]) ? x : C.toNum(em[1]) || 0; const k = em[2].toLowerCase(); if (n > 0) s.cards[c.id].counters[k] = (s.cards[c.id].counters[k] || 0) + n; }
       notes.push(`${nm} resolved and entered the battlefield${aura && aura.c && s.cards[aura.c] ? ' attached to ' + cardName(s.cards[aura.c]) : ''}`);
       const e2 = s.cards[c.id];
@@ -1696,7 +1706,7 @@
 
   function todo(s, pid, item) {
     s.todo = s.todo || {};
-    (s.todo[pid] = s.todo[pid] || []).push(Object.assign({ id: rid(8) }, item));
+    (s.todo[pid] = s.todo[pid] || []).push(Object.assign({ id: rid(8), since: Date.now() }, item));
   }
   function tokenD(e) {
     const what = String(e.what || '').toLowerCase();
@@ -1882,7 +1892,7 @@
     const firstish = c => { const k = kwOf(c); return k.has('first strike') || k.has('double strike'); };
     const inCombat = Object.entries(K.att).flatMap(([id, x]) => [id].concat(x.blk || [])).map(alive).filter(Boolean);
     const twoSteps = inCombat.some(firstish);
-    const dealt = new Set();
+    const dealt = new Set(), planUsed = new Set();
     const summary = [];
     const step = first => {
       const ev = [];
@@ -1894,7 +1904,10 @@
           const ka = kwOf(a);
           let power = Math.max(0, (C.pt(s, a) || [0])[0]);
           const toDef = n => { if (n <= 0) return; if (x.def.p) ev.push({ src: a, p: x.def.p, n }); else if (alive(x.def.c)) ev.push({ src: a, c: x.def.c, n }); };
-          const plan = K.assign && K.assign[id] && K.assign[id] !== 'auto' ? K.assign[id] : null;
+          // A division made for the first-strike step doesn't carry over: double strike assigns again in the regular step,
+          // against what's left (510.1c-d, 702.4) — lethal to the survivors first, the rest tramples over.
+          let plan = K.assign && K.assign[id] && K.assign[id] !== 'auto' ? K.assign[id] : null;
+          if (plan && twoSteps) { if (first) planUsed.add(id); else if (planUsed.has(id)) plan = null; }
           if ((x.blk || []).length && plan && blockers.length) {
             // The attacking player's own division of damage (510.1c).
             let left = power;

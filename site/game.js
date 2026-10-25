@@ -533,7 +533,7 @@
 
   // ---------------- public cards ----------------
   G.move = (ids, to, pos, extra) => act(Object.assign({ type: 'move', ids, to, pos }, extra || {}));
-  G.tap = (ids, tapped, pay) => act({ type: 'tap', ids, tapped, pay: !!pay });
+  G.tap = (ids, tapped, pay, pain) => act({ type: 'tap', ids: [...ids], tapped, pay: !!pay, pain: [...(pain || ids.pain || [])] });
   G.counter = (id, kind, delta) => act({ type: 'counter', id, kind, delta });
   G.setMod = (id, p, t) => act({ type: 'mod', id, p, t });
   G.flip = id => act({ type: 'flip', id });

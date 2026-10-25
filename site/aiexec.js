@@ -246,7 +246,7 @@
       if (r.ok === false) this.lastErr = r.err;
       return r.ok !== false;
     }
-    if (o.pay && o.pay.length) { const r = await io.tapPay([...new Set(o.pay)]); if (r && r.ok === false) { this.lastErr = r.err; return false; } }
+    if (o.pay && o.pay.length) { const pp = [...new Set(o.pay)]; pp.pain = o.pay.pain; const r = await io.tapPay(pp); if (r && r.ok === false) { this.lastErr = r.err; return false; } }
     const opts = { tg: o.tg, mode: o.mode, x: o.x, wardPaid: o.wardPaid, fromPool: [], alt: o.alt || undefined, sacCost: o.sacCost || undefined, perm: o.permVia || undefined };
     let r;
     if (o.card.zone === 'hand') r = await io.castFromHand(o.card.id, opts);

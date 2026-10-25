@@ -17,9 +17,33 @@
   function setState(s) { CUR = s; }
   function isType(c, w) {
     if (c && c.animated && c.zone === 'battlefield' && new RegExp('\\b' + w + '\\b', 'i').test(c.animated)) return true;   // crewed Vehicle, animated land
-    if (!new RegExp('\\b' + w + '\\b', 'i').test(typeLine(c))) return false;
+    if (!new RegExp('\\b' + w + '\\b', 'i').test(typeLine(c))) { if (CUR && c && c.zone === 'battlefield' && /^(creatures?|[A-Z][a-z]+)$/i.test(w) && !/^(artifact|enchantment|land|planeswalker|battle|instant|sorcery|legendary|basic|token|permanent)s?$/i.test(w)) { const an = staticAnim(CUR, c); if (an && (/^creatures?$/i.test(w) || new RegExp('^' + an.sub + 's?$', 'i').test(w))) return true; } return false; }
     if (/^creatures?$/i.test(w) && CUR && c && c.zone === 'battlefield' && !c.faceDown && notCreatureNow(CUR, c)) return false;
     return true;
+  }
+  // Statics that make my noncreature permanents creatures (Bello, Bard of the Brambles: "During your turn, each non-Equipment
+  // artifact and non-Aura enchantment you control with mana value 4 or greater is a 4/4 Elemental creature in addition to its
+  // other types and has indestructible, haste, and …"). Returns { p, t, sub, kws } or null.
+  const ANIM_RE = /(during your turn, )?each ([a-z, -]+?) you control(?: with mana value (\d+) or greater)? (?:is|are) an? (\d+)\/(\d+) ([a-z]+) creatures? in addition to (?:its|their) other types(?: and (?:has|have) ([^"\n]*?))?(?:,? and "|\.|$)/i;
+  let animCache = { s: null, key: null, srcs: [] };
+  function animSources(s) {
+    const key = s && (s.seq + ':' + (s.turn && s.turn.active));
+    if (animCache.s === s && animCache.key === key) return animCache.srcs;
+    const srcs = [];
+    for (const o of Object.values((s && s.cards) || {})) if (o.zone === 'battlefield' && !o.faceDown && o.d) { const m = rawText(o).match(ANIM_RE); if (m) srcs.push({ o, m }); }
+    animCache = { s, key, srcs }; return srcs;
+  }
+  function staticAnim(s, c) {
+    if (!s || !c || c.zone !== 'battlefield' || c.faceDown || /\bcreature\b/i.test(typeLine(c))) return null;
+    for (const { o, m } of animSources(s)) {
+      if (o.ctrl !== c.ctrl || (m[1] && !(s.turn && s.turn.active === o.ctrl))) continue;
+      if (m[3] && (+((c.d || {}).cmc) || 0) < +m[3]) continue;
+      const kinds = m[2].toLowerCase().split(/\s+and\s+|,\s*/).map(x => x.trim()).filter(Boolean);
+      if (!kinds.some(k => { const neg = (k.match(/non-?(\w+)/) || [])[1]; const base = k.replace(/non-?\w+\s*/, '').trim(); return isType(c, base.replace(/s$/, '')) && !(neg && new RegExp('\\b' + neg + '\\b', 'i').test(typeLine(c))); })) continue;
+      const kws = String(m[7] || '').toLowerCase().split(/,\s*(?:and\s+)?|\s+and\s+/).map(x => x.trim()).filter(k => KEYWORDS.includes(k));
+      return { p: +m[4], t: +m[5], sub: m[6], kws };
+    }
+    return null;
   }
   // Theros gods: "As long as your devotion to black is less than five, this isn't a creature." (700.5)
   function notCreatureNow(s, c) {
@@ -77,6 +101,7 @@
     for (const k of Object.keys(c.counters || {})) if (KEYWORDS.includes(k)) set.add(k);
     for (const k of (c.grant || [])) set.add(k);
     if (s) for (const k of statics(s, c).kws) set.add(k);
+    if (s) { const an = staticAnim(s, c); if (an) for (const k of an.kws) set.add(k); }
     const t = text(c);
     if (/(^|\n|\. )this (?:creature )?can't block\b/i.test(t) || /(^|\n|\. )this (?:creature )?can't attack or block\b/i.test(t)) set.add("can't block");
     if (/(^|\n|\. )this (?:creature )?can't attack\b/i.test(t)) set.add("can't attack");
@@ -91,6 +116,7 @@
   function statics(s, c) {
     const out = { p: 0, t: 0, kws: new Set() };
     if (!s || !c || c.zone !== 'battlefield') return out;
+    if (s.cards) CUR = s;   // matchesWhat reads combat/tap status from the state being checked
     const isCreature = c.faceDown || isType(c, 'creature');
     if (!isCreature) return out;
     for (const o of Object.values(s.cards)) {
@@ -187,8 +213,9 @@
     if (c.faceDown) { p = 2; t = 2; }
     else {
       const f = face(c);
-      if ((!f || f.p === '' || f.tg === '' || f.p == null) && !c.animPT) return null;
-      p = parseInt(f.p, 10); t = parseInt(f.tg, 10);
+      const an = (!f || f.p === '' || f.p == null) && !c.animPT && s ? staticAnim(s, c) : null;
+      if ((!f || f.p === '' || f.tg === '' || f.p == null) && !c.animPT && !an) return null;
+      p = an ? an.p : parseInt(f.p, 10); t = an ? an.t : parseInt(f.tg, 10);
       if (c.animPT) { p = c.animPT[0]; t = c.animPT[1]; }
       // Maha: "Creatures your opponents control have base toughness 1."
       if (s && c.zone === 'battlefield' && Object.values(s.cards).some(o => o.zone === 'battlefield' && o.ctrl !== c.ctrl && !o.faceDown && o.d && /creatures your opponents control have base toughness 1/i.test(rawText(o)))) t = 1;
@@ -278,7 +305,11 @@
       if (!m) continue;
       const extra = (m[1] || '').toLowerCase();
       if (extra && !/sacrifice this/.test(extra)) continue;   // other extra costs (pay life, discard…) are skipped
-      const what = m[2];
+      let what = m[2];
+      if (/activate only if|activate only during/i.test(what)) continue;   // conditional mana (Training Compound): not counted
+      // Pain lands: "Add {B} or {G}. This deals 1 damage to you." (Llanowar Wastes, Karplusan Forest)
+      let pain = false; { const pm = what.match(/^(.*?)\.\s*(?:this|it|[A-Z][^.]*?) deals 1 damage to you$/i); if (pm) { what = pm[1]; pain = true; } }
+      what = what.replace(/\.\s*spend this mana only[^.]*$/i, '');
       let amount = 1, colors = '';
       const pips = [...what.matchAll(/\{([WUBRGC])\}/g)].map(x => x[1]);
       if (/any (?:one )?color|any combination of colors|any type/i.test(what)) { colors = 'WUBRG'; const n = what.match(/^(one|two|three|\d+) mana/i); amount = n ? toNum(n[1]) : 1; }
@@ -286,9 +317,12 @@
       else if (pips.length) { colors = [...new Set(pips)].join(''); amount = pips.length; }
       else continue;
       const src = { amount, colors, sac: /sacrifice/.test(extra) };
+      if (pain) src.pain = colors;
       if (pips.length > 1 && !/ or /.test(what) && !/any/i.test(what)) src.units = pips;      // {G}{U}: one green and one blue
       if (!best || src.amount > best.amount || (src.amount === best.amount && src.colors.length > best.colors.length)) best = src;
     }
+    if (best && best.pain && lines(c).some(l => /^\{T\}: Add \{C\}\.?$/i.test(l))) best = Object.assign({}, best, { colors: best.colors + 'C' });   // its painless {C} too
+    { const om = text(c).toLowerCase().match(/spend this mana only to cast (?:an? )?([a-z ]+?) spells?/); if (best && om) best = Object.assign({}, best, { only: om[1] }); }
     if (!best && /\bland\b/.test(tl)) {
       const cols = Object.entries(BASIC).filter(([n]) => new RegExp('\\b' + n + '\\b').test(tl)).map(([, col]) => col);
       const pm = c.d.pm && c.d.pm.length ? c.d.pm.filter(x => 'WUBRGC'.includes(x)) : [];
@@ -318,7 +352,9 @@
 
   // Pay a cost from a list of sources [{id, amount, colors}]: returns the ids to tap, or null.
   // Filter sources (a Signet) are used only when needed, each fed by one other mana (605).
-  function pay(cost, sources, x) {
+  // spell: the card being cast, so "spend this mana only to cast an Angel spell" sources count only for it.
+  function pay(cost, sources, x, spell) {
+    sources = sources.filter(s => !s.only || (spell && matchesWhat(Object.assign({}, spell, { zone: 'stack' }), s.only)));
     const plain = sources.filter(s => !s.filter), filters = sources.filter(s => s.filter);
     let r = pay0(cost, plain, x);
     if (r || !filters.length) return r;
@@ -329,7 +365,7 @@
       for (const fd of feeders) {
         const trial = pool.filter(p => p !== fd).concat([{ id: f.id, amount: f.amount, colors: f.colors, units: f.units }]);
         r = pay0(cost, trial, x);
-        if (r) return r.concat(extra, [fd.id]);
+        if (r) { const out = r.concat(extra, [fd.id]); out.pain = r.pain || []; return out; }
       }
       // Not enough yet: keep this one fed by the first feeder and try adding another filter.
       if (!feeders.length) break;
@@ -347,7 +383,7 @@
     let generic = cost.g + cost.x * (x || 0);
     // Mana units: a 2-mana source gives two units of one of its colors.
     const units = [];
-    for (const s of sources) for (let i = 0; i < s.amount; i++) units.push({ src: s.id, colors: s.units ? s.units[i] || s.colors : s.colors, i });
+    for (const s of sources) for (let i = 0; i < s.amount; i++) units.push({ src: s.id, colors: s.units ? s.units[i] || s.colors : s.colors, i, pain: s.pain || '' });
     const used = new Array(units.length).fill(false);
     // Colored pips: least flexible units first, by matching with backtracking.
     const fits = (u, col) => [...col].some(ch => u.colors.includes(ch));
@@ -356,7 +392,7 @@
     function place(n) {
       if (n === order.length) return true;
       const col = order[n].col;
-      const cands = units.map((u, i) => i).filter(i => !used[i] && fits(units[i], col)).sort((a, b) => units[a].colors.length - units[b].colors.length);
+      const cands = units.map((u, i) => i).filter(i => !used[i] && fits(units[i], col)).sort((a, b) => (!!units[a].pain - !!units[b].pain) || units[a].colors.length - units[b].colors.length);
       for (const i of cands) { used[i] = true; assign[n] = i; if (place(n + 1)) return true; used[i] = false; }
       return false;
     }
@@ -381,7 +417,10 @@
         || (units[a].colors.replace('C', '').length - units[b].colors.replace('C', '').length));   // colorless first, then the least flexible
       used[free[0]] = true; generic--;
     }
-    return [...touched()];
+    const out = [...touched()];
+    // Pain lands that paid a colored pip deal 1 damage to their controller (their {C} is free).
+    out.pain = order.map((o, n) => units[assign[n]]).filter(u => u && u.pain && order.some((o2, n2) => units[assign[n2]] === u && [...o2.col].some(ch => ch !== 'C' && u.pain.includes(ch)))).map(u => u.src);
+    return out;
   }
 
   // ---------- targets ----------
@@ -674,6 +713,12 @@
       const neg = /^non-?/.test(w) && w.length > 4; const k = neg ? w.replace(/^non-?/, '') : w;
       if (['permanent', 'token', 'creature', 'artifact', 'enchantment', 'land', 'planeswalker', 'battle', 'legendary', 'basic', 'snow', 'instant', 'sorcery', 'kindred'].includes(k)) return neg ? !is(k) : is(k);
       if (['white', 'blue', 'black', 'red', 'green', 'colorless', 'multicolored'].includes(k)) return neg ? !sameColor(c, k) : sameColor(c, k);
+      // Status words (a permanent's state on the battlefield): "attacking creatures", "tapped creature" (Gruul War Chant…).
+      if ((k === 'attacking' || k === 'blocking' || k === 'tapped' || k === 'untapped') && c.zone === 'battlefield') {
+        const S0 = CUR, att = S0 && S0.combat && S0.combat.att;
+        const v = k === 'tapped' ? !!c.tapped : k === 'untapped' ? !c.tapped : k === 'attacking' ? !!(att && att[c.id]) : !!(att && Object.values(att).some(a => (a.blk || []).includes(c.id)));
+        return v;
+      }
       // Words that aren't about the card itself.
       if (MW_SKIP.has(k) || k.length < 3 || !/^[a-z'-]+$/.test(k)) return true;
       // Anything else is a subtype: "Dragon", "Elf", "Equipment", "Aura"… (205.3)
@@ -930,5 +975,5 @@
   // Spree: the extra mana for the modes chosen.
   function spreeCost(c, mode) { const md = modesOf(c); if (!md || !mode) return null; if (md.escalate) return parseCost(Array(Math.max(0, [].concat(mode).length - 1)).fill(md.escalate).join('')); if (!md.spree) return null; return parseCost([].concat(mode).map(i => md.spree[i] || '').join('')); }
   root.Cards = { freeFromHand, spreeCost, discardCost, freeWithCommander, levelText, modePick, sacCost, costReduction, KEYWORDS, colorsOf, face, typeLine, isType, nameOf, text, rawText, keywords, has, statics, pt, parseCost, costOf, manaValue, costTotal, manaSource, pay,
-    setState, notCreatureNow, wardCost, targetReqs, targetsIn, legalTarget, targetChoices, reqLabel, protections, protectedFrom, blockProblem, matchesWhat, helpfulTarget, orderChoices, modesOf, effectsIn, effectsOf, abilities, triggers, instantSpeed, isPermanentCard, toNum, spellText };
+    setState, notCreatureNow, staticAnim, wardCost, targetReqs, targetsIn, legalTarget, targetChoices, reqLabel, protections, protectedFrom, blockProblem, matchesWhat, helpfulTarget, orderChoices, modesOf, effectsIn, effectsOf, abilities, triggers, instantSpeed, isPermanentCard, toNum, spellText };
 })(typeof window !== 'undefined' ? window : globalThis);

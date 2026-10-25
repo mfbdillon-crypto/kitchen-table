@@ -336,6 +336,7 @@
     if ((m = s.match(/^play (?:it|that card|them|those cards)(?: this turn| until (?:the end of your next turn|your next end step))$/))) return [wrap({ op: 'mayPlay', what: { k: 'ev' }, until: /next/.test(s) ? 'nextTurn' : 'eot' })];
     if ((m = s.match(/^(you and (?:that player|target opponent|target player)) each (.+)$/))) { const r = clause('you ' + m[2], st), r2 = clause((/target/.test(m[1]) ? 'target player ' : 'that player ') + m[2].replace(/^(\w+)/, x => x.endsWith('s') ? x : x + 's'), st); if (r && r2) return r.concat(r2).map(wrap); }
     if ((m = s.match(/^untap all (.+?) you control$/))) return [wrap({ op: 'untap', what: { k: 'each', what: m[1], ctrl: 'you' } })];
+    if ((m = s.match(/^remove an? counter from (?:(?:this|it) or )?(?:another|an?) (creature|permanent|artifact) you control$/))) return [wrap({ op: 'counters', n: -1, kind: 'any', on: { k: 'ownWithCounter', what: m[1], self: /^remove an? counter from (?:this|it) or /.test(s) } })];   // Sanctuary Warden
     if ((m = s.match(/^remove an? counter from (.+)$/))) return [wrap({ op: 'counters', n: -1, kind: 'any', on: targetOf(m[1], st) })];
     if ((m = s.match(/^pay (x|\d+) life$/))) return [wrap({ op: 'pay', cost: m[1] + ' life' })];
     // Nothing more to do.

@@ -9,6 +9,7 @@ const D = (n, t, o, extra) => ({ n, cmc: (extra && extra.cmc) || 0, faces: [Obje
 const tail = k => s.log.slice(-(k || 6)).map(l => l.text).join('\n   ');
 const PH = () => R.PHASES[s.turn.phase];
 const stack = () => R.stackCards(s);
+const ackTodos = () => { for (const [p, L] of Object.entries(s.todo || {})) if (L.length && s.players[p]) R.apply(s, p, { type: 'todoAck', ids: L.map(t => t.id) }); };   // the devices finish their part
 const passAll = () => { for (let g = 0; g < 12 && s.prio && s.prio.holder; g++) ok(s.prio.holder, { type: 'pass' }); };
 for (const p of ['A', 'B']) ok(p, { type: 'join', name: p });
 ok('A', { type: 'start' }); for (const p of ['A', 'B']) s.players[p].kept = true;
@@ -70,6 +71,7 @@ const may = s.ask.find(x => x.kind === 'may');
 assert(may, 'asked "use it?"');
 ok('B', { type: 'answer', id: may.id, yes: true });
 assert(s.todo.B.some(t => t.k === 'draw'), 'draw todo');
+ok('B', { type: 'todoAck', ids: s.todo.B.map(t => t.id) });   // the device draws, then clears it
 console.log('may:\n  ', tail(2));
 
 // --- protection until end of turn: a counter that goes away in cleanup
@@ -95,6 +97,7 @@ ok('B', { type: 'advance', goal: 'end' }); while (s.prio && s.prio.step === 'end
 console.log('B ends turn →', s.turn.active, PH(), 'stack', stack().map(c => c.ab && c.ab.name));
 assert.equal(s.turn.active, 'A'); assert.equal(PH(), 'Upkeep'); assert.equal(stack().length, 1);
 const la = s.players.A.life; passAll();
+for (const [p, L] of Object.entries(s.todo || {})) if (L.length) ok(p, { type: 'todoAck', ids: L.map(t => t.id) });   // devices finish their draws
 assert.equal(s.players.A.life, la - 1); assert.equal(PH(), 'Main 1', 'flow continued to main 1');
 // phase can't go backwards
 assert.equal(R.apply(s, 'A', { type: 'phase', to: R.PI('Upkeep') }).stale, true);
@@ -435,7 +438,7 @@ console.log('engine ok');
 // --- Additional combat phase after the main phase (Aggravated Assault)
 {
   const T = s.turn; for (let g = 0; g < 6; g++) passAll();
-  s.ask = []; s.tq = []; s.prio = null;
+  s.ask = []; s.tq = []; s.prio = null; s.todo = {};
   T.phase = R.PI('Main 2'); T.extraAfterMain = 1; T.goal = 'pass'; s.combat = { n: T.n, att: {}, waiting: [], ok: {}, done: true };
   console.log('busy?', !!(R.stackTop(s) || s.prio || (s.tq && s.tq.length) || (s.ask || []).some(x => x.kind !== 'manual') || s.winner), T.goal);
   const nn = []; Engine.flow(s, nn);

@@ -1,4 +1,4 @@
-# Handoff log — pick up here (updated 2026-10-25, 14:47 Phoenix)
+# Handoff log — pick up here (updated 2026-10-25, 16:25 Phoenix)
 
 ## Phone can't connect (reported 14:46) — fixed in v8.6 (d28c99b)
 - **Cause:** since v8.3 each browser makes its own game code, so opening the plain site URL on the phone put it alone at a new table.
@@ -6,6 +6,50 @@
 - Verified locally: test/phone_join.mjs (bare link → code → seated with the host) and test/phone.mjs (phone as hand) pass.
 - Still true: joining after Start is refused (the phone can only watch). If the user still can't connect, check that first.
 - Older browser tests (views, decks_ui, ux_fixes, table_strict, ui_stack, counters, looks) time out because of the changed menus; phone.mjs has been fixed, the rest still need updating.
+
+
+## PLAYTEST LOOP (started 15:57) — continue here
+The user asked for this loop:
+1. A fresh agent plays ONE game as a human against the AI in the browser (local server). It uses the dev tools, the logs and the AI trace to check that every move is legal and every option that should be offered was offered.
+2. I repair what it finds.
+3. Repeat, one game at a time, until usage is at 95%.
+4. Then hand off, deploy and tie up loose ends.
+
+The agent prompt is in this session's history (the "Play one game as human vs AI" brief). Its reports go to /tmp/claude-0/playtest/GAME<n>.md; game 1's report is copied to docs/playtest/GAME1.md.
+
+### Game 1: fixed in v8.8
+- Anthems for "attacking creatures" were applying to every creature: `matchesWhat` now checks attacking, blocking, tapped and untapped.
+- A pending player choice (todo) now holds the turn, for up to 90 s: `busy()` in engine.js. Previously discover appeared on the next player's turn.
+- Double strike: the regular-step damage is assigned again, so trample now goes through.
+- `selfRef` no longer turns "Beast" in Beast Within into "this". The one-word short name is only replaced when it's used as a name.
+- Bello's static ability works: `Cards.staticAnim`. Matching noncreatures become 4/4 Elementals with indestructible and haste, during your turn only.
+- **Mana:**
+  - Pain lands deal 1 damage when they pay a colored pip. Payment results carry a `.pain` list, sent as the tap action's `pain`; pool units get a '!' marker.
+  - "Spend this mana only to cast X spells" sources only pay for those spells: the 4th argument of `Cards.pay`.
+  - Conditional mana lines ("Activate only if") are no longer counted.
+- "Enters with N <any> counters" now covers shield, time and so on.
+- "Remove a counter from this or another creature you control. If you do…" now really removes one, and pays out nothing if there's no counter to remove.
+- A spell's "it" / "that creature" after a target means that target (Bridgeworks Battle's fight).
+- The P/T badge shows the engine's P/T, including anthems.
+- The basic-land search allows two copies of the same name.
+
+### Game 1: still open (do these next)
+1. **Bello's granted trigger** "Whenever this creature deals combat damage to a player, draw a card" isn't given to the animated permanents. Add it in the engine's trigger pool (engine.js ~line 115) for cards where `Cards.staticAnim(s, c)` is set.
+2. **AI mistakes:**
+   - Gitrog (hard) sacrificed its only black source. aibrain's land-sacrifice choice should keep colours the hand needs.
+   - The AI tapped lands for a sorcery-speed spell while its own triggers were on the stack, and lost the mana. Check timing before tapping (aiexec).
+   - The AI never uses Wayfarer's Bauble.
+   - Under lethal flying pressure, the AI attacked instead of defending.
+3. **Log:**
+   - It keeps only 300 lines (rules.js:83). Keep more, or archive the overflow for the dev export.
+   - The permission timeline only records while dev mode is on.
+4. **Small:**
+   - The log doubles names ("Angela Angela created") and says "a Angel token".
+   - The commander menu says "commander tax" when the tax is 0.
+   - The Monarch, Initiative and Day/Night chips do nothing for non-dev players: hide them, or make them work.
+   - "Tap" is offered on non-mana permanents.
+   - The RULES_SHEET wording for 103.8c is wrong.
+5. **Fire-Lit Thicket-style filter lands** ({R/G}, {T}: Add …) only make {C}.
 
 ## Since 15:00 (v8.7)
 - **Browser tests:** all repaired and passing (views, decks_ui, ux_fixes, table_strict, ui_stack, counters, looks, v6_ui, cardtrack, cmd2, phone_strict, prints, twophones, wronghand).
@@ -31,7 +75,7 @@
 - The 4-player AI sweep is clean: no errors or stalls. Games last about 40 turns (≈10 rounds), which is normal.
 
 ## Where things stand
-- Live and test sites both run **v8.7** (see version.txt).
+- Live and test sites both run **v8.8** (see version.txt).
   - Live: starlit-conkies-c2facb.netlify.app (siteId 12ee5b76-1741-480c-8f66-9a4f87d4af69)
   - Test: joyful-rabanadas-f66e6c.netlify.app (siteId 5236eb56-b402-43c4-a92f-1aac62cc691d)
 - The engine revision (docs/ENGINE_REVISION_PLAN.md) is built: stages 1–4 plus the follow-up mechanics.

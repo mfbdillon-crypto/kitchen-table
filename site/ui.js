@@ -363,7 +363,7 @@
     }
     // P/T badge
     if (c.zone === 'battlefield') {
-      const pt = R.ptOf(c);
+      const pt = (CD.pt && R.ptOf(c) ? CD.pt(S(), c) : null) || R.ptOf(c);   // with anthems, equipment and other static effects
       if (pt && (R.isType(c, 'creature') || c.faceDown || ks.some(([k]) => /\/\+?-?1$/.test(k)))) {
         const f2 = R.face(c);
         const base = c.faceDown ? [2, 2] : [parseInt(f2.p, 10), parseInt(f2.tg, 10)];
@@ -889,14 +889,14 @@
         // "Spend this mana only to cast an Angel spell" (Giada…): used first for those spells, never for others.
         const only = (CD.text(c).toLowerCase().match(/spend this mana only to cast (?:an? )?([a-z ]+?) spells?/) || [])[1] || null;
         if (only && !CD.matchesWhat(card, only)) return null;
-        return { id: c.id, amount: m.amount, colors: m.colors, units: m.units, rank: only ? -1 : R.isType(c, 'land') ? 0 : R.isType(c, 'creature') ? 2 : 1 };
+        return { id: c.id, amount: m.amount, colors: m.colors, units: m.units, pain: m.pain, only: m.only, rank: only ? -1 : R.isType(c, 'land') ? 0 : R.isType(c, 'creature') ? 2 : 1 };
       }).filter(Boolean).sort((a, b) => a.rank - b.rank);
     const pool = (G.me() && G.me().pool) || [];
-    const ids = CD.pay(cost, pool.map((u, i) => ({ id: 'pool:' + i, amount: 1, colors: u })).concat(srcs), x);
+    const ids = CD.pay(cost, pool.map((u, i) => ({ id: 'pool:' + i, amount: 1, colors: u })).concat(srcs), x, card);
     if (!ids) { G.toast('Not enough untapped mana to pay for that automatically — tap your mana yourself, then cast it again.', 'err'); return false; }
     G.lastFromPool = ids.filter(id => /^pool:/.test(id)).map(id => +id.slice(5));
     const real = ids.filter(id => !/^pool:/.test(id));
-    if (real.length) await G.tap([...new Set(real)], true, true);
+    if (real.length) await G.tap([...new Set(real)], true, true, (ids.pain || []).filter(id => !/^pool:/.test(id)));
     // A source that makes more mana than this needed (Sol Ring for a 1-mana cost): the rest goes into your pool (106.4).
     const extra = [];
     for (const src of srcs) { const used = real.filter(id => id === src.id).length; if (used && src.amount > used) for (let i = used; i < src.amount; i++) extra.push((src.units && src.units[i]) || src.colors); }
@@ -910,7 +910,7 @@
     for (const c of Object.values(s.cards)) {
       if (c.zone !== 'battlefield' || c.ctrl !== KEY || c.tapped) continue;
       if ((c.faceDown || R.isType(c, 'creature')) && R.sick(s, c) && !CD.keywords(c, s).has('haste')) continue;
-      const m = CD.manaSource(c); if (m && !m.sac) out.push({ id: c.id, amount: m.amount, colors: m.colors, units: m.units });
+      const m = CD.manaSource(c); if (m && !m.sac) out.push({ id: c.id, amount: m.amount, colors: m.colors, units: m.units, pain: m.pain, only: m.only });
     }
     return out;
   }
@@ -2127,7 +2127,7 @@
         const wantT = ['plains', 'island', 'swamp', 'mountain', 'forest'].filter(w => String(t.filter || '').toLowerCase().includes(w));
         const lands = G.basicLands().filter(c => !wantT.length || wantT.some(w => new RegExp('\\b' + w + '\\b', 'i').test(c.d.faces[0].t)));
         b.append(h('p', { class: 'muted' }, t.split ? 'The first one you pick goes onto the battlefield tapped, the second into your hand.' : t.dest === 'hand' ? 'They go into your hand.' : `They go onto the battlefield${t.tapped ? ' tapped' : ''}.`));
-        const uniq = []; const seen = new Set(); for (const c of lands) if (!seen.has(c.d.n) || sel.includes(c.id)) { seen.add(c.d.n); uniq.push(c); }
+        const uniq = []; const seen = new Set(); for (const c of lands) { if (sel.includes(c.id)) uniq.push(c); else if (!seen.has(c.d.n)) { seen.add(c.d.n); uniq.push(c); } }   // the picked ones, plus one more copy of each name (two Forests)
         b.append(h('div', { class: 'strip pick' }, uniq.length ? uniq.map(c => cardEl(Object.assign({ zone: 'library', owner: KEY, counters: {} }, c), { noMenu: true, cls: sel.includes(c.id) ? 'sel' : '', badge: sel.includes(c.id) ? '#' + (sel.indexOf(c.id) + 1) : null, onClick: () => { const i = sel.indexOf(c.id); if (i >= 0) sel.splice(i, 1); else if (sel.length < (t.n || 1)) { const other = lands.find(x => x.d.n === c.d.n && !sel.includes(x.id)); sel.push(other ? other.id : c.id); } refreshModal(); } })) : h('p', { class: 'muted' }, 'There are no basic lands left in your library.')));
         b.append(h('div', { class: 'row' }, h('button', { class: 'primary', onclick: () => finish(sel.slice()) }, sel.length ? `Take ${sel.length}` : 'Find nothing'), h('span', { class: 'muted small' }, 'Your library is shuffled afterwards.')));
       }, { live: true, cls: 'wide', sticky: true, noEsc: true });

@@ -290,14 +290,14 @@
       let colors = m.colors;
       if (/commander's color identity/i.test(Cd.text(c))) { const ci = this.identity(); if (ci) colors = ci; }
       const only = (low(Cd.text(c)).match(/spend this mana only to cast (?:an? )?([a-z ]+?) spells?/) || [])[1] || null;
-      out.push({ id: c.id, amount: m.amount, colors, units: m.units, name: R().cardName(c), filter: m.filter, only, rank: R().isType(c, 'land') ? 0 : this.isCre(c) ? 2 : 1 });
+      out.push({ id: c.id, amount: m.amount, colors, units: m.units, name: R().cardName(c), filter: m.filter, only, pain: m.pain, rank: (R().isType(c, 'land') ? 0 : this.isCre(c) ? 2 : 1) + (m.pain ? 0.5 : 0) });
     }
     return out.sort((a, b) => a.rank - b.rank);
   };
   // Pay with lands first, then rocks, creatures last (so they can still attack); restricted mana only for its spells.
   P.payFor = function (cost, srcs, x, card) {
     const ok = srcs.filter(s0 => !s0.only || (card && C().matchesWhat(card, s0.only)));
-    return C().pay(cost, ok.slice().sort((a, b) => (a.rank || 0) - (b.rank || 0)), x);
+    return C().pay(cost, ok.slice().sort((a, b) => (a.rank || 0) - (b.rank || 0)), x, card);
   };
   P.identity = function () {
     const set = new Set();
