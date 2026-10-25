@@ -33,8 +33,11 @@
     if ((m = s.match(/^each (other )?(.+?)(?: you control| your opponents control| an opponent controls| target player controls| that player controls)?$/))) return { k: 'each', other: !!m[1], what: m[2], ctrl: /you control/.test(s) ? 'you' : /opponents? control/.test(s) ? 'opp' : /that player controls/.test(s) ? 'evPlayer' : 'any' };
     if ((m = s.match(/^all (other )?(.+?)(?: you control| your opponents control)?$/))) return { k: 'each', other: !!m[1], what: m[2], ctrl: /you control/.test(s) ? 'you' : /opponents control/.test(s) ? 'opp' : 'any' };
     if ((m = s.match(/^(other )?((?:[a-z]+ )*?(?:creatures|permanents|artifacts|enchantments|lands|tokens|[a-z]+s)) you control$/))) return { k: 'each', other: !!m[1], what: m[2], ctrl: 'you' };
+    if ((m = s.match(/^((?:[a-z]+ )*?(?:creatures|permanents|artifacts|enchantments|lands|tokens)) (?:your opponents control|an opponent controls)$/))) return { k: 'each', other: false, what: m[1], ctrl: 'opp' };
+    if ((m = s.match(/^((?:[a-z]+ )*?(?:creatures|permanents|artifacts|enchantments|lands|tokens)) (?:they|that player|target player) controls?$/))) return { k: 'each', other: false, what: m[1], ctrl: 'evPlayer' };
     if ((m = s.match(/^attacking creatures(?: you control)?$/))) return { k: 'each', what: 'attacking creature', ctrl: /you control/.test(s) ? 'you' : 'any' };
     if (/^this$/.test(s)) return { k: 'self' };
+    if ((m = s.match(/^(other )?([a-z ]+?) you control with power (\d+) or greater$/))) return { k: 'each', other: !!m[1], what: m[2], ctrl: 'you', powerMin: +m[3] };
     if ((m = s.match(/^(other )?([a-z ]+?) you control with ([a-z ]+)$/))) return { k: 'each', other: !!m[1], what: m[2], ctrl: 'you', with: m[3] };
     return null;
   }
@@ -87,6 +90,7 @@
     const sm = s.match(/^(you|each opponent|each player|each other player|target player|target opponent|that player|they|its controller|its owner|that creature's controller|enchanted creature's controller|defending player|the defending player|that opponent) (.+)$/);
     if (sm) { subj = who(sm[1]); body = sm[2]; if (subj.k === 't') subj.i = st.ti++; }
     // Damage: "this deals 3 damage to any target", "it deals X damage to each creature without flying".
+    if ((m = s.match(/^(this|it) deals twice x damage to (.+)$/))) { const to = targetOf(m[2], st); if (to) return [wrap({ op: 'dmg', src: 'self', n: { v: 'X2' }, to })]; }
     if ((m = s.match(/^(this|it|that creature|enchanted creature|equipped creature) deals (\d+|x|that much) damage to (.+?)(?: and (\d+|x) damage to (.+))?$/)) || (m = s.match(/^(this|it) deals damage equal to (.+?) to (.+)$/))) {
       const eq = /damage equal to/.test(s);
       const n = eq ? variable(m[2]) : m[2] === 'that much' ? { v: 'thatMany' } : amt(m[2]);
@@ -153,6 +157,12 @@
     // Arcane Denial: draws at the beginning of the next turn's upkeep.
     if ((m = s.match(/^(you|its controller) (?:may )?draws? (a card|up to two cards|two cards) at the beginning of the next turn's upkeep$/))) return [wrap({ op: 'delayedDraw', who: m[1] === 'you' ? { k: 'you' } : { k: 'targetCtrl', i: 0 }, n: /two/.test(m[2]) ? 2 : 1 })];
     if (/^the ring tempts you$/.test(s)) return [wrap({ op: 'tempt' })];
+    if ((m = s.match(/^put (target .+?|that card|it) on top of (?:its|their) owner's library$/))) { const what = targetOf(m[1], st); if (what) return [wrap({ op: 'move', what, to: 'library', pos: 'top' })]; }
+    if ((m = s.match(/^put (target .+?|that card|it) into (?:its|their) owner's library (second|third) from the top$/))) { const what = targetOf(m[1], st); if (what) return [wrap({ op: 'move', what, to: 'library', pos: m[2] === 'second' ? 'n2' : 'n3' })]; }
+    if ((m = s.match(/^(?:your )?opponents can't gain life this turn$/))) return [wrap({ op: 'noLifeGain' })];
+    if ((m = s.match(/^untaps? all basic lands (?:they|you) control$/)) || (m = body.match(/^untaps? all basic lands (?:they|you) control$/))) return [wrap({ op: 'untap', what: { k: 'each', what: 'basic land', ctrl: subj.k === 't' ? 'targetP' : 'you', i: subj.i } })];
+    if ((m = s.match(/^(?:you may )?play up to (\w+) additional lands? this turn$/))) return [wrap({ op: 'extraLand', n: amt(m[1]) || 1 })];
+    if ((m = s.match(/^(?:then )?each creature your opponents control gets? (-\d+)\/(-\d+)(?: until end of turn)? for each poison counter its controller has$/))) return [wrap({ op: 'pump', what: { k: 'each', other: false, what: 'creature', ctrl: 'opp' }, p: m[1], t: m[2], per: 'poison counter its controller has', eot: true })];
     if (/^proliferate twice$/.test(s)) return [wrap({ op: 'proliferate' }), wrap({ op: 'proliferate' })];
     if ((m = s.match(/^shuffle (this|it|that card|that creature|that permanent) into its owner's library$/))) { const what = obj(m[1]); if (what) return [wrap({ op: 'move', what, to: 'library', pos: 'shuffle' })]; }
     if ((m = s.match(/^put a \+1\/\+1 counter or a loyalty counter on (it|that permanent|target .+)$/))) { const on = m[1] === 'it' && st.ti > 0 ? { k: 't', i: st.ti - 1 } : targetOf(m[1], st); if (on) return [wrap({ op: 'counters', n: 1, kind: '+1/+1|loyalty', on })]; }
@@ -160,7 +170,7 @@
     if ((m = s.match(/^amass (\w+) (\d+|x)$/))) return [wrap({ op: 'amass', type: m[1].replace(/s$/, ''), n: amt(m[2]) })];
     if ((m = s.match(/^(?:it|this|target creature you control) explores$/))) return [wrap({ op: 'explore', what: /target/.test(s) ? { k: 't', i: st.ti++ } : obj(m[0].split(' ')[0]) })];
     if (/^(?:this|it) connives$/.test(s)) return [wrap({ op: 'draw', who: { k: 'you' }, n: 1 }), wrap({ op: 'discard', who: { k: 'you' }, n: 1 })];
-    if ((m = s.match(/^shuffle (?:your|their) graveyard into (?:your|their) library$/))) return [wrap({ op: 'shuffleGy', who: subj })];
+    if ((m = s.match(/^shuffle (?:your|their) graveyard into (?:your|their) library$/)) || (m = body.match(/^shuffles? (?:your|their) graveyard into (?:your|their) library$/))) return [wrap({ op: 'shuffleGy', who: subj })];
     if ((m = s.match(/^untap (?:up to (\w+) )?(lands|lands you control|all lands you control|target (.+)|this|it|that creature|all creatures you control)$/))) return [wrap({ op: 'untap', what: m[3] ? { k: 't', i: st.ti++, what: m[3] } : /^lands/.test(m[2]) ? { k: 'chooseUntap', n: amt(m[1]) || 99, what: 'land' } : /all/.test(m[2]) ? { k: 'each', what: m[2].replace(/^all /, '').replace(/ you control$/, ''), ctrl: 'you' } : obj(m[2]) })];
     if ((m = s.match(/^tap (?:up to (\w+) )?(target .+|this|it|that creature|all creatures your opponents control|each creature your opponents control|all lands that player controls)$/))) { const what = targetOf(m[2], st); st.lastObj = what; return [wrap({ op: 'tap', what })]; }
     // "It doesn't untap during its controller's next untap step" (Archipelagore, Frost Breath…).
@@ -244,6 +254,7 @@
     if ((m = s.match(/^add (x|\w+) mana (?:of any one color|in any combination of colors)$/))) return [wrap({ op: 'addMana', units: { v: 'X', each: 'WUBRG' }, n: amt(m[1]) })];
     if (/^spend this mana only|^until end of turn, you don't lose this mana|^you don't lose this mana|this can't be countered|this can't be copied|it's still a land|they're still lands/.test(s)) return [];
     // Attach / animate.
+    if ((m = s.match(/^attach (this|it) to (the token|that token)$/))) return [wrap({ op: 'attach', what: obj(m[1]), to: { k: 'lastToken' } })];
     if ((m = s.match(/^attach (this|it) to (.+)$/))) return [wrap({ op: 'attach', what: obj(m[1]), to: targetOf(m[2], st) })];
     if ((m = s.match(/^tap untapped creatures with total power (\d+) or more: this becomes an artifact creature until end of turn$/))) return [wrap({ op: 'crew', n: +m[1] })];
     if ((m = s.match(/^(.+?) (?:becomes an?|become) (?:(\d+|x)\/(\d+|x) )?(.+?)(?: with (.+?))?(?: in addition to (?:its|their) other types)? until end of turn$/)) && /creature/.test(m[4])) { const what = targetOf(m[1], st); if (what) return [wrap({ op: 'animate', what, p: m[2] || null, t: m[3] || null, types: m[4].replace(/creatures$/, 'creature'), kws: m[5] || '', eot: true })]; }
@@ -327,7 +338,7 @@
     const t1b = t1a.replace(/(?:reveal|look at) the top card of your library\. if it's an? ([a-z ]+?) card( of the chosen type)?, (you may )?(?:reveal it and )?put it (onto the battlefield|into your hand)\.(?: otherwise, you may put (?:that card|it) on the bottom of your library\.)?/g,
       (all, what, chosen, may, dest) => `__top:${what.trim()}:${chosen ? 1 : 0}:${/battlefield/.test(dest) ? 'battlefield' : 'hand'}:${/otherwise/.test(all) ? 1 : 0}__.`);
     // Worldly / Enlightened Tutor: "search your library for a creature card, reveal it, then shuffle and put the card on top".
-    const t1c = t1b.replace(/search your library for an? ([a-z ]+?) card, reveal it, then shuffle and put (?:the|that) card on top\./g, (all, f) => `__tutortop:${f}__.`)
+    const t1c = t1b.replace(/search your library and\/or graveyard for an? ([a-z ]+?) card with mana value x or less and put it onto the battlefield\./g, (a, f) => `__finale:${f}__.`).replace(/search your library for an? ([a-z ]+?) card, reveal it, then shuffle and put (?:the|that) card on top\./g, (all, f) => `__tutortop:${f}__.`)
     // Rashmi: "reveal the top card of your library. you may cast it without paying its mana cost if it's a spell with lesser mana value. if you don't cast it, put it into your hand."
       .replace(/reveal the top card of your library\. you may cast it without paying its mana cost if it's a spell with lesser mana value\. if you don't cast it, put it into your hand\./g, '__rashmi__.');
     // "That player may pay {2}. If they don't, you create a Treasure token." (Smothering Tithe, Rhystic Study): the other
@@ -343,6 +354,7 @@
       if (/^as an additional cost to cast this spell, (?:pay x life|sacrifice (?:a|an) [a-z ]+?(?: or discard a card)?)\.?$/.test(sent)) continue;   // paid as it's cast (601.2f)
       if (/^if you control a commander, you may cast this(?: spell)? without paying its mana cost\.?$/.test(sent)) continue;
       if (/^if that spell would be put into (?:your|a) graveyard, exile it instead\.?$/.test(sent)) continue;   // the free spell is exiled afterwards (not tracked)   // an alternative cost
+      if (/^rebound\.?$/.test(sent)) continue;   // handled as it resolves (702.88)
       if (/^activate (?:this ability )?only\b|^this ability costs (?:\{[^}]+\})+ less to activate\b/.test(sent)) continue;   // checked when it's activated (602.5)
       // Cost changes and "can't be countered" are about casting it, not what it does (601.2f, 101.2).
       if (/^this(?: spell)? costs? (?:\{[^}]+\})+ (?:less|more) to cast\b|^this spell can't be countered\.?$|^affinity for /.test(sent)) continue;   // paid as it's cast (601.2f)
@@ -350,6 +362,8 @@
       if (im) { ops.push({ op: 'impulse', n: amt(im[1]) || 1, until: im[2] }); continue; }
       const tt = sent.match(/^__tutortop:([a-z ]+)__\.?$/);
       if (tt) { ops.push({ op: 'search', n: 1, filter: tt[1], dest: 'top' }); continue; }
+      const fn = sent.match(/^__finale:([a-z ]+)__\.?$/);
+      if (fn) { ops.push({ op: 'search', n: 1, filter: fn[1], mvMax: { v: 'X' }, dest: 'battlefield' }); continue; }
       if (/^__rashmi__\.?$/.test(sent)) { ops.push({ op: 'rashmi' }); continue; }
       if (/^__devotion__\.?$/.test(sent)) { ops.push({ op: 'addDevotion' }); continue; }
       const tc = sent.match(/^__top:([a-z -]+):([01]):(battlefield|hand):([01])__\.?$/);
@@ -361,6 +375,8 @@
       // Reflexive triggers (603.12): "When you do, ..." is a new ability whose targets are chosen then.
       const rf = sent.replace(/\.$/, '').match(/^when you do, (.+)$/);
       if (rf) { const inner = parse(rf[1] + '.', opts); ops.push({ op: 'reflexive', text: rf[1], ops: inner.ops }); if (!inner.understood) understood = false; continue; }
+      const ti = sent.replace(/\.$/, '').match(/^((?:draw a card|you gain \d+ life|create [^,]+?|scry \d+)) if (you control .+|you have .+|it's your turn|you're the monarch|an opponent .+)$/);
+      if (ti) { const inner = parse(ti[1] + '.', opts, st); ops.push({ op: 'if', cond: ti[2], ops: inner.ops }); if (!inner.understood) understood = false; continue; }
       const cm = sent.replace(/\.$/, '').replace(/^then (?=if )/, '').match(/^if (?!you do\b|they do\b|a player does\b|the player does\b|that player does\b)([^,]+), (.+?)( instead)?$/);
       if (cm) {
         const inner = parse(cm[2] + '.', opts, st);

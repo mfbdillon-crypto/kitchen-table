@@ -327,7 +327,9 @@
     if (es.some(e => e.k === 'draw' || (e.k === 'life' && e.sign > 0))) return 'me';
     if (es.some(e => HELP.has(e.k) || e.k === 'attachSrc')) return 'mine';
     const t = low(C().text(card));
-    if (/enchanted creature (gets [+]|has )/.test(t)) return 'mine';
+    if (/enchanted creature (?:can't|doesn't|gets -|loses)|enchanted permanent (?:can't|doesn't|loses)|you control enchanted/.test(t)) return 'theirs';
+    // Auras that help whoever controls what they enchant (Wild Growth, Underworld Connections, ramp auras, pump auras).
+    if (/enchanted (?:creature|land|permanent|artifact) (?:gets [+]|has |gains )|whenever enchanted land is tapped for mana|enchanted land is every basic land type/.test(t)) return 'mine';
     return 'theirs';
   };
   // A target's importance: a player close to losing or a permanent that matters to the top threat.
@@ -360,7 +362,10 @@
           if (k.life && this.life(me) <= k.life + 8) return false;
           return this.manaNow() >= Cd.costTotal(Cd.costOf(card), 0) + k.mana;
         });
-      const intent = extra.intent ? extra.intent[i] : this.intentFor(card, eff, i);
+      let intent = extra.intent ? extra.intent[i] : this.intentFor(card, eff, i);
+      // The requirement itself can settle it: "…you control" is mine, "…an opponent controls" is theirs.
+      if (!extra.intent && req.ctrl === 'you' && intent === 'theirs') intent = 'mine';
+      if (!extra.intent && req.ctrl === 'opp' && intent !== 'theirs') intent = 'theirs';
       const e = eff.effects.find(x => x.ti === i);
       const dmg = e && e.k === 'dmg' ? (e.n === 'X' ? extra.x || 0 : +e.n || 0) : 0;
       let pick = null;
@@ -436,6 +441,7 @@
     // Auras that need a graveyard target, and graveyard tricks: left alone.
     if (perm && /aura/i.test(Rr.typeLine(card)) && Cd.targetReqs(card, mode).some(r => r.gy || /graveyard/.test(r.text || ''))) return null;
     const cost = this.costOf(card);
+    { const sp = Cd.spreeCost && mode ? Cd.spreeCost(card, mode) : null; if (sp) for (const k of ['g', 'W', 'U', 'B', 'R', 'G', 'C']) cost[k] += sp[k] || 0; }
     const srcs = extra.sources || this.sources();
     // Additional sacrifice cost: the least useful permanent of that kind (never the commander or a key card).
     let sacCost;

@@ -60,7 +60,7 @@
       if (x === name.split(' ')[0] && x.length < 5) continue;
       out = out.split(x + "'s").join("this's").split(x).join('this');
     }
-    return out.replace(/\bthis (creature|permanent|artifact|enchantment|land|planeswalker|vehicle|aura|equipment|saga|battle|spell)\b/gi, 'this');
+    return out.replace(/\bthis (creature|permanent|artifact|enchantment|land|planeswalker|vehicle|aura|equipment|saga|battle|spell|token|class|case|room)\b/gi, 'this');
   }
   function splitTypes(tl) {
     const [left, right] = String(tl || '').split(/\s+[—-]\s+/);
@@ -268,6 +268,9 @@
     let modal = null;
     for (let raw of lines) {
       if (modal && /^[•●]/.test(raw)) { modal.modes.push(selfRef(raw.replace(/^[•●]\s*/, ''), name)); continue; }
+      // Spree (702.172): "+ {2} — mode" lines are modes with an extra cost each.
+      if (modal && modal.spree && /^\+\s*\{/.test(raw)) { modal.modes.push(selfRef(raw, name)); continue; }
+      if (isSpell && /^spree\b/i.test(raw)) { modal = { kind: 'spell', text: raw, modes: [], spree: true }; m.abilities.push(modal); continue; }
       modal = null;
       let line = selfRef(raw, name);
       const aw = line.match(ABILITY_WORDS); const abilityWord = aw ? aw[0].replace(/\s*[—-]\s*$/, '') : null;
@@ -299,6 +302,8 @@
       if (trig) { const a = Object.assign({ kind: 'triggered', text: line, abilityWord }, trig); m.abilities.push(a); if (MODAL.test(a.effect || '')) { a.modes = []; modal = a; } continue; }
       const act = parseActivated(line);
       if (act) { const a = Object.assign({ kind: act.isMana ? 'mana' : 'activated', text: line, abilityWord }, act); m.abilities.push(a); if (MODAL.test(a.effect || '')) { a.modes = []; modal = a; } continue; }
+      // On an instant or sorcery, every line that isn't about casting it is part of what it does ("Creatures you control get +2/+1 until end of turn").
+      if (isSpell && !/^(?:this spell|this) (?:can't be countered|costs)|^as an additional cost|^affinity for|^if you control a commander/i.test(line)) { m.abilities.push({ kind: 'spell', text: line }); continue; }
       const rep = parseReplacement(line);
       if (rep) { m.abilities.push(Object.assign({ text: line }, rep, { kind: 'replacement', sub: rep.kind })); continue; }
       const st = parseStatic(line);
@@ -320,10 +325,10 @@
         const h = String(t).toLowerCase(), mm = h.match(/choose (one or more|one or both|any number|up to (\w+)|\w+)/);
         const nw = { one: 1, two: 2, three: 3, four: 4 };
         // "Choose up to X, where X is the number of times you chose a mode for that spell" (Riku of Many Paths).
-        const choose = !mm ? 1 : /one or more|any number|one or both/.test(mm[1]) ? { min: 1, max: a.modes.length } : mm[2] === 'x' ? { min: 0, max: 'X', modesOfSpell: /number of times you chose a mode/.test(h) } : mm[2] ? { min: /^up to/.test(mm[1]) ? 0 : 1, max: nw[mm[2]] || 1 } : nw[mm[1]] || 1;
-        const pre = h.replace(/choose [^—]*—/, '').replace(/choose [^.—]*(?:—|\.)/, '').replace(/if you control a commander[^.]*\./, '').replace(/you may choose the same mode more than once\.?/, '').replace(/^\s*\./, '').trim();
+        const choose = a.spree ? { min: 1, max: a.modes.length } : !mm ? 1 : /one or more|any number|one or both/.test(mm[1]) ? { min: 1, max: a.modes.length } : mm[2] === 'x' ? { min: 0, max: 'X', modesOfSpell: /number of times you chose a mode/.test(h) } : mm[2] ? { min: /^up to/.test(mm[1]) ? 0 : 1, max: nw[mm[2]] || 1 } : nw[mm[1]] || 1;
+        const pre = a.spree ? '' : h.replace(/choose [^—]*—/, '').replace(/choose [^.—]*(?:—|\.)/, '').replace(/if you control a commander[^.]*\./, '').replace(/you may choose the same mode more than once\.?/, '').replace(/^\s*\./, '').trim();
         const preOps = pre ? E.parse(pre) : { ops: [], understood: true, targets: 0 };
-        const modes = a.modes.map(x => { const r = E.parse(x.replace(/^[^—]{1,30} — /, '')); return { text: x, ops: r.ops, understood: r.understood, nTargets: r.targets }; });
+        const modes = a.modes.map(x => { const r = E.parse(x.replace(/^\+\s*(?:\{[^}]+\})+\s*—\s*/, '').replace(/^[^—]{1,30} — /, '')); return { text: x, ops: r.ops, understood: r.understood, nTargets: r.targets }; });
         a.ops = preOps.ops.concat([{ op: 'modes', choose, both: /may choose both/.test(h), repeat: /same mode more than once/.test(h), modes }]);
         a.understood = preOps.understood && modes.every(x => x.understood);
       } else if (E) { const r = E.parse(t); a.ops = r.ops; a.nTargets = r.targets; a.understood = r.understood && r.ops.length > 0; }
@@ -431,6 +436,7 @@
     if (/^it's not your turn$/.test(c)) return T.active !== me;
     if (/^it's your turn$/.test(c)) return T.active === me;
     if ((m = c.match(/^(?:it|this) has (\w+) or more ([+\-\d/]+|[a-z]+) counters on (?:it|this)$/)) || (m = c.match(/^there are (\w+) or more ([+\-\d/]+|[a-z]+) counters on (?:it|this)$/))) { const n = num(m[1]) || 0; return (((src.counters || {})[m[2]]) || 0) >= n; }
+    if ((m = c.match(/^you control exactly (\w+) permanents$/))) return Object.values(s.cards).filter(x => x.zone === 'battlefield' && x.ctrl === me).length === (num(m[1]) || 0);
     if (/^you control a commander$/.test(c)) return Object.values(s.cards).some(x => x.cmdr && x.ctrl === me && x.zone === 'battlefield');
     if ((m = c.match(/^you control (\w+) or fewer ([a-z ]+?)s?$/))) { const n = num(m[1]); if (n != null) return Object.values(s.cards).filter(x => x.zone === 'battlefield' && x.ctrl === me && C().matchesWhat(x, m[2])).length <= n; }
     if ((m = c.match(/^you control an? ([a-z ]+?) with power (\d+) or greater$/))) return Object.values(s.cards).some(x => x.zone === 'battlefield' && x.ctrl === me && C().matchesWhat(x, m[1]) && ((C().pt(s, x) || [0])[0] >= +m[2]));

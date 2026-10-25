@@ -62,6 +62,7 @@
         const k = STEP_KEY[R.PHASES[i]]; if (!k) continue;
         evs.push({ type: 'step', step: k, player: T.active });
         if (k === 'main1') loreUp(s, T.active, evs, notes);
+        if (k === 'upkeep') for (const c of Object.values(s.cards)) if (c.zone === 'exile' && c.rebound && c.rebound.by === T.active && c.rebound.after < T.n) { R.todo(s, T.active, { k: 'freeCast', from: 'exile', ids: [c.id], filter: 'card', src: cardName(c) + ' (rebound)' }); c.rebound = null; notes.push(`${nameOf(s, T.active)} may cast ${cardName(c)} again for free (rebound)`); }
         if (k === 'upkeep' && s.delayedDraws && s.delayedDraws.length) {
           const due = s.delayedDraws.filter(x => x.after < T.n);
           for (const x of due) { R.todo(s, x.pid, { k: 'draw', n: x.n, src: x.src }); notes.push(`${nameOf(s, x.pid)} draws ${x.n > 1 ? x.n + ' cards' : 'a card'} (${x.src})`); }
@@ -445,7 +446,12 @@
     for (const a of sp) {
       for (const o of a.ops) ops.push(o.op === 'modes' ? o : shiftOp(o, off));
       off += a.nTargets || 0;
-      und = und && a.understood !== false;
+      // A modal spell is understood if the modes chosen are (the others don't matter).
+      const mo = a.ops.find(o => o.op === 'modes');
+      if (mo && c.mode && c.mode.length) {
+        const deep = list => (list || []).every(o => o.op !== 'manual' && (!o.ops || deep(o.ops)));
+        und = und && a.ops.filter(o => o.op !== 'modes').every(o => o.op !== 'manual') && [].concat(c.mode).every(i => mo.modes[i] && deep(mo.modes[i].ops));
+      } else und = und && a.understood !== false;
     }
     return { ops, understood: und && ops.every(o => o.op !== 'manual') };
   }
@@ -494,6 +500,7 @@
       if (typeof n === 'number') return n;
       switch (n.v) {
         case 'X': return X;
+        case 'X2': return 2 * X;
         case 'thatMany': return ctx.n || st.last || 0;
         case 'lastAmount': return st.last || ctx.n || 0;
         case 'count': return count(n);
@@ -525,9 +532,9 @@
         case 'each': case 'eachOppAndCreatures': case 'everything': {
           const what = w.k === 'each' ? String(w.what || 'permanent').replace(/s$/, '').replace(/^creature$/, 'creature') : 'creature';
           return Object.values(s.cards).filter(c => c.zone === 'battlefield' && !(w.other && c.id === srcId) &&
-            (w.ctrl === 'you' ? c.ctrl === by : w.ctrl === 'opp' ? c.ctrl !== by : w.ctrl === 'evPlayer' ? c.ctrl === ctx.p : true) &&
+            (w.ctrl === 'you' ? c.ctrl === by : w.ctrl === 'opp' ? c.ctrl !== by : w.ctrl === 'evPlayer' ? c.ctrl === ctx.p : w.ctrl === 'targetP' ? (legal[w.i || 0] || []).some(t => t.p === c.ctrl) : true) &&
             (what === 'attacking creature' ? !!(s.combat && s.combat.att && s.combat.att[c.id]) : C.matchesWhat(c, what.replace(/ies$/, 'y'))) &&
-            (!w.with || C.has(c, w.with, s)) && (!w.without || !C.has(c, w.without, s)));
+            (!w.with || C.has(c, w.with, s)) && (!w.without || !C.has(c, w.without, s)) && (!w.powerMin || (C.pt(s, c) || [0])[0] >= w.powerMin));
         }
       }
       return [];
@@ -588,7 +595,7 @@
       if (life) { const n = life[1] === 'x' ? X : +life[1]; if (P.life < n) return false; P.life -= n; return true; }
       return payMana(s, by, String(cost), notes);
     };
-    const condOk = cond => { const xm = String(cond).match(/^x is (\d+) or (more|greater|less|fewer)$/); if (xm) { const v = st.lastX != null ? st.lastX : (ctx.mv || X || 0); return /less|fewer/.test(xm[2]) ? v <= +xm[1] : v >= +xm[1]; } const r = O().conditionHolds(s, Object.assign({}, src, { ctrl: by }), cond); if (r === null) { st.manual.push(`Check: if ${cond}`); return false; } return r; };
+    const condOk = cond => { const em = String(cond).match(/^(?:that|the) (?:creature|enchantment|artifact|card|permanent|spell|land) is an? ([a-z ]+)$/); if (em && ctx.c && s.cards[ctx.c]) return C.matchesWhat(Object.assign({}, s.cards[ctx.c]), em[1]); const sm = String(cond).match(/^(\w+) or more mana was spent to cast (?:that spell|it)$/); if (sm) return (ctx.mv || 0) >= (({ two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8 })[sm[1]] || +sm[1] || 0); const xm = String(cond).match(/^x is (\d+) or (more|greater|less|fewer)$/); if (xm) { const v = st.lastX != null ? st.lastX : (ctx.mv || X || 0); return /less|fewer/.test(xm[2]) ? v <= +xm[1] : v >= +xm[1]; } const r = O().conditionHolds(s, Object.assign({}, src, { ctrl: by }), cond); if (r === null) { st.manual.push(`Check: if ${cond}`); return false; } return r; };
     const runList = (list, off) => {
       for (let k = 0; k < list.length; k++) {
         const o = shiftOp(list[k], off || 0);
@@ -635,6 +642,7 @@
           for (const p of players(o.who)) {
             const before = new Set(Object.keys(s.cards));
             R.makeToken(s, p, d, n, sp.tapped, notes);   // "that are attacking" isn't tapped (508.4)
+            st.tokens = Object.keys(s.cards).filter(id => !before.has(id));
             emit({ type: 'token', player: p });
             if (sp.attacking && s.combat && s.combat.att) {
               const myAtt = s.combat.att[srcId] || Object.values(s.combat.att).find(x => x) || null;
@@ -710,6 +718,7 @@
         case 'discardIfNone': for (const p of s.seats) { if (!R.alive(s, p)) continue; const has = Object.values(s.cards).some(c => c.zone === 'battlefield' && c.ctrl === p && C.matchesWhat(c, o.what)); if (!has) { R.todo(s, p, { k: 'discard', n: 1, src: srcName }); notes.push(`${nameOf(s, p)} had nothing to sacrifice, so they discard a card (${srcName})`); } } break;
         case 'delayedDraw': for (const p of players(o.who)) { s.delayedDraws = (s.delayedDraws || []).concat([{ pid: p, n: o.n, after: s.turn.n, src: srcName }]); notes.push(`${nameOf(s, p)} will draw ${o.n > 1 ? o.n + ' cards' : 'a card'} at the beginning of the next upkeep (${srcName})`); } break;
         case 'rashmi': R.todo(s, by, { k: 'cascade', mv: ctx.mv || 0, top: true, discover: true, src: srcName }); notes.push(`${nameOf(s, by)} reveals the top card of their library (${srcName})`); break;
+        case 'noLifeGain': { s.turn.noGain = { n: s.turn.n, by }; notes.push(`${nameOf(s, by)}’s opponents can’t gain life this turn (${srcName})`); break; }
         case 'tempt': {
           const P = s.players[by]; if (!P) break;
           P.ring = Math.min(4, (P.ring || 0) + 1);
@@ -843,10 +852,10 @@
         case 'transform': { const c = src && s.cards[src.id]; if (c && c.d && c.d.faces.length > 1) { const nm = cardName(c); c.face = c.face ? 0 : 1; c.row = R.rowFor(c); notes.push(`${nm} transformed into ${cardName(c)}`); } break; }
         case 'search': {
           if (/^basic (?:land|plains|island|swamp|mountain|forest)/.test(o.filter) || o.filter === 'basic land') R.todo(s, by, { k: 'fetch', n: o.n, dest: o.dest, tapped: o.tapped, split: o.split, filter: o.filter, src: srcName });
-          else R.todo(s, by, { k: 'search', n: o.n, upTo: o.upTo, dest: o.dest, tapped: o.tapped, filter: o.filter, mvMax: o.mvMax, splitGy: !!o.splitGy, src: srcName });
+          else R.todo(s, by, { k: 'search', n: o.n, upTo: o.upTo, dest: o.dest, tapped: o.tapped, filter: o.filter, mvMax: o.mvMax == null ? undefined : val(o.mvMax), splitGy: !!o.splitGy, src: srcName });
           break;
         }
-        case 'attach': { const at = src && s.cards[src.id], t = cards(o.to)[0]; if (at && t && at.zone === 'battlefield') { at.attachedTo = t.id; notes.push(`${cardName(at)} is now attached to ${cardName(t)}`); } break; }
+        case 'attach': { const at = o.what && o.what.k === 'ev' ? s.cards[ctx.c] : src && s.cards[src.id], t = o.to && o.to.k === 'lastToken' ? s.cards[(st.tokens || [])[0]] : cards(o.to)[0]; if (at && t && at.zone === 'battlefield' && t.zone === 'battlefield') { at.attachedTo = t.id; notes.push(`${cardName(at)} is now attached to ${cardName(t)}`); } break; }
         case 'extraLand': { const T = s.turn; T.extraLand = T.extraLand || {}; T.extraLand[by] = (T.extraLand[by] || 0) + (o.n || 1); notes.push(`${nameOf(s, by)} may play an additional land this turn`); break; }
         case 'roll': { const r = 1 + Math.floor(Math.random() * o.d); st.last = r; notes.push(`${nameOf(s, by)} rolled a d${o.d}: ${r} (${srcName})`); break; }
         case 'fromHand': {

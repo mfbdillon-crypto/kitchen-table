@@ -355,7 +355,7 @@
       }
       if (t.k === 'freeCast') {
         const want = String(t.filter || 'card');
-        const pool = (t.from === 'graveyard' ? B.cards(c => c.zone === 'graveyard' && c.owner === me) : hand()).filter(c => !R().isType(c, 'land') && (t.mvMax == null || (+c.d.cmc || 0) <= t.mvMax) && (want === 'card' || C().matchesWhat(Object.assign({ zone: 'stack' }, c), want)));
+        const pool = (t.ids ? t.ids.map(id => s.cards[id]).filter(c => c && c.zone === 'exile') : t.from === 'graveyard' ? B.cards(c => c.zone === 'graveyard' && c.owner === me) : hand()).filter(c => !R().isType(c, 'land') && (t.mvMax == null || (+c.d.cmc || 0) <= t.mvMax) && (want === 'card' || C().matchesWhat(Object.assign({ zone: 'stack' }, c), want)));
         const opts = pool.map(c => B.option(c, C().instantSpeed(c) ? 'instant' : 'main', { sources: [] }) || B.option(c, 'main', { sources: [] })).filter(Boolean).sort((a, b) => b.score - a.score);
         const o = opts[0];
         if (!o) { B.note('did', `${t.src}: nothing worth casting for free`); return; }

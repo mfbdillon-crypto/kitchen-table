@@ -132,6 +132,8 @@
     const from = c.zone;
     // 702.34a and friends: a spell cast with flashback (jump-start, escape, harmonize) is exiled instead of going anywhere else.
     if (from === 'stack' && to !== 'battlefield' && to !== 'stack' && ['flashback', 'jump-start', 'harmonize'].includes(c.alt)) to = 'exile';
+    // Rebound (702.88): cast from hand, it's exiled as it resolves; its owner may cast it free at their next upkeep.
+    if (from === 'stack' && to === 'graveyard' && c.castFrom === 'hand' && !c.ab && !c.token && root.Cards && root.Cards.keywords && /(^|\n)rebound\b/i.test(root.Cards.rawText(c))) { to = 'exile'; c.rebound = { by: c.owner, after: s.turn ? s.turn.n : 0 }; }
     if (from === 'stack' && to !== 'battlefield' && c.alt === 'escape' && !isType(c, 'creature') && !isType(c, 'artifact') && !isType(c, 'enchantment') && !isType(c, 'planeswalker')) to = 'exile';
     if (root.Engine && from !== to) root.Engine.emit({ type: 'zone', from, to, card: root.Engine.snap(c), sac: !!opts.sac, fromPriv: opts.fromPriv || null });
     // A merged (mutated) permanent that leaves takes every card in it along (702.140e / 721.? — each card goes to the same zone).
@@ -197,6 +199,7 @@
   // "twice that much" (Boon Reflection, Rhox Faithmender), and "your opponents can't gain life" (Erebos).
   function gainLife(s, pid, n) {
     const P = s.players[pid]; if (!P || n <= 0) return 0;
+    if (s.turn && s.turn.noGain && s.turn.noGain.n === s.turn.n && s.turn.noGain.by !== pid) return 0;   // Atarka's Command
     const C = root.Cards;
     let plus = 0, mult = 1;
     if (C) for (const o of Object.values(s.cards)) {
@@ -433,7 +436,7 @@
             if (to === 'exile' && a.mayPlay && /^(eot|next)$/.test(a.mayPlay.until)) c.mayPlay = { by: pid, until: a.mayPlay.until, from: num(a.mayPlay.from, 0, 99999) || s.turn.n };   // "put onto the battlefield with this ability" (Kodama)
             moveOne(s, c, to, a.pos, { by: pid, tapped: a.tapped, faceDown: c.faceDown, row: a.row, backFace: c.face === 1 }, notes);
             names.push(cardName(c));
-            if (to === 'stack') onCast(s, pid, c, a);
+            if (to === 'stack') { c.castFrom = a.from === 'hand' ? 'hand' : null; onCast(s, pid, c, a); }
             if (root.Engine && a.from === 'hand' && to === 'graveyard') root.Engine.emit({ type: 'discard', player: pid, card: c });
           }
           // a.msg is a phrase like "cast {cards}"; the host fills in the card names (face-down cards stay hidden).

@@ -398,6 +398,10 @@
   }
   function modesOf(c) {
     const t = spellText(c);
+    if (/^spree\b/im.test(t)) {
+      const ls = t.split('\n').map(x => x.trim()).filter(x => /^\+\s*\{/.test(x));
+      if (ls.length >= 2) return { pick: 'many', spree: ls.map(x => (x.match(/^\+\s*((?:\{[^}]+\})+)/) || [])[1] || ''), modes: ls.map(x => x.replace(/^\+\s*(?:\{[^}]+\})+\s*—\s*/, '')) };
+    }
     const m = t.match(/choose (one or more|one or both|any number|one|two|three)\s*(?:—|-)?\s*\n?([\s\S]*)/i);
     if (!m) return null;
     const parts = m[2].split(/\n|•/).map(x => x.replace(/^[•\s]+/, '').trim());
@@ -560,7 +564,7 @@
     if (es.some(e => (e.k === 'bite' || e.k === 'fight') && e.ti === i)) return true;
     if (es.some(e => e.k === 'pump' && /^-/.test(String(e.t)))) return false;
     if (es.some(e => ['pump', 'grant', 'counters', 'untap', 'gyToHand', 'reanimate', 'attachSrc'].includes(e.k))) return true;
-    if (!es.length && /enchanted creature (gets \+|has )/i.test(text(card))) return true;
+    if (!es.length && /enchanted (?:creature|land|permanent|artifact) (?:gets \+|has |gains )|whenever enchanted land is tapped for mana/i.test(text(card)) && !/enchanted (?:creature|permanent) (?:can't|doesn't)/i.test(text(card))) return true;
     return false;
   }
   function orderChoices(s, choices, by, helpful) {
@@ -860,6 +864,8 @@
   // Does this permanent have flash, or is it an instant? (can be cast at any time you have priority)
   function instantSpeed(c) { return /\binstant\b/i.test(typeLine(c)) || has(c, 'flash'); }
 
-  root.Cards = { discardCost, freeWithCommander, levelText, modePick, sacCost, costReduction, KEYWORDS, colorsOf, face, typeLine, isType, nameOf, text, rawText, keywords, has, statics, pt, parseCost, costOf, manaValue, costTotal, manaSource, pay,
+  // Spree: the extra mana for the modes chosen.
+  function spreeCost(c, mode) { const md = modesOf(c); if (!md || !md.spree || !mode) return null; return parseCost([].concat(mode).map(i => md.spree[i] || '').join('')); }
+  root.Cards = { spreeCost, discardCost, freeWithCommander, levelText, modePick, sacCost, costReduction, KEYWORDS, colorsOf, face, typeLine, isType, nameOf, text, rawText, keywords, has, statics, pt, parseCost, costOf, manaValue, costTotal, manaSource, pay,
     setState, notCreatureNow, wardCost, targetReqs, targetsIn, legalTarget, targetChoices, reqLabel, protections, protectedFrom, blockProblem, matchesWhat, helpfulTarget, orderChoices, modesOf, effectsIn, effectsOf, abilities, triggers, instantSpeed, isPermanentCard, toNum, spellText };
 })(typeof window !== 'undefined' ? window : globalThis);

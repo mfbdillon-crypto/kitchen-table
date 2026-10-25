@@ -510,6 +510,7 @@
       changed = true;
       if (it.to === 'hand') P.hand.push(card);
       else if (it.pos === 'bottom') P.library.push(card);
+      else if (it.pos === 'n2' || it.pos === 'n3') P.library.splice(Math.min(P.library.length, it.pos === 'n2' ? 1 : 2), 0, card);
       else if (it.pos === 'shuffle') { P.library.push(card); shuffled = true; }
       else P.library.unshift(card);
     }

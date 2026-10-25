@@ -752,6 +752,7 @@
     // The cost being paid: the printed one, an alternative one, or printed + additional (kicker).
     const altMana = alt ? (String(alt.cost || '').match(/\{[^}]+\}/g) || []).join('') : '';
     const payCost = !alt ? CD.costOf(card) : alt.additional ? (() => { const a = CD.costOf(card), b = CD.parseCost(altMana); for (const k of ['g', 'W', 'U', 'B', 'R', 'G', 'C', 'x']) a[k] += b[k] || 0; a.hy = a.hy.concat(b.hy); a.ph = a.ph.concat(b.ph); return a; })() : CD.parseCost(altMana);
+    { const sp = CD.spreeCost && mode ? CD.spreeCost(card, mode) : null; if (sp && alt?.kind !== 'free') for (const k of ['g', 'W', 'U', 'B', 'R', 'G', 'C']) payCost[k] += sp[k] || 0; }   // Spree: each mode's extra cost
     if (alt?.kind !== 'free' && CD.costReduction) payCost.g = Math.max(0, payCost.g - CD.costReduction(S(), Object.assign({ owner: KEY, ctrl: KEY }, card), KEY));   // 601.2f
     if (payCost.x || /as an additional cost to cast this spell, pay x life/i.test(CD.text(card))) { x = await askX(card); if (x == null) return; }
     const extra = alt && String(alt.cost || '').replace(/\{[^}]+\}/g, '').replace(/^[,\s—-]+|[,\s]+$/g, '');
@@ -1867,10 +1868,10 @@
     if (t.k === 'freeCast') {
       const want = String(t.filter || 'card');
       const fits = c => !R.isType(c, 'land') && (t.mvMax == null || (+((c.d || {}).cmc) || 0) <= t.mvMax) && (want === 'card' || CD.matchesWhat(Object.assign({}, c, { zone: 'stack' }), want));
-      const pool = t.from === 'graveyard' ? Object.values(S().cards).filter(c => c.zone === 'graveyard' && c.owner === KEY && fits(c)) : G.P.hand.map(c => handCard(c)).filter(fits);
+      const pool = t.ids ? t.ids.map(id => S().cards[id]).filter(c => c && c.zone === 'exile') : t.from === 'graveyard' ? Object.values(S().cards).filter(c => c.zone === 'graveyard' && c.owner === KEY && fits(c)) : G.P.hand.map(c => handCard(c)).filter(fits);
       if (!pool.length) { G.toast(`${t.src}: nothing you could cast for free.`, 'info'); ack(); return pumpAsks(); }
       openModal(`${t.src}: cast a ${want === 'card' ? 'spell' : want} free${t.mvMax != null ? ' (mana value ' + t.mvMax + ' or less)' : ''}`, b => {
-        b.append(h('div', { class: 'strip pick' }, pool.map(c => cardEl(c, { noMenu: true, onClick: async () => { closeModal(true); await castFlow(t.from === 'graveyard' ? c : G.P.hand.find(x => x.id === c.id), t.from === 'graveyard' ? 'public' : 'hand', { kind: 'free', cost: '' }); ack(); setTimeout(pumpAsks, 50); } }))));
+        b.append(h('div', { class: 'strip pick' }, pool.map(c => cardEl(c, { noMenu: true, onClick: async () => { closeModal(true); await castFlow(t.from !== 'hand' ? c : G.P.hand.find(x => x.id === c.id), t.from !== 'hand' ? 'public' : 'hand', { kind: 'free', cost: '' }); ack(); setTimeout(pumpAsks, 50); } }))));
         b.append(h('div', { class: 'row' }, h('button', { onclick: () => { closeModal(true); ack(); setTimeout(pumpAsks, 50); } }, 'Don’t cast anything')));
       }, { live: true, sticky: true, noEsc: true });
       return;
