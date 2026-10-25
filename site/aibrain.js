@@ -701,11 +701,9 @@
   };
   // Damage I could take on the next opponents' turns (each opponent's untapped-next-turn attackers).
   P.incomingNext = function () {
-    let n = 0;
-    for (const p of this.opps()) {
-      const cre = this.creatures(p).filter(c => !this.kw(c).has('defender'));
-      n += sum(cre, c => this.pt(c)[0]) * (this.opps().length > 1 ? 0.55 : 1);
-    }
+    // Each opponent attacks one player: the worst single one in full, the others a third as likely to come my way.
+    const per = this.opps().map(p => sum(this.creatures(p).filter(c => !this.kw(c).has('defender')), c => this.pt(c)[0])).sort((a, b) => b - a);
+    const n = (per[0] || 0) + sum(per.slice(1), x => x) * 0.35;
     const blockers = this.creatures(this.me).filter(c => !c.tapped).length;
     return Math.max(0, n - blockers * 1.5);
   };

@@ -1,4 +1,16 @@
-# Handoff log — pick up here (written 2026-10-25, 11:05 Phoenix)
+# Handoff log — pick up here (updated 2026-10-25, 14:47 Phoenix)
+
+## URGENT (14:46): the user can't connect to the game on their phone
+Being troubleshot now. Suspects, in order:
+1. The automatic game code (v8.3): opening the bare site URL on the phone makes a NEW code, so the phone lands at a different table from the computer. The phone must use the Invite link or QR (?t=kt-xxxxxx), or enter the code in the lobby's "Have an invite code?" box.
+2. Joining after the game has started is refused (v8.3) — the phone can only watch.
+3. The lobby panel or keep/mulligan in the hand bar on a narrow screen.
+Older browser tests (views, decks_ui, ux_fixes, table_strict, phone, ui_stack, counters, looks) now time out. They probably click things the lobby covers, or rely on old menus. Check `test/phone.mjs` first.
+
+## Since 11:05
+- v8.5 is live (724f27b): house rules window, lobby name/join rows, deck window order, AI deck picker, mulligan in the hand bar, simpler menus, Split log on top 30%, tab order, myriad/Selvala fixes.
+- The aibrain.js incomingNext multiplayer estimate was changed after v8.5. It's committed but not deployed.
+- The 4-player AI sweep is clean: no errors or stalls. Games last about 40 turns (≈10 rounds), which is normal.
 
 ## Where things stand
 - Live and test sites both run **v8.4 (commit 9bd3d19)**.
