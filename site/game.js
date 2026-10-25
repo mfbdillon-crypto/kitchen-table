@@ -17,7 +17,29 @@
     raw: { get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch (e) { return false; } }, del(k) { try { localStorage.removeItem(k); } catch (e) {} } }
   };
 
-  const TABLE = (params.get('t') || 'main').replace(/[^\w-]/g, '').slice(0, 40) || 'main';
+  // The table code: from the link, else the last table this browser played at, else a new one (kept in the address bar
+  // so Invite shares it). Phones and AI frames always carry it in their link.
+  const genCode = () => { const A = 'abcdefghjkmnpqrstuvwxyz23456789'; let c = ''; const r = new Uint32Array(6); crypto.getRandomValues(r); for (const x of r) c += A[x % A.length]; return 'kt-' + c; };
+  let tParam = params.get('t');
+  if (!tParam && !params.get('m') && !params.get('ai')) {
+    try { tParam = JSON.parse(localStorage.getItem('kt:lastTable') || 'null'); } catch (e) { tParam = null; }
+    if (!tParam) tParam = genCode();
+    try { history.replaceState(null, '', location.pathname + '?t=' + encodeURIComponent(tParam) + location.hash); } catch (e) { /* the code still works */ }
+  }
+  const TABLE = (tParam || 'main').replace(/[^\w-]/g, '').slice(0, 40) || 'main';
+  if (!params.get('m') && !params.get('ai')) { try { localStorage.setItem('kt:lastTable', JSON.stringify(TABLE)); } catch (e) {} }
+  // Old tables' games are wiped from this browser when you sit at another one (they can't be brought back).
+  function wipeOtherTables() {
+    try {
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const k = localStorage.key(i);
+        const m = k && (k.match(/^kt:(priv|pub|roster):([\w-]+)/) || k.match(/^ai:\w+:kt:(priv|pub|roster):([\w-]+)/));
+        if (m && m[2] !== TABLE) localStorage.removeItem(k);
+      }
+    } catch (e) { /* storage blocked */ }
+  }
+  if (!params.get('m') && !params.get('ai')) wipeOtherTables();
+
   const MODE = AI_ID ? 'ai' : params.get('m') === 'hand' ? 'hand' : 'table';
   let KEY = null; // your public seat id — set once your signing key is loaded (see G.ready below)
 
@@ -25,6 +47,8 @@
     R, LS, TABLE, MODE, KEY, AI_ID, S: null, table: null, phone: null, phoneLinked: false,
     render() {}, toast() {}, status: 'connecting', statusMsg: ''
   };
+  G.newTable = () => { location.href = location.pathname + '?t=' + encodeURIComponent(genCode()); };
+  G.openTable = code => { const c = String(code || '').trim().replace(/[^\w-]/g, '-').slice(0, 40); if (c) location.href = location.pathname + '?t=' + encodeURIComponent(c); };
 
   // ---------------- randomness ----------------
   function rnd(n) { const a = new Uint32Array(1); crypto.getRandomValues(a); return a[0] % n; }
@@ -206,13 +230,14 @@
     P.hand = dealSeven();
     P.phase = 'deciding';
     savePriv();
-    log(P.mull === 1 ? 'took a free mulligan' : `took mulligan #${P.mull}`);
+    log(P.mull === 1 && !(G.S && G.S.house && G.S.house.freeMull === false) ? 'took a free mulligan' : `took mulligan #${P.mull}`);
   };
 
   G.autoDraw = () => { if (G.S && me()) autoDraw(); };
   G.keep = function () {
     // First mulligan is free in multiplayer / Commander (103.5c), then London mulligan (103.5).
-    const n = Math.max(0, P.mull - 1);
+    const free = !(G.S && G.S.house && G.S.house.freeMull === false);
+    const n = Math.max(0, P.mull - (free ? 1 : 0));
     if (n > 0) { P.phase = 'bottom'; P.bottomN = Math.min(n, P.hand.length); savePriv(); return; }
     P.phase = 'kept'; savePriv();
     log(`kept their opening hand of ${P.hand.length}`);
@@ -681,8 +706,12 @@
     snapT = setTimeout(() => LS.set('kt:pub:' + TABLE, s), 800);
     if (P.gameId !== s.gameId) {
       const hadGame = !!P.gameId;
+      // A new game: what this browser kept about any other game is deleted (it can't be brought back).
+      // (Only for a fresh game — a copy of the table mid-game, seen for a moment during a host change, keeps the archive.)
+      const fresh = !s.turn || !s.turn.active || (s.turn.n <= 1 && (s.log || []).some(l => /started a (new game|rematch)/.test(l.text)));
+      if (fresh) { try { for (let i = localStorage.length - 1; i >= 0; i--) { const k = localStorage.key(i); if (k && PKEY && k.startsWith(PKEY + ':g:') && k !== PKEY + ':g:' + s.gameId) localStorage.removeItem(k); } LS.set(PKEY + ':gl', []); } catch (e) { /* storage blocked */ } }
+      else archivePriv();
       const last = P.deckId;
-      archivePriv();
       const back = LS.get(PKEY + ':g:' + s.gameId, null);
       if (back && back.gameId === s.gameId) { setP(back); LS.set(PKEY, P); G.render(); }
       else {

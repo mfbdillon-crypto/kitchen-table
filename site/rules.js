@@ -320,8 +320,17 @@
   }
 
   // ======================= apply an action =======================
+  // Dev-mode rewind: the host keeps the last 20 public states of each game (in memory only).
+  const HIST = new Map(), NO_HIST = new Set(['counts', 'log', 'reveal', 'inboxAck', 'todoAck', 'aiAsk', 'aiSay', 'dev', 'devRewind', 'deck', 'player', 'join', 'chat', 'ping']);
+  function remember(s, a) {
+    if (!a || NO_HIST.has(a.type) || !s.gameId || !s.turn || !s.turn.active) return;
+    let H = HIST.get(s.gameId); if (!H) { H = []; HIST.set(s.gameId, H); if (HIST.size > 3) HIST.delete(HIST.keys().next().value); }
+    try { const copy = Object.assign({}, s, { log: [] }); H.push(JSON.stringify(copy)); } catch (e) { return; }
+    if (H.length > 20) H.shift();
+  }
   function apply(s, pid, a) {
     if (root.Cards && root.Cards.setState) root.Cards.setState(s);
+    remember(s, a);
     const before = s.turn ? s.turn.n + ':' + s.turn.phase : '';
     if (root.Engine) root.Engine.begin(s);
     const r = apply0(s, pid, a);
@@ -380,6 +389,8 @@
         case 'join': {
           if (!me) {
             if (s.kicked && s.kicked[pid]) return { ok: false, err: 'The host removed you from this table.', kicked: true };
+            // Once the game has started nobody new sits down (players who were seated can always come back).
+            if (s.turn && s.turn.active && !s.winner) return { ok: false, err: 'This game has already started — you can watch, and join when the next game starts.', started: true };
             if (s.seats.length >= MAX_SEATS) return { ok: false, err: 'The table is full (6 players).' };
             if (!s.hostPid || !s.players[s.hostPid]) s.hostPid = s.seats.find(p => s.players[p] && !s.players[p].ai) || (a.ai ? null : pid);
             s.players[pid] = newPlayer(a.name);
@@ -763,7 +774,7 @@
           order.sort((x, y) => (alive(s, x) ? 0 : 1) - (alive(s, y) ? 0 : 1));
           s.seats = order;
           s.turn = { active: order[0], phase: 1, n: 1, first: order[0], lands: {}, starts: { [order[0]]: 1 }, goal: 'main1', mulls: true };
-          for (const p of order) if (s.players[p]) s.players[p].kept = false;
+          for (const p of order) if (s.players[p]) { s.players[p].kept = false; s.players[p].life = (s.house && s.house.life) || START_LIFE; }
           return done(`randomized the turn order: ${order.map(x => nameOf(s, x)).join(' → ')}. ${nameOf(s, order[0])} goes first.`);
         }
         case 'phase': {
@@ -798,6 +809,30 @@
           if (K && K.n === T.n && !K.done && T.phase >= PI('Combat damage') && was < PI('Combat damage') && Object.keys(K.att).length) { if (s.prio && s.prio.step) s.prio = null; combatDamage(s, notes); for (const x of notes) log(s, null, x, 'auto'); s.rev++; return { ok: true }; }
           if (PHASES[T.phase] === 'Cleanup') { clearMods(s); if (root.Engine) root.Engine.endOfTurn(s); }
           s.rev++; return { ok: true };
+        }
+        // House rules (host, before the game starts): starting life, commander damage, the free first mulligan.
+        case 'house': {
+          if (pid !== s.hostPid) return { ok: false, err: 'Only the host sets the house rules.' };
+          if (s.turn && s.turn.active && !s.winner) return { ok: false, err: 'House rules are set before the game starts.' };
+          const H = s.house = Object.assign({ life: START_LIFE, cmdrDmg: true, freeMull: true }, s.house || {});
+          if (a.life !== undefined) { const v = num(a.life, 1, 999); if (v) H.life = v; }
+          if (a.cmdrDmg !== undefined) H.cmdrDmg = !!a.cmdrDmg;
+          if (a.freeMull !== undefined) H.freeMull = !!a.freeMull;
+          for (const p of s.seats) if (s.players[p] && !s.turn.active) s.players[p].life = H.life;
+          return done(`set the house rules: ${H.life} life, commander damage ${H.cmdrDmg ? 'on' : 'off'}, free first mulligan ${H.freeMull ? 'on' : 'off'}`);
+        }
+        // Dev mode (host only): step the public table back to before an earlier action (hidden cards stay where they are).
+        case 'devRewind': {
+          if (!(s.dev && pid === s.hostPid) && !a.dev) return { ok: false, err: 'Only the host, in dev mode, can rewind.' };
+          const H = HIST.get(s.gameId) || [];
+          const k = Math.max(1, Math.min(H.length, num(a.steps, 1, 20) || 1));
+          if (!H.length) return { ok: false, err: 'Nothing to rewind.' };
+          const snap = JSON.parse(H.splice(H.length - k, k)[0]);
+          const keepLog = s.log, keepDev = s.dev, keepHost = s.hostPid, players = s.players;
+          Object.keys(s).forEach(x => delete s[x]); Object.assign(s, snap);
+          for (const p of Object.keys(s.players)) if (players[p]) { s.players[p].online = players[p].online; s.players[p].offAt = players[p].offAt; }
+          s.log = keepLog; s.dev = keepDev; s.hostPid = keepHost; s.rev = (s.rev || 0) + 1000;
+          return done(`rewound the table ${k} action${k > 1 ? 's' : ''} (dev mode — cards in hands and libraries stay where they are)`);
         }
         // Dev mode (host only): add a rule line for a player, or switch a card's rule off/on — for debugging the rulebook.
         case 'devPerm': {
@@ -914,12 +949,14 @@
           ns.hostPid = s.hostPid;
           ns.kicked = a.rematch ? s.kicked : undefined;   // a brand-new game lets removed players sit down again
           ns.rematch = !!a.rematch;
+          ns.house = s.house;
           if (ns.rematch && keep.length) {
             // Rematch: same decks, new random turn order (103.1).
             const order = keep.slice();
             for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
             ns.seats = order;
-            ns.turn = { active: order[0], phase: 1, n: 1, first: order[0], lands: {}, starts: { [order[0]]: 1 }, goal: 'main1' };
+            ns.turn = { active: order[0], phase: 1, n: 1, first: order[0], lands: {}, starts: { [order[0]]: 1 }, goal: 'main1', mulls: true };
+            for (const p of order) if (ns.players[p]) { ns.players[p].kept = false; ns.players[p].life = (s.house && s.house.life) || START_LIFE; }
           }
           Object.keys(s).forEach(k => delete s[k]);
           Object.assign(s, ns);
@@ -1320,7 +1357,7 @@
       let why = null;
       if (P.life <= 0) why = `has ${P.life} life (704.5a)`;
       else if (P.poison >= 10) why = `has ${P.poison} poison counters (704.5c)`;
-      else { const cd = Object.entries(P.cmdDmg || {}).find(([, v]) => v >= 21); if (cd) why = `took ${cd[1]} combat damage from ${s.cards[cd[0]] ? cardName(s.cards[cd[0]]) : 'one commander'} (903.10a)`; }
+      else { const cd = !(s.house && s.house.cmdrDmg === false) && Object.entries(P.cmdDmg || {}).find(([, v]) => v >= 21); if (cd) why = `took ${cd[1]} combat damage from ${s.cards[cd[0]] ? cardName(s.cards[cd[0]]) : 'one commander'} (903.10a)`; }
       if (why) losing.push([pid, why]);
     }
     if (!losing.length) return;

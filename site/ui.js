@@ -1174,15 +1174,35 @@
     const host = s.hostPid === KEY;
     if (!host) return h('div', { class: 'devbanner' }, `Developer debugging is ON — ${nameOf(s.hostPid)} can move and use everyone’s cards to repair the game.`);
     G.devAs = G.devAs && s.players[G.devAs] ? G.devAs : KEY;
-    return h('div', { class: 'devbanner' }, 'Developer debugging ON — act as: ',
-      ...s.seats.map(p => h('button', { class: 'chip' + (G.devAs === p ? ' set' : ''), onclick: () => { G.devAs = p; render(); } }, p === KEY ? 'Me' : nameOf(p))),
-      h('button', { class: 'chip', title: 'Edit this player’s life, poison and mana', onclick: () => devPlayerModal(G.devAs) }, 'Edit player…'),
-      R.stackTop(s) ? h('button', { class: 'chip', onclick: () => G.act({ type: 'resolveNow', as: R.stackTop(s).ctrl }) }, 'Resolve top of stack') : null,
-      R.stackTop(s) ? h('button', { class: 'chip', onclick: () => { const t = R.stackTop(s); if (t.ab || t.token) G.act({ type: 'removeToken', ids: [t.id], as: t.ctrl }); else G.act({ type: 'move', ids: [t.id], to: 'graveyard', as: t.ctrl }); } }, 'Remove top of stack') : null,
-      s.turn.active ? h('button', { class: 'chip', onclick: () => G.act({ type: 'phase', dir: 'pass', dev: true, as: s.turn.active }) }, 'Next turn') : null,
-      h('button', { class: 'chip' + (G.rbOpen ? ' set' : ''), title: 'Every player’s permissions and restrictions, with a timeline', onclick: () => { G.rbOpen = !G.rbOpen; if (G.rbOpen) G.aiPlanOpen = false; render(); } }, 'Rulebook'),
-      Object.keys(aiFrames).length ? h('button', { class: 'chip' + (G.aiPlanOpen ? ' set' : ''), title: 'What each AI plans, holds back and has done — with every change of plan', onclick: () => { G.aiPlanOpen = !G.aiPlanOpen; if (G.aiPlanOpen) G.rbOpen = false; render(); } }, 'AI plans') : null,
-      h('button', { class: 'chip', onclick: () => G.act({ type: 'dev', on: false }) }, 'Turn off'));
+    const tools = () => [
+      { label: `Edit ${G.devAs === KEY ? 'my' : nameOf(G.devAs) + '’s'} life, poison, mana…`, fn: () => devPlayerModal(G.devAs) },
+      R.stackTop(s) ? { label: 'Resolve the top of the stack', fn: () => G.act({ type: 'resolveNow', as: R.stackTop(s).ctrl }) } : null,
+      R.stackTop(s) ? { label: 'Remove the top of the stack', fn: () => { const t = R.stackTop(s); if (t.ab || t.token) G.act({ type: 'removeToken', ids: [t.id], as: t.ctrl }); else G.act({ type: 'move', ids: [t.id], to: 'graveyard', as: t.ctrl }); } } : null,
+      s.turn.active ? { label: 'Next turn', fn: () => G.act({ type: 'phase', dir: 'pass', dev: true, as: s.turn.active }) } : null,
+      { sep: true },
+      { label: 'Rewind 1 action', fn: () => G.act({ type: 'devRewind', steps: 1 }).then(r => r && r.ok === false && G.toast(r.err, 'err')) },
+      { label: 'Rewind 5 actions', fn: () => G.act({ type: 'devRewind', steps: 5 }).then(r => r && r.ok === false && G.toast(r.err, 'err')) },
+      { sep: true },
+      { label: 'Export the game log (for debugging)', fn: exportDebug }
+    ].filter(Boolean);
+    return h('div', { class: 'devbanner slim' }, h('b', null, 'Dev'),
+      h('select', { title: 'Act as', onchange: e => { G.devAs = e.target.value; render(); } }, s.seats.map(p => h('option', { value: p, selected: G.devAs === p }, p === KEY ? 'Act as me' : 'Act as ' + nameOf(p)))),
+      h('button', { class: 'chip' + (G.rbOpen ? ' set' : ''), title: 'Every player’s permissions and restrictions, with a timeline and unread rules', onclick: () => { G.rbOpen = !G.rbOpen; if (G.rbOpen) G.aiPlanOpen = false; render(); } }, 'Rulebook'),
+      Object.keys(aiFrames).length ? h('button', { class: 'chip' + (G.aiPlanOpen ? ' set' : ''), title: 'What each AI plans and did, its decision trace', onclick: () => { G.aiPlanOpen = !G.aiPlanOpen; if (G.aiPlanOpen) G.rbOpen = false; render(); } }, 'AI plans') : null,
+      h('button', { class: 'chip', onclick: e => openMenu(e.currentTarget, tools(), 'Dev tools') }, 'Tools ▾'),
+      h('button', { class: 'chip', onclick: () => G.act({ type: 'dev', on: false }) }, 'Off'));
+  }
+  // Dev: everything needed to debug a game — the table log, permission timeline, rulebook sheets, unread rule text and
+  // each AI's plan and decision trace — as one JSON file.
+  function exportDebug() {
+    const s = S();
+    const sheets = {}; if (window.Rulebook) for (const p of s.seats) sheets[nameOf(p)] = Rulebook.sheet(s, p);
+    const ais = {}; for (const a of myAIs()) { const sn = aiSnap(a); if (sn) ais[a.name || a.id] = sn; }
+    const data = { when: new Date().toISOString(), table: G.TABLE, gameId: s.gameId, version: (document.querySelector('meta[name=kt-version]') || {}).content || '', turn: s.turn, house: s.house,
+      players: Object.fromEntries(s.seats.map(p => [nameOf(p), { life: s.players[p].life, poison: s.players[p].poison, energy: s.players[p].energy, lib: s.players[p].libCount, hand: s.players[p].handCount }])),
+      log: s.log, permissions: G.permLog, rulebook: sheets, unread: window.Rulebook ? Rulebook.unread(s) : [], ai: ais, asks: s.ask, todo: s.todo };
+    const blob = new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `kitchen-table-debug-${G.TABLE}-t${(s.turn || {}).n || 0}.json`; document.body.append(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
   }
   function devPlayerModal(pid) {
     const s = S(), P = s.players[pid]; if (!P) return;
@@ -1381,14 +1401,14 @@
         moving && T.goal === 'pass' && canDrive ? h('span', { class: 'muted small' }, 'Ending turn…') : null
       ].filter(Boolean));
     } else if (me) {
-      turnBox.append(h('button', { class: 'primary', onclick: () => G.act({ type: 'start' }), title: 'Randomizes the turn order and picks who goes first' }, 'Start game'));
+      turnBox.append(h('span', { class: 'muted small' }, 'Waiting to start'));
     }
 
     const t = s.table;
     const markers = h('div', { class: 'markers' },
-      h('button', { class: 'chip' + (t.monarch ? ' set' : ''), title: 'The monarch draws a card at their end step', onclick: e => markerMenu(e, 'monarch') }, '♛ ', t.monarch ? 'Monarch: ' + nameOf(t.monarch) : 'Monarch'),
-      h('button', { class: 'chip' + (t.initiative ? ' set' : ''), onclick: e => markerMenu(e, 'initiative') }, t.initiative ? 'Initiative: ' + nameOf(t.initiative) : 'Initiative'),
-      h('button', { class: 'chip' + (t.day ? ' set' : ''), onclick: e => openMenu(e.currentTarget, [{ label: 'Day', fn: () => G.act({ type: 'table', key: 'day', value: 'day' }) }, { label: 'Night', fn: () => G.act({ type: 'table', key: 'day', value: 'night' }) }, { label: 'Neither', fn: () => G.act({ type: 'table', key: 'day', value: null }) }], 'Day / night') }, t.day === 'day' ? '☀ Day' : t.day === 'night' ? '☾ Night' : 'Day/Night')
+      h('button', { class: 'chip' + (t.monarch ? ' set' : ''), title: 'The monarch draws a card at their end step', onclick: e => devHost() && markerMenu(e, 'monarch') }, '♛ ', t.monarch ? 'Monarch: ' + nameOf(t.monarch) : 'Monarch'),
+      h('button', { class: 'chip' + (t.initiative ? ' set' : ''), onclick: e => devHost() && markerMenu(e, 'initiative') }, t.initiative ? 'Initiative: ' + nameOf(t.initiative) : 'Initiative'),
+      h('button', { class: 'chip' + (t.day ? ' set' : ''), onclick: e => devHost() && openMenu(e.currentTarget, [{ label: 'Day', fn: () => G.act({ type: 'table', key: 'day', value: 'day' }) }, { label: 'Night', fn: () => G.act({ type: 'table', key: 'day', value: 'night' }) }, { label: 'Neither', fn: () => G.act({ type: 'table', key: 'day', value: null }) }], 'Day / night') }, t.day === 'day' ? '☀ Day' : t.day === 'night' ? '☾ Night' : 'Day/Night')
     );
 
     const unread = Math.max(0, s.log.length - (G.logSeen || 0));
@@ -1396,10 +1416,10 @@
     const tools = h('div', { class: 'tools' },
       me ? h('button', { class: 'f3', onclick: e => openMenu(e.currentTarget, newGameMenu(), 'Start over') }, 'New game ▾') : null,
       h('button', { class: 'f3', onclick: () => deckManager() }, 'Decks'),
-      me ? h('button', { class: 'f2', onclick: () => tokenModal() }, 'Tokens') : null,
+      me && devHost() ? h('button', { class: 'f2', onclick: () => tokenModal() }, 'Tokens') : null,
       me ? h('button', { class: 'f2', onclick: e => openMenu(e.currentTarget, [2, 4, 6, 8, 10, 12, 20].map(n => ({ label: n === 2 ? 'Flip a coin' : 'Roll a d' + n, fn: () => G.act({ type: 'dice', sides: n }) })).concat([{ label: 'Roll any die…', fn: () => askNumber('How many sides?', 100, n => G.act({ type: 'dice', sides: n }), 1000) }]), 'Dice & coin') }, 'Dice') : null,
       h('button', { class: G.logOpen ? 'on' : '', onclick: () => { G.logOpen = !G.logOpen; G.aiOpen = false; render(); } }, 'Log', unread && !G.logOpen ? h('span', { class: 'badge' }, String(Math.min(unread, 99))) : null),
-      h('button', { class: G.aiOpen ? 'on' : '', title: 'AI players: add one, read what they’re doing, ask them questions', onclick: () => { G.aiOpen = !G.aiOpen; if (G.aiOpen) G.logOpen = false; render(); } }, 'AI', aiUnread && !G.aiOpen ? h('span', { class: 'badge' }, String(Math.min(aiUnread, 99))) : null),
+null,
       h('button', { class: 'invite f3', onclick: inviteModal, title: 'Invite players to this table' }, 'Invite'),
       me ? h('button', { class: 'f4' + (G.phoneLinked ? ' on' : ''), onclick: phoneModal, title: 'Use your phone as your hand' }, G.phoneLinked ? 'Phone ✓' : 'Phone') : null,
       h('button', { title: 'More', onclick: e => openMenu(e.currentTarget, moreMenu(), 'Table') }, '⋯')
@@ -1408,14 +1428,14 @@
       const all = () => [
         me ? { label: 'New game ▸', sub: newGameMenu() } : null,
         { label: 'Decks', fn: () => deckManager() },
-        me ? { label: 'Tokens', fn: () => tokenModal() } : null,
+        me && devHost() ? { label: 'Tokens', fn: () => tokenModal() } : null,
         me ? { label: 'Dice & coin ▸', sub: [2, 6, 20].map(n => ({ label: n === 2 ? 'Flip a coin' : 'Roll a d' + n, fn: () => G.act({ type: 'dice', sides: n }) })) } : null,
         { label: `Log${unread ? ' (' + Math.min(unread, 99) + ' new)' : ''}`, fn: () => { G.logOpen = !G.logOpen; G.aiOpen = false; render(); } },
-        { label: `AI players & chat${aiUnread ? ' (' + Math.min(aiUnread, 99) + ' new)' : ''}`, fn: () => { G.aiOpen = !G.aiOpen; if (G.aiOpen) G.logOpen = false; render(); } },
+
         me && !COARSE ? { label: G.phoneLinked ? 'Phone (linked)…' : 'Use my phone as my hand…', fn: phoneModal } : null,
-        me ? { label: 'Monarch ▸', sub: S().seats.map(p => ({ label: nameOf(p), fn: () => G.act({ type: 'table', key: 'monarch', value: p }) })).concat([{ label: 'Nobody', fn: () => G.act({ type: 'table', key: 'monarch', value: null }) }]) } : null,
-        me ? { label: 'Initiative ▸', sub: S().seats.map(p => ({ label: nameOf(p), fn: () => G.act({ type: 'table', key: 'initiative', value: p }) })).concat([{ label: 'Nobody', fn: () => G.act({ type: 'table', key: 'initiative', value: null }) }]) } : null,
-        me ? { label: 'Day / night ▸', sub: [{ label: 'Day', fn: () => G.act({ type: 'table', key: 'day', value: 'day' }) }, { label: 'Night', fn: () => G.act({ type: 'table', key: 'day', value: 'night' }) }, { label: 'Neither', fn: () => G.act({ type: 'table', key: 'day', value: null }) }] } : null,
+        me && devHost() ? { label: 'Monarch ▸', sub: S().seats.map(p => ({ label: nameOf(p), fn: () => G.act({ type: 'table', key: 'monarch', value: p }) })).concat([{ label: 'Nobody', fn: () => G.act({ type: 'table', key: 'monarch', value: null }) }]) } : null,
+        me && devHost() ? { label: 'Initiative ▸', sub: S().seats.map(p => ({ label: nameOf(p), fn: () => G.act({ type: 'table', key: 'initiative', value: p }) })).concat([{ label: 'Nobody', fn: () => G.act({ type: 'table', key: 'initiative', value: null }) }]) } : null,
+        me && devHost() ? { label: 'Day / night ▸', sub: [{ label: 'Day', fn: () => G.act({ type: 'table', key: 'day', value: 'day' }) }, { label: 'Night', fn: () => G.act({ type: 'table', key: 'day', value: 'night' }) }, { label: 'Neither', fn: () => G.act({ type: 'table', key: 'day', value: null }) }] } : null,
         { sep: true }, ...moreMenu()
       ];
       return h('div', { id: 'top', class: 'compact' }, dot, turnBox,
@@ -1571,9 +1591,9 @@
     const chip = (label, v, cls) => v ? h('span', { class: 'stat ' + (cls || '') }, label + ' ' + v) : null;
     const cmdTotal = Object.entries(p.cmdDmg || {}).filter(([, v]) => v > 0);
     const life = h('div', { class: 'life' + (p.life <= 0 ? ' dead' : '') },
-      mine ? h('button', { onclick: () => G.act({ type: 'player', patch: { life: p.life - 1 } }), title: 'Lose 1 life' }, '−') : null,
+      mine && devHost() ? h('button', { onclick: () => G.act({ type: 'player', patch: { life: p.life - 1 } }), title: 'Lose 1 life (dev)' }, '−') : null,
       h('button', { class: 'lv', title: 'Trackers', onclick: () => trackerModal(pid) }, String(p.life)),
-      mine ? h('button', { onclick: () => G.act({ type: 'player', patch: { life: p.life + 1 } }), title: 'Gain 1 life' }, '+') : null);
+      mine && devHost() ? h('button', { onclick: () => G.act({ type: 'player', patch: { life: p.life + 1 } }), title: 'Gain 1 life (dev)' }, '+') : null);
     const tags = [];
     if (s.turn.active === pid) tags.push(h('span', { class: 'tag2 turn' }, 'Their turn'.replace('Their', mine ? 'Your' : 'Their')));
     if (s.table.monarch === pid) tags.push(h('span', { class: 'tag2' }, '♛ Monarch'));
@@ -1596,7 +1616,7 @@
         p.lost ? null : h('button', { class: 'demand', title: `Make ${p.name} follow an effect they missed: sacrifice, discard, draw, mill, lose life…`, onclick: () => demandModal(pid) }, 'Make them…'),
         canRemove(pid) ? h('button', { class: 'kick', title: `Remove ${p.name} from the table`, onclick: () => removePlayer(pid) }, p.ai ? 'Remove AI' : 'Remove') : null) : null,
       mine && !compact ? h('div', { class: 'mass' },
-        h('button', { onclick: untapAll }, 'Untap all'),
+        devHost() ? h('button', { onclick: untapAll }, 'Untap all') : null,
         h('button', { onclick: () => { const ids = Object.values(s.cards).filter(c => c.zone === 'battlefield' && c.ctrl === KEY && c.row === 'lands' && !c.tapped).map(c => c.id); if (ids.length) G.tap(ids, true); } }, 'Tap all lands'),
         h('button', { onclick: () => trackerModal(pid) }, 'Trackers')) : null);
     return bar;
@@ -1659,9 +1679,35 @@
     const s = S();
     if (!s.players[pid]) return h('div', { class: 'empty big' }, 'That player left the table.');
     const L = lookOf(pid);
-    return h('section', { class: 'board' + (compact ? ' compact' : '') + (s.turn.active === pid ? ' active' : '') + (L.mat ? ' hasmat' : '') + (s.players[pid].lost ? ' lost' : ''), style: boardStyle(pid) },
-      playerBar(pid, compact), revealedStrip(pid),
-      h('div', { class: 'field' }, cmdCol(pid), rowsEl(pid, compact), pileCol(pid)));
+    const view = (G.bview || (G.bview = G.LS.get('kt:bview', {})))[pid] || 'board';
+    const setV = v => { G.bview[pid] = v; G.LS.set('kt:bview', G.bview); render(); };
+    const tabs = h('div', { class: 'btabs', role: 'tablist' }, [['board', 'Board'], ['log', 'Log'], ['split', 'Split']].map(([v, l]) => h('button', { class: 'chip' + (view === v ? ' set' : ''), role: 'tab', 'aria-selected': view === v, onclick: e => { e.stopPropagation(); setV(v); } }, l)));
+    const field = () => h('div', { class: 'field' }, cmdCol(pid), rowsEl(pid, compact), pileCol(pid));
+    const body = view === 'log' ? boardLog(pid) : view === 'split' ? h('div', { class: 'bsplit' }, field(), boardLog(pid)) : field();
+    return h('section', { class: 'board' + (compact ? ' compact' : '') + (s.turn.active === pid ? ' active' : '') + (L.mat ? ' hasmat' : '') + (s.players[pid].lost ? ' lost' : '') + (view !== 'board' ? ' v-' + view : ''), style: boardStyle(pid) },
+      h('div', { class: 'bhead' }, playerBar(pid, compact), tabs), revealedStrip(pid), body);
+  }
+
+  // One player's log: what they did and what happened to their cards; for an AI seat also what it said, and a box to ask it.
+  function boardLog(pid) {
+    const s = S(), nm = nameOf(pid);
+    const time = t => new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    const mine = (s.log || []).filter(l => l.pid === pid || (!l.pid && nm && l.text.includes(nm))).map(l => ({ t: l.t, text: (l.pid === pid ? nm + ' ' : '') + l.text, k: l.k }));
+    const said = (s.aichat || []).filter(m => m.pid === pid && m.kind === 'say').map(m => ({ t: m.t || 0, text: '💬 ' + m.text, k: 'say' }));
+    const all = mine.concat(said).sort((a, b) => a.t - b.t).slice(-150);
+    const list = h('div', { class: 'loglist blog', 'data-scroll': 'blog-' + pid }, all.length ? all.map(e => h('div', { class: 'le k-' + (e.k || '') }, h('time', null, time(e.t)), ' ', e.text)) : h('p', { class: 'muted' }, 'Nothing yet.'));
+    setTimeout(() => { list.scrollTop = list.scrollHeight; }, 0);
+    const P0 = s.players[pid];
+    let ask = null;
+    if (P0 && P0.ai && G.seated()) {
+      const inp = h('input', { type: 'text', placeholder: `Ask ${nm} — “Is that legal?”, “Why attack me?”…` });
+      const send = () => { const t = inp.value.trim(); if (!t) return; G.act({ type: 'aiAsk', to: pid, text: t }); inp.value = ''; };
+      inp.addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
+      const answers = (s.aichat || []).filter(m => (m.kind === 'a' && m.pid === pid) || (m.kind === 'q' && m.to === pid)).slice(-6);
+      ask = h('div', { class: 'bask' }, answers.length ? h('div', { class: 'bqa' }, answers.map(m => h('div', { class: 'cm ' + m.kind }, h('b', null, m.kind === 'q' ? (m.pid === KEY ? 'You' : nameOf(m.pid)) + ': ' : nm + ': '), m.text))) : null,
+        h('div', { class: 'row' }, inp, h('button', { class: 'small', onclick: send }, 'Ask')));
+    }
+    return h('div', { class: 'blogwrap' }, list, ask);
   }
 
   function stackStrip() {
@@ -1704,10 +1750,10 @@
       btns.append(h('button', { class: 'primary', onclick: deckManager }, 'Pick a deck'));
     } else {
       if (!P.hand.length && P.phase !== 'kept') btns.append(h('button', { class: 'primary', onclick: G.openingHand }, 'Draw opening hand'));
-      btns.append(h('button', { onclick: () => G.draw(1), disabled: !P.library.length }, 'Draw'));
+      if (devHost()) btns.append(h('button', { onclick: () => G.draw(1), disabled: !P.library.length }, 'Draw'));
       btns.append(h('button', { onclick: e => openMenu(e.currentTarget, libraryMenu(), 'Library'), disabled: !P.library.length }, 'Library ▾'));
       btns.append(h('label', { class: 'autopay', title: 'When you cast a spell or use an ability, tap your untapped lands and mana rocks to pay for it' }, h('input', { type: 'checkbox', checked: G.LS.get('kt:autopay', true), onchange: e => { G.LS.set('kt:autopay', e.target.checked); G.toast(e.target.checked ? 'Your lands will be tapped automatically when you cast.' : 'Tap your own mana again.'); } }), ' Tap my lands for me'));
-      if (P.hand.length) btns.append(h('button', { onclick: e => openMenu(e.currentTarget, [
+      if (P.hand.length && devHost()) btns.append(h('button', { onclick: e => openMenu(e.currentTarget, [
         { label: P.hand.every(c => G.isRevealed(c.id)) ? 'Stop revealing hand' : 'Reveal my hand to everyone', fn: G.revealHand },
         { label: 'Discard a card at random', fn: G.discardRandom },
         { label: 'Shuffle hand into library', fn: () => G.handToLibrary(P.hand.map(c => c.id), 'shuffle') }
@@ -1820,10 +1866,58 @@
       b.append(h('details', { class: 'predetails', open: !decks.length || undefined }, h('summary', null, 'All ready-made and test decks'), preconPicker(d => { deckId = d.id; refreshModal(); }, msg => { busy = msg; refreshModal(); })));
       if (busy) b.append(h('p', { class: 'muted small immsg' }, busy));
       b.append(h('div', { class: 'row wrap' },
-        h('button', { class: 'primary', disabled: !deckId || full || !name.trim(), onclick: () => { const d = G.decks().find(x => x.id === deckId); if (!d) return; closeModal(); G.addAI(name.trim().slice(0, 20), d, skill); G.aiOpen = true; render(); } }, full ? 'The table is full' : 'Add AI player'),
+        h('button', { class: 'primary', disabled: !deckId || full || !name.trim(), onclick: () => { const d = G.decks().find(x => x.id === deckId); if (!d) return; closeModal(); G.addAI(name.trim().slice(0, 20), d, skill); render(); } }, full ? 'The table is full' : 'Add AI player'),
         h('span', { class: 'muted small' }, 'It runs in this browser tab, so keep this tab open while you play.')));
     }, { live: true, cls: 'wide' });
   }
+  // ======================= the lobby: before the game starts =======================
+  // A centred panel (about a quarter of the screen): the game code and invites, who's seated and with what deck, adding AI
+  // players, the house rules, and Start. Once the game starts nobody new sits down.
+  function lobbyPanel() {
+    const s = S();
+    if (!s || G.MODE !== 'table' || (s.turn && s.turn.active && !s.winner)) return null;
+    if (s.winner) return null;   // the end-of-game bar offers rematch / new game
+    const host = s.hostPid === KEY, me = G.me();
+    const H = Object.assign({ life: R.START_LIFE || 40, cmdrDmg: true, freeMull: true }, s.house || {});
+    const ready = p => (s.players[p] && s.players[p].libCount > 0);
+    const allReady = s.seats.length > 0 && s.seats.every(ready);
+    const url = G.inviteURL ? G.inviteURL() : location.href;
+    const rows = s.seats.map(p => {
+      const P0 = s.players[p], mineAI = aiOf(p);
+      return h('li', { class: 'lseat' + (ready(p) ? ' ok' : '') },
+        h('span', { class: 'dot ' + (P0.online ? 'on' : 'off') }), h('b', null, p === KEY ? 'You' : P0.name),
+        P0.ai ? h('span', { class: 'tag2 ai' }, 'AI · ' + P0.ai.skill) : null, p === s.hostPid ? h('span', { class: 'tag2 dim' }, 'host') : null,
+        h('span', { class: 'ldeck muted' }, P0.deckName ? P0.deckName : 'choosing a deck…'), ready(p) ? h('span', { class: 'good' }, ' ✓') : null,
+        p === KEY ? h('button', { class: 'small', onclick: deckManager }, P0.deckName ? 'Change deck' : 'Pick a deck') : null,
+        mineAI ? h('button', { class: 'small', title: 'Difficulty, deck or remove', onclick: () => manageAIModal(p) }, '⚙') : null);
+    });
+    const hr = (label, ctl) => h('label', { class: 'hrule' }, h('span', null, label), ctl);
+    const house = h('div', { class: 'lhouse' }, h('h4', null, 'House rules'),
+      hr('Starting life', host ? h('select', { onchange: e => G.act({ type: 'house', life: +e.target.value }) }, [40, 30, 25, 20].map(v => h('option', { value: v, selected: H.life === v }, String(v)))) : h('b', null, String(H.life))),
+      hr('Commander damage (21)', host ? h('input', { type: 'checkbox', checked: H.cmdrDmg, onchange: e => G.act({ type: 'house', cmdrDmg: e.target.checked }) }) : h('b', null, H.cmdrDmg ? 'on' : 'off')),
+      hr('Free first mulligan', host ? h('input', { type: 'checkbox', checked: H.freeMull, onchange: e => G.act({ type: 'house', freeMull: e.target.checked }) }) : h('b', null, H.freeMull ? 'on' : 'off')));
+    const code = h('input', { type: 'text', placeholder: 'Game code', class: 'lcode-in', maxlength: '40' });
+    code.addEventListener('keydown', e => { if (e.key === 'Enter') G.openTable(code.value); });
+    return h('div', { class: 'lobbywrap' }, h('div', { class: 'lobby', role: 'dialog', 'aria-label': 'Game lobby' },
+      h('header', null, h('h2', null, 'New game'), h('span', { class: 'lcode', title: 'This game’s code — it’s saved in your browser, so you can come back' }, 'Code ', h('b', null, G.TABLE))),
+      h('div', { class: 'lgrid' },
+        h('div', { class: 'lcol' },
+          h('h4', null, `Players (${s.seats.length}/${R.MAX_SEATS})`),
+          h('ul', { class: 'lseats' }, rows.length ? rows : h('li', { class: 'muted' }, 'Nobody yet.')),
+          h('div', { class: 'row wrap' },
+            me && s.seats.length < R.MAX_SEATS ? h('button', { onclick: addAIModal }, '+ Add AI player') : null,
+            h('button', { onclick: inviteModal }, 'Invite…'),
+            h('button', { class: 'ghost small', onclick: () => copyText(url, 'Invite link copied') }, 'Copy link'))),
+        h('div', { class: 'lcol' }, house,
+          h('details', { class: 'lother' }, h('summary', null, 'Another table'),
+            h('div', { class: 'row' }, code, h('button', { class: 'small', onclick: () => G.openTable(code.value) }, 'Join')),
+            h('button', { class: 'ghost small', onclick: () => G.newTable() }, 'Start a new table')))),
+      h('footer', null,
+        host ? h('button', { class: 'primary big', disabled: !allReady, title: allReady ? 'Randomizes the turn order and deals opening hands' : 'Everyone needs a deck first', onclick: () => G.act({ type: 'start' }) }, 'Start game')
+          : h('span', { class: 'muted' }, `Waiting for ${nameOf(s.hostPid) || 'the host'} to start the game…`),
+        !allReady && s.seats.length ? h('span', { class: 'muted small' }, ' Everyone needs a deck.') : null)));
+  }
+
   // ---- Developer: the AI's plan, saved responses, scenarios and change log (dev mode only; it shows the AI's hand) ----
   function aiSnap(a) { try { const f = aiFrames[a.id]; return f && f.contentWindow && f.contentWindow.KT && f.contentWindow.KT.aiSnapshot ? f.contentWindow.KT.aiSnapshot() : null; } catch (e) { return null; } }
   function aiPlanPanel() {
@@ -2352,7 +2446,7 @@
   function trackerModal(pid) {
     openModal(`${nameOf(pid)} — trackers`, b => {
       const s = S(), p = s.players[pid]; if (!p) return;
-      const mine = pid === KEY;
+      const mine = pid === KEY && devHost();   // the engine keeps these; editing them is a dev tool
       const row = (label, key, steps) => h('div', { class: 'crow' }, h('span', { class: 'cname' }, label),
         mine ? steps.map(n => h('button', { onclick: () => G.act({ type: 'player', patch: { [key]: p[key] + n } }) }, (n > 0 ? '+' : '') + n)).slice(0, steps.length / 2) : null,
         mine ? h('button', { class: 'bignum', title: `Type a new ${label.toLowerCase()} total`, onclick: () => setTotal(label, key, p[key]) }, String(p[key])) : h('b', { class: 'big' }, String(p[key])),
@@ -2856,7 +2950,7 @@
     if (G.wantSeat && !G.me() && (G.status === 'host' || G.status === 'connected') && !G.seatBusy) {
       if (S().seats.length < R.MAX_SEATS) {
         G.seatBusy = true;
-        G.act({ type: 'join', name: (G.myName() || 'Player') }).then(r => { G.seatBusy = false; if (r.ok || r.kicked) G.wantSeat = false; else setTimeout(render, 2000); });
+        G.act({ type: 'join', name: (G.myName() || 'Player') }).then(r => { G.seatBusy = false; if (r.ok || r.kicked || r.started) G.wantSeat = false; else setTimeout(render, 2000); if (r.started) G.toast(r.err, 'info'); });
       } else { G.wantSeat = false; G.toast('The table is full (6 players). You can watch.', 'err'); }
     }
     // keep scroll positions
@@ -2868,7 +2962,7 @@
     const view = h('div', { class: 'app' + (G.logOpen || G.aiOpen ? ' withlog' : '') + (COARSE ? ' touch' : '') },
       topBar(), tabsBar(),
       G.targeting ? h('div', { class: 'target' }, `Click the card to attach ${G.targeting.name} to — Esc to cancel `, h('button', { onclick: () => { G.targeting = null; render(); } }, 'Cancel')) : null,
-      main, G.rbOpen && S().dev && S().hostPid === KEY ? rulebookPanel() : G.aiPlanOpen && S().dev && S().hostPid === KEY ? aiPlanPanel() : G.aiOpen ? aiPanel() : logPanel(), handBar(), mulliganPanel());
+      main, G.rbOpen && S().dev && S().hostPid === KEY ? rulebookPanel() : G.aiPlanOpen && S().dev && S().hostPid === KEY ? aiPlanPanel() : G.aiOpen ? aiPanel() : logPanel(), handBar(), mulliganPanel(), lobbyPanel());
     const ae = document.activeElement, aeId = ae && ae.id && root.contains(ae) && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) ? ae.id : null;
     const sel = aeId && ae.selectionStart != null ? [ae.selectionStart, ae.selectionEnd] : null;
     root.replaceChildren(view);

@@ -51,3 +51,8 @@ break or tighten those rules. All tracking is silent (visible only in dev mode).
   2. Movement checkpoint / replacement layer, tokens, counters.
   3. Library order + knowledge + reveal/pick bar + choice bar.
   4. Lobby, game codes, data wipe, board log tabs, menu cleanup, dev tools, rewind.
+
+## Status
+- v8.0 stage 1 (rulebook), v8.1 stage 2 (movement checkpoint), v8.2 stage 3 (library knowledge), v8.3 stage 4 (lobby, logs, dev tools) — all live.
+- Known follow-ups: foretell/plot special actions from hand; AI suspend; Strionic Resonator (copy triggers); Combustible Gearhulk;
+  Arcane Bombardment; per-opponent knowledge of library tops; rewinding hidden zones.
