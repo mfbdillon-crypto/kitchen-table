@@ -27,7 +27,7 @@
     brain.doneCheck = key => !!this.markOf(key);
   }
   const E = Exec.prototype;
-  E.view = function () { return { s: this.io.s(), me: this.io.me(), hand: this.io.hand(), lib: this.io.lib() }; };
+  E.view = function () { const top = this.io.libTop ? (this.io.libTop(1) || [])[0] : null; return { s: this.io.s(), me: this.io.me(), hand: this.io.hand(), lib: this.io.lib(), top: top || null }; };
   E.mark = function (key, v) { const s = this.io.s(); const k = s.gameId + ':' + s.turn.n; (this.state[k] = this.state[k] || {})[key] = v; };
   E.markOf = function (key) { const s = this.io.s(); return ((this.state[s.gameId + ':' + s.turn.n]) || {})[key]; };
   E.did = function (step, r, text) {
@@ -61,6 +61,8 @@
     if (ph0 === 'deciding') { B.load(this.view()); if (B.keepHand(io.hand(), io.mulls())) io.keep(); else io.mulligan(); return true; }
     if (ph0 === 'bottom') { B.load(this.view()); const hand = io.hand().map(c => Object.assign({ zone: 'hand', counters: {}, face: 0 }, c)); io.bottom(B.worstCards(hand, io.bottomN()).map(c => c.id)); return true; }
     if (!s.turn || !s.turn.active) return false;
+    // 103.5: the game begins only when every player has kept an opening hand.
+    if (s.turn.mulls && (s.seats || []).some(p => s.players[p] && !s.players[p].lost && !s.players[p].kept)) return false;
     B.think(this.view());
     // 1) The table is asking me something.
     for (const ask of (s.ask || []).filter(a => a.pid === me)) {
@@ -137,7 +139,13 @@
     for (const st of plan.steps) {
       const m = this.markOf(st.key);
       if (m) continue;
-      if (st.kind === 'land') { if (!inMain) continue; const ex = io.s().cards[st.id]; const r = ex && ex.zone === 'exile' ? await this.act({ type: 'move', ids: [st.id], to: 'battlefield', playLand: true }) : await io.playLand(st.id); this.did(st, r); return true; }
+      if (st.kind === 'land') {
+        if (!inMain) continue;
+        const ex = io.s().cards[st.id];
+        const r = ex && (ex.zone === 'exile' || ex.zone === 'graveyard') ? await this.act({ type: 'move', ids: [st.id], to: 'battlefield', playLand: true, perm: st.perm })
+          : st.zone === 'library' && io.playTop ? await io.playTop(st.id, st.perm) : await io.playLand(st.id);
+        this.did(st, r); return true;
+      }
       if (st.kind === 'cast') {
         if (!inMain) continue;
         if (st.main2 && main1) continue;
@@ -194,7 +202,9 @@
     const h = this.io.hand().find(c => c.id === id);
     if (h) return Object.assign({ zone: 'hand', counters: {}, face: 0, owner: this.io.me(), ctrl: this.io.me() }, h);
     const c = this.io.s().cards[id];
-    return c && (c.zone === 'command' || c.zone === 'graveyard' || (c.zone === 'exile' && c.mayPlay)) ? c : null;
+    if (c) return (c.zone === 'command' || c.zone === 'graveyard' || c.zone === 'exile') ? c : null;
+    const top = this.io.libTop ? (this.io.libTop(1) || [])[0] : null;
+    return top && top.id === id ? Object.assign({ counters: {}, face: 0, owner: this.io.me(), ctrl: this.io.me() }, top, { zone: 'library' }) : null;
   };
   // Cast an option (or activate an ability response).
   E.execOption = async function (o, when) {
@@ -207,9 +217,10 @@
       return r.ok !== false;
     }
     if (o.pay && o.pay.length) { const r = await io.tapPay([...new Set(o.pay)]); if (r && r.ok === false) { this.lastErr = r.err; return false; } }
-    const opts = { tg: o.tg, mode: o.mode, x: o.x, wardPaid: o.wardPaid, fromPool: [], alt: o.alt || undefined, sacCost: o.sacCost || undefined };
+    const opts = { tg: o.tg, mode: o.mode, x: o.x, wardPaid: o.wardPaid, fromPool: [], alt: o.alt || undefined, sacCost: o.sacCost || undefined, perm: o.permVia || undefined };
     let r;
     if (o.card.zone === 'hand') r = await io.castFromHand(o.card.id, opts);
+    else if (o.card.zone === 'library') r = io.castFromLibrary ? await io.castFromLibrary(o.card.id, Object.assign({ top: true }, opts)) : { ok: false, err: 'no library casting here' };
     else r = await io.castPublic(o.card.id, opts);
     if (!r || r.ok === false) { this.lastErr = (r && r.err) || 'refused'; return false; }
     return true;
@@ -311,30 +322,32 @@
     this.sinkUses = this.sinkUses || {}; if ((this.sinkUses[key] || 0) >= 4) return null;
     const hc = plan.hold ? this.io.hand().find(c => c.id === plan.hold.id) : null;
     const reserve = hc ? B.mv(Object.assign({ zone: 'hand', counters: {}, face: 0 }, hc)) : 0;
-    if (B.manaNow() - reserve < 1) return null;
-    const VAL = { draw: 3, token: 2.5, counters: 1.5, scry: 0.6, surveil: 0.6, life: 0.3, proliferate: 2, energy: 0.5 };
+    const myEnergy = (s.players[me] || {}).energy || 0;
+    if (B.manaNow() - reserve < 1 && !myEnergy) return null;
+    const VAL = { draw: 3, token: 2.5, counters: 1.5, scry: 0.6, surveil: 0.6, life: 0.3, proliferate: 2, energy: 0.5, extraTurn: 9, extraCombat: 4 };
     let best = null;
     for (const c of B.bf(me)) {
       if (c.faceDown) continue;
       const abs = C().abilities(c);
       for (let i = 0; i < abs.length; i++) {
         const ab = abs[i];
-        if (ab.manaAb || ab.equip || ab.crew || ab.loyalty !== undefined || ab.sac || ab.sacOther || ab.life > 0 || /discard|exile|return .* to (?:its|their) owner's hand/i.test(ab.cost || '')) continue;
+        if (ab.manaAb || ab.equip || ab.crew || ab.loyalty !== undefined || (ab.sac && !ab.energy) || ab.sacOther || ab.life > 0 || /discard|return .* to (?:its|their) owner's hand/i.test(ab.cost || '') || (/exile/i.test(ab.cost || '') && !(ab.exileSelf && /extra turn/i.test(ab.text || '')))) continue;
         if (ab.tap && (c.tapped || (B.isCre(c) && R().sick(s, c) && !B.kw(c).has('haste')))) continue;
         if (/^level \d/i.test(ab.text || '')) continue;
         { const lim = (ab.text || '').toLowerCase().match(/activate (?:this ability )?only ([^.]+)/g) || []; let bad = false;
           for (const l of lim) { const cm = l.match(/only if (.+)$/); if (cm) { if (!root.Oracle || root.Oracle.conditionHolds(s, c, cm[1]) !== true) bad = true; } else if (!/as a sorcery|once each turn|during your turn/.test(l)) bad = true; }
           if (bad) continue; }
-        if (!ab.mana || C().costTotal(ab.mana, 0) < 1) continue;
+        if (ab.energy === 'X' || (ab.energy && ab.energy > myEnergy)) continue;
+        if (!ab.mana || (C().costTotal(ab.mana, 0) < 1 && !ab.energy)) continue;
         if (this.tried.has(key + ':sink:' + c.id + ':' + i)) continue;
         const r = root.Effects ? root.Effects.parse(ab.text) : null; if (!r || !r.understood || !r.ops.length) continue;
         let v = 0; for (const o of r.ops) { if (o.op === 'counters' && /-1\/-1/.test(o.kind || '')) { v -= 2; continue; } v += VAL[o.op] ? VAL[o.op] * (typeof o.n === 'number' ? o.n : 1) : (['dmg', 'destroy', 'tap', 'untap', 'grant', 'pump'].includes(o.op) ? 0 : -0.5); }
         const cost = C().costTotal(ab.mana, 0);
-        if (v < 1 || cost > B.manaNow() - reserve) continue;
+        if (v < 1 || cost > B.manaNow() - reserve || (ab.sac && v < 6)) continue;
         const pay = C().pay(ab.mana, B.sources().filter(x => !(ab.tap && x.id === c.id)), 0); if (!pay) continue;
         const reqs = C().targetsIn(ab.text); let tg = [];
         if (reqs.length) { const t = B.chooseTargets({ d: { faces: [{ n: R().cardName(c), t: 'Instant', o: ab.text }] }, counters: {} }, null, C().effectsIn(ab.text), { reqs, noWard: true }); if (!t) continue; tg = t.tg; }
-        const score = v / Math.max(1, cost);
+        const score = v / Math.max(1, cost + (ab.energy ? ab.energy / 3 : 0));
         if (!best || score > best.score) best = { c, i, ab, pay, tg, score };
       }
     }

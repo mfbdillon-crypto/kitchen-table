@@ -272,7 +272,7 @@
     const c = ev.card || null;
     let mv = 0, pw = null, tg = null;
     if (c && c.d) { mv = +c.d.cmc || 0; const p = Cd().pt(s, c) || (c.pw != null ? [c.pw, 0] : null); pw = p ? p[0] : null; tg = p ? p[1] : null; }
-    return { c: c ? c.id : null, cName: c ? cardName(c) : null, ctrl: c ? c.ctrl : null, p: ev.player || (c && c.ctrl) || null, n: ev.n || null, mv, pw, tg, step: ev.step || null, type: ev.type };
+    return { c: c ? c.id : null, cName: c ? cardName(c) : null, ctrl: c ? c.ctrl : null, p: ev.player || (c && c.ctrl) || null, def: ev.def || undefined, n: ev.n || null, mv, pw, tg, step: ev.step || null, type: ev.type };
   }
   function queue(s, src, a, i, ev, askCond) {
     s.tq = s.tq || [];
@@ -485,6 +485,8 @@
         case 'eachPlayer': return s.seats.filter(p => R.alive(s, p));
         case 'eachOther': return s.seats.filter(p => p !== by && R.alive(s, p));
         case 'evPlayer': return ctx.p ? [ctx.p] : [];
+        // The defending player (506.2): from the attack event, or whoever this creature is attacking.
+        case 'defender': { if (ctx.def) return [ctx.def]; const K = s.combat, a = K && K.att && (K.att[srcId] || K.att[ctx.c]); if (a && a.def) { const p = a.def.p || (s.cards[a.def.c] && s.cards[a.def.c].ctrl); if (p) return [p]; } const o = (s.seats || []).filter(p => p !== by && s.players[p] && !s.players[p].lost); return o.length === 1 ? o : []; }
         case 'targetCtrl': { const t = (legal[w.i] || []).find(x => x.c) || ((item.tg || [])[w.i] || []).find(x => x.c); const c = t && s.cards[t.c]; return c ? [c.zone === 'battlefield' ? c.ctrl : c.owner] : []; }
         case 'controllerOf': { if (w.of && w.of.k === 'attached') { const at = s.cards[src.attachedTo]; return at ? [at.ctrl] : []; } const c = s.cards[ctx.c]; return c ? [c.zone === 'battlefield' ? c.ctrl : c.owner] : ctx.ctrl ? [ctx.ctrl] : []; }
         case 'ownerOf': { const c = s.cards[ctx.c]; return c ? [c.owner] : []; }
@@ -506,6 +508,7 @@
       switch (n.v) {
         case 'X': return X;
         case 'X2': return 2 * X;
+        case 'lastX': return st.lastX || 0;
         case 'thatMany': return ctx.n || st.last || 0;
         case 'lastAmount': return st.last || ctx.n || 0;
         case 'count': return count(n);
@@ -538,7 +541,7 @@
         case 'each': case 'eachOppAndCreatures': case 'everything': {
           const what = w.k === 'each' ? String(w.what || 'permanent').replace(/s$/, '').replace(/^creature$/, 'creature') : 'creature';
           return Object.values(s.cards).filter(c => c.zone === 'battlefield' && !(w.other && c.id === srcId) &&
-            (w.ctrl === 'you' ? c.ctrl === by : w.ctrl === 'opp' ? c.ctrl !== by : w.ctrl === 'evPlayer' ? c.ctrl === ctx.p : w.ctrl === 'targetP' ? (legal[w.i || 0] || []).some(t => t.p === c.ctrl) : true) &&
+            (w.ctrl === 'you' ? c.ctrl === by : w.ctrl === 'opp' ? c.ctrl !== by : w.ctrl === 'evPlayer' ? c.ctrl === ctx.p : w.ctrl === 'defender' ? c.ctrl === players({ k: 'defender' })[0] : w.ctrl === 'targetP' ? (legal[w.i || 0] || []).some(t => t.p === c.ctrl) : true) &&
             (what === 'attacking creature' ? !!(s.combat && s.combat.att && s.combat.att[c.id]) : what === 'blocking creature' ? !!(s.combat && s.combat.att && Object.values(s.combat.att).some(a => (a.blk || []).includes(c.id))) : C.matchesWhat(c, what.replace(/ies$/, 'y'))) &&
             (!w.with || C.has(c, w.with, s)) && (!w.without || !C.has(c, w.without, s)) && (!w.powerMin || (C.pt(s, c) || [0])[0] >= w.powerMin));
         }
@@ -550,7 +553,7 @@
       if (w.k === 't') { const l = legal[w.i] || []; return { ps: l.filter(t => t.p).map(t => t.p), cs: l.map(tcard).filter(Boolean) }; }
       if (w.k === 'eachOppAndCreatures') return { ps: players({ k: 'eachOpp' }), cs: cards(w) };
       if (w.k === 'everything') return { ps: players({ k: 'eachPlayer' }), cs: cards(w) };
-      if (['you', 'eachOpp', 'eachPlayer', 'eachOther', 'evPlayer', 'controllerOf', 'ownerOf'].includes(w.k)) return { ps: players(w), cs: [] };
+      if (['you', 'eachOpp', 'eachPlayer', 'eachOther', 'evPlayer', 'defender', 'controllerOf', 'ownerOf'].includes(w.k)) return { ps: players(w), cs: [] };
       return { ps: [], cs: cards(w) };
     };
     const hurt = (target, n, from) => {
@@ -599,6 +602,9 @@
       const P = s.players[by]; if (!P) return false;
       const life = String(cost).match(/^(\d+|x) life$/);
       if (life) { const n = life[1] === 'x' ? X : +life[1]; if (P.life < n) return false; P.life -= n; return true; }
+      // Energy (107.14): {E} symbols are paid from the player's energy counters.
+      const en = (String(cost).match(/\{e\}/gi) || []).length;
+      if (en) { if ((P.energy || 0) < en) return false; const rest = String(cost).replace(/\{e\}/gi, ''); if (rest && !payMana(s, by, rest, notes)) return false; P.energy -= en; return true; }
       return payMana(s, by, String(cost), notes);
     };
     const condOk = cond => { const em = String(cond).match(/^(?:that|the) (?:creature|enchantment|artifact|card|permanent|spell|land) is an? ([a-z ]+)$/); if (em && ctx.c && s.cards[ctx.c]) return C.matchesWhat(Object.assign({}, s.cards[ctx.c]), em[1]); const sm = String(cond).match(/^(?:at least )?(\w+)(?: or more)? mana was spent to cast (?:that spell|it)$/); if (sm) return (ctx.mv || 0) >= (({ two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8 })[sm[1]] || +sm[1] || 0); const xm = String(cond).match(/^x is (\d+) or (more|greater|less|fewer)$/); if (xm) { const v = st.lastX != null ? st.lastX : (ctx.mv || X || 0); return /less|fewer/.test(xm[2]) ? v <= +xm[1] : v >= +xm[1]; } const r = O().conditionHolds(s, Object.assign({}, src, { ctrl: by }), cond); if (r === null) { st.manual.push(`Check: if ${cond}`); return false; } return r; };
@@ -711,6 +717,23 @@
           break;
         }
         // The Ring tempts you (701.54): the Ring gains its next ability, and you choose a Ring-bearer.
+        // Killing Wave: each player pays N life for each creature they keep; the rest are sacrificed (all at once).
+        case 'payLifeOrSac': {
+          const n = Math.max(0, val(o.n) || 0);
+          for (const p of (s.seats || []).filter(q => s.players[q] && !s.players[q].lost)) {
+            const ids = Object.values(s.cards).filter(c => c.zone === 'battlefield' && c.ctrl === p && (c.faceDown || R.isType(c, 'creature'))).map(c => c.id);
+            if (!ids.length) continue;
+            if (isAI(s, p) || !R.live(s, p)) {
+              const val0 = c => (C.pt(s, c) || [0, 0])[0] + (C.pt(s, c) || [0, 0])[1] + (c.cmdr ? 6 : 0) + (c.token ? -1 : 2);
+              let life = s.players[p].life; const keep = [];
+              for (const id of ids.slice().sort((a, b) => val0(s.cards[b]) - val0(s.cards[a]))) { if (n === 0 || (life - n >= 10 && val0(s.cards[id]) >= n / 2)) { keep.push(id); life -= n; } }
+              payLifeOrSac(s, p, n, ids, keep, srcName, notes);
+              continue;
+            }
+            s.ask = (s.ask || []).concat([{ id: 'a' + (++s.seq), kind: 'payLife', pid: p, life: n, name: srcName, ids, since: Date.now() }]);
+          }
+          break;
+        }
         case 'payUntap': {
           const p = players({ k: 'evPlayer' })[0] || s.turn.active; if (!p || !s.players[p]) break;
           const ids = Object.values(s.cards).filter(c => c.zone === 'battlefield' && c.ctrl === p && c.tapped && (c.faceDown || R.isType(c, 'creature')) && !(/without flying/.test(o.what) && C.has(c, 'flying', s))).map(c => c.id);
@@ -924,6 +947,19 @@
         }
         case 'fetchFor': for (const p of players(o.who)) { R.todo(s, p, { k: 'fetch', n: 1, dest: 'battlefield', tapped: !!o.tapped, optional: true, src: srcName }); notes.push(`${nameOf(s, p)} may search for a basic land (${srcName})`); } break;
         case 'impulse': { const n = val(o.n); R.todo(s, by, { k: 'impulse', n, until: o.until, from: s.turn.n, src: srcName }); notes.push(`${nameOf(s, by)} exiles the top ${n > 1 ? n + ' cards' : 'card'} of their library and may play ${n > 1 ? 'them' : 'it'} ${o.until === 'next' ? 'until the end of their next turn' : 'this turn'} (${srcName})`); break; }
+        // "You may tap X untapped Myr you control" (Myr Battlesphere): tap every other untapped one that isn't attacking.
+        case 'tapX': {
+          const K = s.combat;
+          const list = Object.values(s.cards).filter(c => c.zone === 'battlefield' && c.ctrl === by && c.id !== srcId && !c.tapped && (c.faceDown || R.isType(c, 'creature')) && C.matchesWhat(c, o.what) && !(K && K.att && K.att[c.id]));
+          for (const c of list) c.tapped = true;
+          st.lastX = list.length; st.did = list.length > 0;
+          notes.push(`${nameOf(s, by)} tapped ${list.length} untapped ${o.what} (${srcName})`);
+          if (list.length) runList(o.then || [], 0);
+          break;
+        }
+        // A rule that lasts a while ("until your next turn, your opponents can't cast spells from anywhere other than their hands").
+        case 'ruleFx': { s.ruleFx = (s.ruleFx || []).concat([{ by, src: srcId, name: srcName, line: String(o.line).slice(0, 300), until: o.until, turn: s.turn.n }]).slice(-40); notes.push(`${srcName}: ${o.until === 'next' ? 'until ' + nameOf(s, by) + '’s next turn' : o.until === 'game' ? 'for the rest of the game' : 'this turn'}, ${o.line}`); break; }
+        case 'noteLife': { const h = s.cards[srcId]; if (h) { h.noted = (s.players[by] || {}).life || 0; notes.push(`${srcName} noted ${nameOf(s, by)}’s life total: ${h.noted}`); } break; }
         case 'handToTop': R.todo(s, by, { k: 'handToTop', n: val(o.n), src: srcName }); break;
         case 'look': R.todo(s, by, { k: 'look', n: val(o.n), reveal: !!o.reveal, text: o.text, src: srcName }); break;
         case 'addlCost': case 'altCost': case 'choose': case 'rest': case 'newTargets': break;
@@ -1028,6 +1064,10 @@
       else notes.push(`${cardName(c)} entered as itself (no copy)`);
       return { ok: true };
     }
+    if (ask.kind === 'payLife') {
+      payLifeOrSac(s, pid, ask.life, ask.ids, (Array.isArray(a.ids) ? a.ids : []).filter(id => ask.ids.includes(id)), ask.name, notes);
+      return { ok: true };
+    }
     if (ask.kind === 'payUntap') {
       const want = (Array.isArray(a.ids) ? a.ids : []).filter(id => ask.ids.includes(id) && s.cards[id] && s.cards[id].tapped);
       const got = [];
@@ -1067,6 +1107,16 @@
     }
     return { ok: true };
   }
+  // Pay N life for each creature kept (only while the life total covers it, 119.4); sacrifice the rest.
+  function payLifeOrSac(s, pid, n, ids, keep, name, notes) {
+    const R = I(); const P = s.players[pid]; if (!P) return;
+    const kept = [];
+    for (const id of keep) { const c = s.cards[id]; if (!c || c.zone !== 'battlefield') continue; if (n > 0 && P.life < n) break; if (n > 0) P.life -= n; kept.push(id); }
+    if (kept.length && n > 0 && R.alertChecks) R.alertChecks(s, pid);
+    const gone = ids.filter(id => !kept.includes(id) && s.cards[id] && s.cards[id].zone === 'battlefield');
+    for (const id of gone) R.moveOne(s, s.cards[id], 'graveyard', 'top', { sac: true }, notes);
+    notes.push(`${nameOf(s, pid)} ${kept.length ? `paid ${n * kept.length} life to keep ${R.listNames(kept.map(id => cardName(s.cards[id])))}` : 'kept no creatures'}${gone.length ? ` and sacrificed ${gone.length}` : ''} (${name})`);
+  }
   // 2 minutes without an answer: the table decides (no, first mode, best targets, default order).
   function timeouts(s, notes) {
     const R = I(); let changed = false;
@@ -1078,6 +1128,7 @@
       s.ask = s.ask.filter(x => x !== ask); changed = true;
       if (ask.kind === 'assign') { const K = s.combat; if (K && !K.done) { K.assign = K.assign || {}; K.assign[ask.att] = 'auto'; I().combatDamage(s, notes); } continue; }
       if (ask.kind === 'payUntap') { continue; }
+      if (ask.kind === 'payLife') { s.ask.push(ask); answer(s, ask.pid, { id: ask.id, ids: [] }, notes); continue; }
       if (ask.kind === 'pay') { s.ask.push(ask); answer(s, ask.pid, { id: ask.id, yes: false }, notes); continue; }
       if (ask.kind === 'mutate') { s.ask.push(ask); answer(s, ask.pid, { id: ask.id, top: true }, notes); continue; }
       if (ask.kind === 'choose' || ask.kind === 'enterOpt' || ask.kind === 'copy') { s.ask.push(ask); answer(s, ask.pid, { id: ask.id, value: '', yes: false }, notes); continue; }
@@ -1094,6 +1145,7 @@
   // ======================= temporary effects =======================
   // Cleanup step (514.2): "until end of turn" effects end; badges and the counters they stood for go away.
   function endOfTurn(s) {
+    if (root.Rulebook) root.Rulebook.expire(s, 'eot');
     // Impulse-drawn cards stop being playable (eot: this turn; next: at the end of their owner's next turn).
     for (const c of Object.values(s.cards)) {
       const mp = c.mayPlay; if (!mp) continue;
@@ -1125,6 +1177,8 @@
     }
     s.turn.stats = { attacked: {}, died: 0, gained: {}, lost: {}, spells: {}, drew: {} };
     s.turn.extraLand = {};
+    s.turn.permUse = {};
+    if (root.Rulebook) root.Rulebook.expire(s, 'turn', pid);
     if (s.costMods) s.costMods = s.costMods.filter(m => m.by !== pid);
     if (s.nameLocks) s.nameLocks = s.nameLocks.filter(m => m.by !== pid);
   }

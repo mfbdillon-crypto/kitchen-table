@@ -102,7 +102,7 @@
       /deals? (?:\d+|x) damage to (?:any target|target creature|target attacking)/.test(t) || /target creature (?:an opponent controls )?gets -\d+\/-\d+/.test(t) || /(?:destroy|exile) target/.test(t)) r.add('removal');
     if (/return target (?:creature|nonland permanent|permanent|artifact|enchantment)[^.]*to (?:its|their) owner'?s? hand/.test(t)) { r.add('bounce'); r.add('removal'); }
     if (/(?:target|each) (?:opponent|player) sacrifices (?:a|an) (?:creature|attacking)/.test(t)) r.add('edict');
-    if (/(?:destroy|exile) all (?:other )?(?:creatures|nonland permanents|permanents|nontoken creatures|artifacts|enchantments|attacking creatures)|deals? (?:\d+|x) damage to each creature|all creatures get -|each creature gets -|return all (?:nonland permanents|creatures|attacking creatures)|each player sacrifices (?:all|the rest|.*creatures)/.test(t) && !/you control get|creatures you control\b(?! and)/.test(t.split('.')[0] || '')) r.add('wipe');
+    if (/(?:destroy|exile) all (?:other )?(?:creatures|nonland permanents|permanents|nontoken creatures|artifacts|enchantments|attacking creatures)|deals? (?:\d+|x) damage to each creature|all creatures get -|each creature gets -|return all (?:nonland permanents|creatures|attacking creatures)|each player sacrifices (?:all|the rest|.*creatures)|for each creature, its controller sacrifices it/.test(t) && !/you control get|creatures you control\b(?! and)/.test(t.split('.')[0] || '')) r.add('wipe');
     if (/^(?:.*\n)?(?:[^\n]*)\bcounter target (?:[a-z ]+ )?spell|counter target (?:activated|triggered)/.test(t)) r.add('counter');
     if ((/(?:gains?|have|has) (?:hexproof|indestructible|protection|shroud)/.test(t) || /phase out|teferi's protection|heroic intervention/.test(t)) && !/creature$/.test(tl) && !isLandCard) r.add('protection');
     t = eff0;
@@ -307,6 +307,14 @@
   // A Signet needs one mana fed in to make two: it only adds one more, and nothing on its own.
   P.manaNow = function (srcs) { const l = srcs || this.sources(); const plain = sum(l.filter(x => !x.filter), x => x.amount); return plain + (plain > 0 ? l.filter(x => x.filter).length : 0); };
   P.costOf = function (c) {
+    // Cast another way (flashback, escape, a free permission…): that cost instead (or the printed one plus an additional cost).
+    const w = c._way;
+    if (w && w.kind === 'free') return C().parseCost('');
+    if (w && w.alt && w.kind !== 'normal') {
+      const altM = C().parseCost((String(w.alt.cost || '').match(/\{[^}]+\}/g) || []).join(''));
+      if (!w.alt.additional) return altM;
+      const b = C().costOf(c); for (const k of ['g', 'W', 'U', 'B', 'R', 'G', 'C', 'x']) b[k] += altM[k] || 0; b.hy = b.hy.concat(altM.hy); b.ph = b.ph.concat(altM.ph); return b;
+    }
     const cost = C().costOf(c);
     if (c.zone === 'command' && c.cmdr) cost.g += 2 * ((this.s.tax || {})[c.id] || 0);
     if (C().costReduction) cost.g = Math.max(0, cost.g - C().costReduction(this.s, c, this.me));
@@ -420,6 +428,16 @@
   // ======================= what a card would do if cast now =======================
   // Returns a castable option with a score, or null. when: 'main' (my main phase, empty stack) | 'instant'.
   P.option = function (card, when, extra) {
+    // Outside my hand: every way the rulebook allows (flashback, Karador, Muldrotha, Courser…) — the best one.
+    if (card && card.zone !== 'hand' && !card._way && root.Rulebook && ['graveyard', 'exile', 'library', 'command'].includes(card.zone)) {
+      let best = null;
+      for (const w of root.Rulebook.ways(this.s, this.me, card, { top: card.zone === 'library' })) {
+        if (w.act !== 'cast') continue;
+        const o = this.option(Object.assign({}, card, { _way: w }), when, extra);
+        if (o && (!best || o.score > best.score)) best = o;
+      }
+      return best;
+    }
     const o = this.option0(card, when, extra);
     const m = extra && (extra.counterTarget || extra.noMutate) ? null : this.mutateOption(card, when, extra);
     return m && (!o || m.score > o.score) ? m : o;
@@ -489,7 +507,8 @@
     if (this.selfHarm(eff, x, card) >= this.life(this.me) - 3) return null;
     const mana = Cd.costTotal(cost, x) + wardMana;
     const o = { card, id: card.id, name: Rr.cardName(card), mode, eff, x, pay, tg: t.tg, reqs: t.reqs, desc: t.desc, cost, mana, roles: rl, perm, when,
-      wardPaid: t.tg.flat().some(q => q.c && s.cards[q.c] && s.cards[q.c].ctrl !== this.me && this.kw(s.cards[q.c]).has('ward')), from: card.zone, sacCost };
+      wardPaid: t.tg.flat().some(q => q.c && s.cards[q.c] && s.cards[q.c].ctrl !== this.me && this.kw(s.cards[q.c]).has('ward')), from: card.zone, sacCost,
+      alt: card._way && card._way.kind !== 'normal' ? card._way.kind : undefined, permVia: card._way ? card._way.via : undefined };
     if (sacCost && t.tg.flat().some(q => q.c === sacCost[0])) return null;
     o.score = this.scoreOption(o);
     if (sacCost) { const f = s.cards[sacCost[0]]; o.score -= f ? this.value(f) * (this.profile.arch.includes('aristocrats') ? 0.2 : 0.6) : 0; o.desc = o.desc.concat(['sacrificing ' + (f ? Rr.cardName(f) : '?')]); }
@@ -891,12 +910,12 @@
     const steps = plan.steps;
     const T = s.turn;
     const landDone = ((T.lands && T.lands[this.me]) || 0) >= 1 + (R().extraLands ? R().extraLands(s, this.me) : 0);
-    if (!landDone && /^Main|Upkeep|Draw|Untap/.test(ph)) { const land = this.chooseLand(); if (land) steps.push({ key: 'land:' + land.id, kind: 'land', id: land.id, label: `play ${Rr.cardName(land)}`, why: land.why }); }
+    if (!landDone && /^Main|Upkeep|Draw|Untap/.test(ph)) { const land = this.chooseLand(); if (land) steps.push({ key: 'land:' + land.id, kind: 'land', id: land.id, zone: land.zone, perm: land._way ? land._way.via : undefined, label: `play ${Rr.cardName(land)}${land.zone && land.zone !== 'hand' ? ' from ' + (land.zone === 'library' ? 'the top of my library' : 'my ' + land.zone) : ''}`, why: land.why }); }
     // Spells: options with my current sources (+ the land I'm about to play).
     let srcs = this.sources();
     const pending = steps.find(x => x.kind === 'land');
     if (pending) { const lc = this.view.hand.find(c => c.id === pending.id); const m = lc && Cd.manaSource(Object.assign({ zone: 'battlefield' }, lc)); if (m && !/enters (?:the battlefield )?tapped/i.test(Cd.text(lc))) srcs = srcs.concat([{ id: lc.id, amount: m.amount, colors: m.colors, units: m.units, name: lc.d.n, pending: true }]); }
-    const cands = this.handCards().concat(this.cmdZone()).concat(this.gyCastables()).concat(this.exileCards().filter(c => !R().isType(c, 'land'))).map(c => this.option(c, 'main', { sources: srcs })).filter(Boolean).filter(o => o.score > 0);
+    const cands = this.handCards().concat(this.cmdZone()).concat(this.gyCastables()).map(c => this.option(c, 'main', { sources: srcs })).filter(Boolean).filter(o => o.score > 0);
     // What I'd like to hold up: the best answer in hand for an opponent's turn.
     // Last round's held answer: did it get used? (adapts how much mana it keeps open)
     if (this.holding && this.holding.turn !== T.n) { this.holdWaste = this.holding.fired ? Math.max(0, (this.holdWaste || 0) - 1) : (this.holdWaste || 0) + 1; if (!this.holding.fired) this.note('replan', `Held ${this.holding.name} all round and didn't need it (held mana wasted ${this.holdWaste}× in a row — keeping less open)`); this.holding = null; }
@@ -960,13 +979,30 @@
   P.extraLands = function () { return /additional land/i.test(this.bf(this.me).map(c => C().text(c)).join(' ')) ? 1 : 0; };
   // Cards I may play from exile (impulse draw).
   // Cards I can cast at instant speed from: hand and exile (impulse).
-  P.spellPool = function () { return this.handCards().concat(this.exileCards().filter(c => !R().isType(c, 'land'))); };
+  P.spellPool = function () { return this.handCards().concat(this.gyCastables()); };
   P.exileCards = function () { return this.cards(c => c.zone === 'exile' && c.owner === this.me && c.mayPlay); };
+  // Spells I may cast from outside my hand right now, by the rulebook: graveyards (flashback, Karador, Muldrotha…),
+  // exile (impulse draw, warp, foretell), the top of my library (Vizier of the Menagerie, Bolas's Citadel…).
   P.gyCastables = function () {
-    // "During each of your turns, you may cast a creature spell from your graveyard" (Karador) and similar.
-    const perm = this.bf(this.me).some(c => /you may cast (?:a |one )?creature spells? from your graveyard/i.test(C().text(c)));
-    if (!perm || this.gyCastTurn === this.s.turn.n) return [];
-    return this.cards(c => c.zone === 'graveyard' && c.owner === this.me && this.isCre(c));
+    const RB = root.Rulebook; if (!RB) return [];
+    const out = this.cards(c => (c.zone === 'graveyard' || (c.zone === 'exile' && !c.faceDown)) && !R().isType(c, 'land') && RB.ways(this.s, this.me, c).some(w => w.act === 'cast'));
+    const top = this.topCard(); if (top && !R().isType(top, 'land') && RB.ways(this.s, this.me, top, { top: true }).some(w => w.act === 'cast')) out.push(top);
+    return out;
+  };
+  // The top card of my library, when a card lets me look at or play it.
+  P.topCard = function () {
+    const RB = root.Rulebook, t = this.view && this.view.top;
+    if (!RB || !t) return null;
+    const tv = RB.topView(this.s, this.me); if (!tv.look && !tv.play.length) return null;
+    return Object.assign({ counters: {}, face: 0, owner: this.me, ctrl: this.me }, t, { zone: 'library' });
+  };
+  // Lands I may play from outside my hand (Crucible of Worlds, Courser of Kruphix, Muldrotha).
+  P.zoneLands = function () {
+    const RB = root.Rulebook; if (!RB) return [];
+    const out = [];
+    for (const c of this.cards(c => (c.zone === 'graveyard' || c.zone === 'exile') && R().isType(c, 'land'))) { const w = RB.ways(this.s, this.me, c).find(x => x.act === 'play'); if (w) out.push(Object.assign({}, c, { _way: w })); }
+    const top = this.topCard(); if (top && R().isType(top, 'land')) { const w = RB.ways(this.s, this.me, top, { top: true }).find(x => x.act === 'play'); if (w) out.push(Object.assign({}, top, { _way: w })); }
+    return out;
   };
   // Sequencing: ramp first, draw next, then engines, removal/wipes, creatures, the rest.
   P.sequenceRank = function (o) {
@@ -1002,8 +1038,11 @@
   P.chooseLand = function () {
     const Cd = C();
     // Exiled lands I may play only this round go first.
-    const exL = this.exileCards().filter(c => R().isType(c, 'land'));
-    if (exL.length) return Object.assign({}, exL[0], { why: 'from exile before it expires' });
+    const exL = this.zoneLands();
+    const exp = exL.find(c => c.zone === 'exile');
+    if (exp) return Object.assign({}, exp, { why: 'from exile before it expires' });
+    const zl = exL.find(c => c.zone === 'library') || exL.find(c => c.zone === 'graveyard');
+    if (zl) return Object.assign({}, zl, { why: zl.zone === 'library' ? 'from the top of my library (keeps my hand)' : 'from my graveyard (keeps my hand)' });
     const lands = this.handCards().filter(c => R().isType(c, 'land'));
     if (!lands.length) return null;
     const have = new Set(this.sources().flatMap(s => s.colors.split('')));
@@ -1500,6 +1539,11 @@
         return { yes: true, why: 'free to enter untapped' };
       }
       case 'legend': { const list = ask.ids.map(id => s.cards[id]).filter(Boolean).sort((a, b) => this.value(b) - this.value(a) + (a.tapped - b.tapped)); return { keep: (list[0] || {}).id || ask.ids[ask.ids.length - 1], why: 'keep the better one' }; }
+      case 'payLife': {
+        let life = this.life(me); const ids = [];
+        for (const c of ask.ids.map(id => s.cards[id]).filter(Boolean).sort((a, b) => this.value(b) - this.value(a))) if (life - ask.life >= 10 && this.value(c) >= ask.life / 2) { ids.push(c.id); life -= ask.life; }
+        return { ids, why: ids.length ? 'keep my best creatures while my life stays safe' : 'too much life to keep any' };
+      }
       case 'payUntap': {
         // Untap the best blockers/attackers with spare land mana, keeping enough for the plan on my own turn.
         const cost = C().costTotal(C().parseCost(ask.cost), 0);

@@ -495,6 +495,7 @@
     if (/^this spell was bargained$|^it was bargained$/.test(c)) return src.alt === 'bargain';
     if (/^this is untapped$/.test(c)) return !src.tapped;
     if (/^this is tapped$/.test(c)) return !!src.tapped;
+    if (/^your life total is greater than or equal to the last noted life total for this(?: [a-z]+)?$/.test(c)) { const live = s.cards && s.cards[src.id]; const n = live && live.noted != null ? live.noted : src.noted; return life(me) >= (n == null ? 0 : n); }
     return null;      // unknown condition: the player is asked
   }
 

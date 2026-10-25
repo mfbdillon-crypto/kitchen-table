@@ -135,6 +135,8 @@
     // Rebound (702.88): cast from hand, it's exiled as it resolves; its owner may cast it free at their next upkeep.
     if (from === 'stack' && to === 'graveyard' && c.castFrom === 'hand' && !c.ab && !c.token && root.Cards && root.Cards.keywords && /(^|\n)rebound\b/i.test(root.Cards.rawText(c))) { to = 'exile'; c.rebound = { by: c.owner, after: s.turn ? s.turn.n : 0 }; }
     if (from === 'stack' && to !== 'battlefield' && c.alt === 'escape' && !isType(c, 'creature') && !isType(c, 'artifact') && !isType(c, 'enchantment') && !isType(c, 'planeswalker')) to = 'exile';
+    // Unearth (702.84a): "if it would leave the battlefield, exile it instead of putting it anywhere else".
+    if (from === 'battlefield' && to !== 'battlefield' && to !== 'exile' && c.unearthed) to = 'exile';
     if (root.Engine && from !== to) root.Engine.emit({ type: 'zone', from, to, card: root.Engine.snap(c), sac: !!opts.sac, fromPriv: opts.fromPriv || null });
     // A merged (mutated) permanent that leaves takes every card in it along (702.140e / 721.? — each card goes to the same zone).
     if (from === 'battlefield' && to !== 'battlefield' && c.mut) {
@@ -418,7 +420,7 @@
           if (cmdrsNow + list.filter(c => c && c.cmdr).length > 2) return { ok: false, err: 'You can have at most 2 commanders.' };
           // Playing a land (305.2): once per turn, on your own turn, in a main phase, with nothing on the stack.
           if (a.land && to === 'battlefield' && s.turn.active) {
-            const err = landCheck(s, pid);
+            const err = landCheck(s, pid) || (root.Rulebook && a.from === 'library' && list[0] ? root.Rulebook.castBlock(s, pid, Object.assign({ owner: pid, zone: 'library' }, list[0], { d: cleanD(list[0].d) }), Object.assign({}, a, { fromZone: 'library', top: true })) : null);
             if (err) return { ok: false, err, land: true };
             s.turn.lands = s.turn.lands || {};
             s.turn.lands[pid] = (s.turn.lands[pid] || 0) + 1;
@@ -457,12 +459,12 @@
           for (const id of ids) {
             const c = s.cards[id];
             if (!c) continue;
-            const steal = (c.zone === 'graveyard' || c.zone === 'exile') && (to === 'battlefield' || to === 'stack') && c.owner !== pid;
+            const steal = (c.zone === 'graveyard' || c.zone === 'exile') && ((to === 'battlefield' && a.dev) || (to === 'stack' && a.cast)) && c.owner !== pid;
             if (!canAct(s, pid, c) && !steal && !finishing(s, pid)) return { ok: false, err: `You don't control ${cardName(c)}.` };
             if (c.zone === to && to !== 'battlefield') continue;
             if (to === 'stack' && ids.length === 1) { const err = castCheck(s, pid, c, a); if (err) return { ok: false, err }; }
             // Playing a land from exile (impulse draw): it's the land drop for the turn (305.2).
-            if (a.playLand && to === 'battlefield' && ids.length === 1 && isType(c, 'land')) { const err = landCheck(s, pid); if (err) return { ok: false, err, land: true }; s.turn.lands = s.turn.lands || {}; s.turn.lands[pid] = (s.turn.lands[pid] || 0) + 1; }
+            if ((a.playLand || a.land) && to === 'battlefield' && ids.length === 1 && isType(c, 'land')) { const a2 = Object.assign({}, a); const err = landCheck(s, pid) || (root.Rulebook && !a.dev ? root.Rulebook.castBlock(s, pid, c, a2) : null); if (err) return { ok: false, err, land: true }; if (root.Rulebook) root.Rulebook.use(s, pid, a2.perm, c); s.turn.lands = s.turn.lands || {}; s.turn.lands[pid] = (s.turn.lands[pid] || 0) + 1; }
             if (to !== 'exile') c.mayPlay = null;
             froms.add(c.zone);
             const nm = cardName(c);
@@ -712,7 +714,8 @@
           // Players who are out (or just watching) don't take turns.
           order.sort((x, y) => (alive(s, x) ? 0 : 1) - (alive(s, y) ? 0 : 1));
           s.seats = order;
-          s.turn = { active: order[0], phase: 1, n: 1, first: order[0], lands: {}, starts: { [order[0]]: 1 }, goal: 'main1' };
+          s.turn = { active: order[0], phase: 1, n: 1, first: order[0], lands: {}, starts: { [order[0]]: 1 }, goal: 'main1', mulls: true };
+          for (const p of order) if (s.players[p]) s.players[p].kept = false;
           return done(`randomized the turn order: ${order.map(x => nameOf(s, x)).join(' → ')}. ${nameOf(s, order[0])} goes first.`);
         }
         case 'phase': {
@@ -748,7 +751,56 @@
           if (PHASES[T.phase] === 'Cleanup') { clearMods(s); if (root.Engine) root.Engine.endOfTurn(s); }
           s.rev++; return { ok: true };
         }
+        // Dev mode (host only): add a rule line for a player, or switch a card's rule off/on — for debugging the rulebook.
+        case 'devPerm': {
+          if (!(s.dev && pid === s.hostPid) && !a.dev) return { ok: false, err: 'Only the host, in dev mode, can edit the rulebook.' };
+          if (a.op === 'add' && s.players[a.pid] && typeof a.line === 'string') { s.devPerms = (s.devPerms || []).concat([{ pid: a.pid, line: a.line.toLowerCase().replace(/\.$/, '').trim().slice(0, 300) }]).slice(-40); return done(''); }
+          if (a.op === 'remove') { s.devPerms = (s.devPerms || []).filter((x, i) => i !== (a.i | 0)); return done(''); }
+          if (a.op === 'off' && typeof a.key === 'string') { s.devOff = [...new Set((s.devOff || []).concat([a.key.slice(0, 120)]))].slice(-80); return done(''); }
+          if (a.op === 'on' && typeof a.key === 'string') { s.devOff = (s.devOff || []).filter(k => k !== a.key); return done(''); }
+          return { ok: false, err: 'bad op' };
+        }
+        // Graveyard abilities (unearth, embalm, eternalize, encore): sorcery speed, the card's own cost (602.5d).
+        case 'gyAct': {
+          need();
+          const c = s.cards[a.id];
+          if (!c || c.zone !== 'graveyard' || c.owner !== pid || !root.Oracle) return { ok: false, err: 'That card isn’t in your graveyard.' };
+          const k = root.Oracle.model(c).costs.find(x => x.ability && x.zone === 'graveyard' && x.kind === a.kind);
+          if (!k) return { ok: false, err: `${cardName(c)} has no ${a.kind} ability.` };
+          if (mulligansPending(s)) return { ok: false, err: 'Wait until every player has kept their opening hand (103.5).' };
+          if (s.turn.active !== pid || stackCards(s).length || !/^Main/.test(PHASES[s.turn.phase])) return { ok: false, err: `${a.kind[0].toUpperCase() + a.kind.slice(1)} only as a sorcery: in your main phase with an empty stack (602.5d).` };
+          const RB = root.Rulebook, bl = RB && RB.cant(s, pid, 'activate', c);
+          if (bl) return { ok: false, err: `${bl.srcName}: ${bl.text}.` };
+          const en = (String(k.cost).match(/\{e\}/gi) || []).length || (+((String(k.cost).match(/pay (\w+) \{e\}/i) || [])[1]) || ({ eight: 8, six: 6, four: 4, three: 3, two: 2, one: 1 })[(String(k.cost).match(/pay (\w+) \{e\}/i) || [])[1]] || 0);
+          if (en && (me.energy || 0) < en) return { ok: false, err: `You need ${en} energy.` };
+          if (en) me.energy -= en;
+          const mana = (String(k.cost).match(/\{[^}]+\}/g) || []).filter(x => !/^\{e\}$/i.test(x)).join('');
+          if (root.Cards && mana) spendPool(s, pid, root.Cards.parseCost(mana), 0, a.fromPool);
+          const eotHaste = x => { x.counters = x.counters || {}; x.counters.haste = (x.counters.haste || 0) + 1; x.eot = (x.eot || []).concat([{ counter: 'haste', until: 'eot', label: 'haste' }]); };
+          const copyD = (over) => { const d = JSON.parse(JSON.stringify(c.d)); const f = d.faces[c.face || 0] || d.faces[0]; d.faces = [Object.assign(f, { mc: '' }, over || {})]; d.n = d.faces[0].n; d.cmc = 0; return d; };
+          const made = () => { const before = new Set(Object.keys(s.cards)); return () => Object.keys(s.cards).filter(id => !before.has(id)); };
+          if (a.kind === 'unearth') {
+            moveOne(s, c, 'battlefield', 'top', { by: pid }, notes); c.unearthed = true; eotHaste(c);
+            s.delayed = (s.delayed || []).concat([{ step: 'end', id: c.id, to: 'exile', by: pid, src: 'unearth', n: s.turn.n }]);
+            return done(`unearthed ${cardName(c)} — it has haste and is exiled at the beginning of the next end step (702.84)`);
+          }
+          moveOne(s, c, 'exile', 'top', { by: pid }, notes);
+          if (a.kind === 'embalm' || a.kind === 'eternalize') {
+            const f0 = (c.d.faces[c.face || 0] || c.d.faces[0]);
+            const t = String(f0.t || '').replace(/—\s*/, '— Zombie ');
+            const nw = made(); makeToken(s, pid, copyD(a.kind === 'eternalize' ? { t, p: '4', tg: '4', col: ['B'] } : { t, col: ['W'] }), 1, false, notes);
+            for (const id of nw()) if (s.cards[id] && s.cards[id].d) s.cards[id].d.col = a.kind === 'eternalize' ? ['B'] : ['W'];
+            return done(`${a.kind === 'embalm' ? 'embalmed' : 'eternalized'} ${cardName(c)}: a token copy${a.kind === 'eternalize' ? ', a 4/4 black Zombie,' : ' (a white Zombie)'} entered the battlefield`);
+          }
+          if (a.kind === 'encore') {
+            const opps = s.seats.filter(p => p !== pid && s.players[p] && !s.players[p].lost);
+            for (const opp of opps) { const nw = made(); makeToken(s, pid, copyD(), 1, false, notes); for (const id of nw()) { const tk = s.cards[id]; if (!tk) continue; eotHaste(tk); tk.mustAttack = opp; s.delayed = (s.delayed || []).concat([{ step: 'end', id, to: 'graveyard', sac: true, by: pid, src: 'encore', n: s.turn.n }]); } }
+            return done(`encored ${cardName(c)}: a hasty token copy for each opponent, each attacking that player this turn if able; they’re sacrificed at the beginning of the next end step (702.141)`);
+          }
+          return done(`used ${a.kind} on ${cardName(c)}`);
+        }
         case 'advance': {
+          if (mulligansPending(s)) return { ok: false, err: 'Wait until every player has kept their opening hand (103.5).' };
           // The turn buttons: "Go to combat" or "End turn" (the steps in between happen by themselves).
           need();
           const T = s.turn;
@@ -872,6 +924,8 @@
           const C = root.Cards;
           const ab = C.abilities(src)[a.i | 0];
           if (!ab) return { ok: false, err: 'That ability isn’t on the card.' };
+          if (mulligansPending(s)) return { ok: false, err: 'Wait until every player has kept their opening hand (103.5).' };
+          { const bl = root.Rulebook && root.Rulebook.cant(s, pid, 'activate', src); if (bl) return { ok: false, err: `${bl.srcName}: ${bl.text}.` }; }
           if ((src.faceDown || isType(src, 'creature')) && Object.values(s.cards).some(o => o.zone === 'battlefield' && o.ctrl !== pid && !o.faceDown && o.d && /activated abilities of creatures your opponents control can't be activated/i.test(C.text(o)))) return { ok: false, err: 'Creatures’ activated abilities can’t be activated right now (Linvala).' };
           if (ab.tap) {
             if (src.tapped) return { ok: false, err: `${cardName(src)} is already tapped.` };
@@ -886,6 +940,8 @@
           const onceKey = src.id + '#' + (a.i | 0);
           if (restr.some(r => /once each turn/.test(r))) { s.turn.actOnce = s.turn.actOnce || {}; if (s.turn.actOnce[onceKey] === s.turn.n) return { ok: false, err: 'This ability can be activated only once each turn.' }; }
           { const cnd = restr.map(r => (r.match(/^if (.+)$/) || [])[1]).find(Boolean); if (cnd && root.Oracle && root.Oracle.conditionHolds(s, src, cnd) === false) return { ok: false, err: `Activate this only if ${cnd}.` }; }
+          const enNeed = ab.energy === 'X' ? (num(a.x, 0, 99) || 0) : (ab.energy || 0);
+          if (enNeed && (me.energy || 0) < enNeed) return { ok: false, err: `You need ${enNeed} energy (you have ${me.energy || 0}).` };
           if (ab.equip && (s.turn.active !== pid || stackCards(s).length || !/^Main/.test(PHASES[s.turn.phase]))) return { ok: false, err: 'Equip only as a sorcery: in your main phase with an empty stack (702.6a).' };
           {
             const reqs0 = C.targetsIn(ab.text), tg0 = cleanTargets(a.tg, reqs0.length);
@@ -920,6 +976,7 @@
             sacked = cardName(v); var sackedCtx = { pw: (C.pt(s, v) || [0])[0], tg: (C.pt(s, v) || [0, 0])[1], mv: +((v.d || {}).cmc) || 0, c: v.id, cName: sacked }; moveOne(s, v, 'graveyard', 'top', { sac: true }, notes);
           }
           if (ab.life) { if (me.life < ab.life) return { ok: false, err: `You need ${ab.life} life to pay.` }; me.life -= ab.life; }
+          if (enNeed) { me.energy = (me.energy || 0) - enNeed; s.turn.stats = s.turn.stats || {}; (s.turn.stats.energy = s.turn.stats.energy || {})[pid] = ((s.turn.stats.energy || {})[pid] || 0) + enNeed; }
           // "Discard a card" in the cost (Pack Rat): the hand is private, so the owner's page discards it (602.2b).
           if (/discard (?:a|one) card/i.test(ab.cost || '')) { if (!(me.handCount > 0)) return { ok: false, err: 'You need a card in hand to discard.' }; todo(s, pid, { k: 'discard', n: 1, src: cardName(src) + ' (cost)' }); }
           if (ab.tap) src.tapped = true;
@@ -937,6 +994,7 @@
             attachedTo: null, row: null, zone: 'stack', seq: ++s.seq, ab: { src: src.id, text: String(ab.text).slice(0, 400), name: cardName(src), ctx: typeof sackedCtx !== 'undefined' && sackedCtx ? sackedCtx : undefined }, tg, reqs, x: num(a.x, 0, 99) || 0 };
           wardFor(s, pid, s.cards[id], a);
           if (ab.sac) moveOne(s, src, 'graveyard', 'top', { sac: true }, notes);
+          if (ab.exileSelf && src.zone === 'battlefield') moveOne(s, src, 'exile', 'top', null, notes);
           startPrio(s, pid, notes);
           return done(`activated ${cardName(src)}${crewNames ? ' (crewed by ' + listNames(crewNames) + ')' : ''}${sacked ? ' (sacrificed ' + sacked + ')' : ''}${ab.life ? ' (paid ' + ab.life + ' life)' : ''}: “${String(ab.text).replace(/^this /i, cardName(src) + ' ')}”${targetText(s, s.cards[id])}`);
         }
@@ -969,7 +1027,10 @@
           if (s.combat && s.combat.n === T.n) return { ok: false, err: 'You already attacked this turn.' };
           const C = root.Cards;
           const att = {}, names = [], defs = new Set();
-          for (const it of (a.list || []).slice(0, 80)) {
+          // "Attacks that player this turn if able" (encore, 508.1d): added if it was left out and can attack.
+          a = Object.assign({}, a, { list: (a.list || []).slice(0, 80) });
+          for (const c of Object.values(s.cards)) if (c.zone === 'battlefield' && c.ctrl === pid && c.mustAttack && !c.tapped && !a.list.some(it => it && it.id === c.id) && s.players[c.mustAttack] && !s.players[c.mustAttack].lost && (!sick(s, c) || (C && C.has(c, 'haste', s)))) a.list.push({ id: c.id, p: c.mustAttack });
+          for (const it of a.list) {
             const c = s.cards[it && it.id];
             if (!c || c.zone !== 'battlefield' || c.ctrl !== pid) return { ok: false, err: 'You can only attack with creatures you control.' };
             if (!(c.faceDown || isType(c, 'creature'))) return { ok: false, err: `${cardName(c)} isn’t a creature.` };
@@ -1253,8 +1314,14 @@
     return !(start != null && c.ctlT < start);
   }
 
+  function mulligansPending(s) {
+    const T = s.turn; if (!T || !T.active || !T.mulls) return false;
+    if ((s.seats || []).every(p => !s.players[p] || s.players[p].lost || s.players[p].kept)) { T.mulls = false; return false; }
+    return true;
+  }
   function landCheck(s, pid) {
     const T = s.turn;
+    if (mulligansPending(s)) return 'Wait until every player has kept their opening hand (103.5).';
     if (T.active !== pid) return 'You can play a land only on your own turn.';
     if (stackCards(s).length) return 'Wait until the stack is empty to play a land.';
     const step = PHASES[T.phase];
@@ -1289,7 +1356,12 @@
   function castCheck(s, pid, c, a) {
     const C = root.Cards;
     // Timing (307.1, 301.1): only instants and cards with flash can be cast outside your own main phase with an empty stack.
-    if (C && a && a.cast && a.alt !== 'free' && !c.faceDown && !C.instantSpeed(c) && !isType(c, 'land')) {   // cast during an effect (cascade): no timing check (608.2g)
+    const RB = root.Rulebook;
+    // 103.5: nothing is cast or played until every player has kept an opening hand.
+    if (a && a.cast && mulligansPending(s)) return 'Wait until every player has kept their opening hand (103.5).';
+    // Where it's cast from (601.3): the rulebook knows every permission and restriction (flashback, Muldrotha, Grafdigger's Cage…).
+    if (RB && a && a.cast && !c.faceDown) { const zone = c.zone && c.zone !== 'limbo' ? c.zone : (a.from || 'hand'); const a2 = Object.assign({}, a, { fromZone: zone }); const err = RB.castBlock(s, pid, Object.assign({}, c, { zone, owner: c.owner || pid, ctrl: pid }), a2); if (err) return err; if (a2.perm && !a.perm) a.perm = a2.perm; }
+    if (C && a && a.cast && a.alt !== 'free' && !c.faceDown && !C.instantSpeed(c) && !isType(c, 'land') && !(RB && RB.flash(s, pid, Object.assign({ zone: c.zone && c.zone !== 'limbo' ? c.zone : (a.from || 'hand') }, c)))) {   // cast during an effect (cascade): no timing check (608.2g)
       if (s.turn.active && s.turn.active !== pid) return `${cardName(c)} isn’t an instant and doesn’t have flash, so you can cast it only during your own turn (307.1).`;
       if (s.turn.active && !/^Main/.test(PHASES[s.turn.phase])) return `${cardName(c)} can be cast only in one of your main phases (307.1).`;
       if (stackCards(s).length) return `${cardName(c)} can be cast only while the stack is empty (307.1).`;
@@ -1328,6 +1400,7 @@
     c.reqs = C && !c.faceDown ? C.targetReqs(c, c.mode, a && a.alt) : [];
     c.tg = cleanTargets(a && a.tg, c.reqs.length);
     c.castBy = pid;
+    if (root.Rulebook && a && typeof a.perm === 'string') root.Rulebook.use(s, pid, a.perm, c);
     c.alt = a && typeof a.alt === 'string' && /^[a-z-]{3,20}$/.test(a.alt) ? a.alt : null;
     if (C && !c.faceDown && C.sacCost && C.sacCost(c) && a && Array.isArray(a.sacCost) && s.cards[a.sacCost[0]]) {
       const f = s.cards[a.sacCost[0]]; c.sacked = { name: cardName(f), pw: (C.pt(s, f) || [0])[0], mv: +((f.d || {}).cmc) || 0 };
@@ -1831,3 +1904,5 @@
     newState, apply, canAct, zoneCards, cardName, typeLine, isType, face, rowFor, ptOf, rid, listNames, nameOf,
     stackCards, stackTop, sick, alive, fixUp: (s) => { const key = () => JSON.stringify([s.prio && [s.prio.holder, s.prio.top, s.prio.passed.length], s.combat && s.combat.done, stackCards(s).length, (s.ask || []).length, (s.tq || []).length, s.turn && [s.turn.phase, s.turn.n]]); const before = key(); const notes = []; if (root.Engine && s.turn && s.turn.active) { root.Engine.begin(s); try { root.Engine.timeouts(s, notes); } catch (e) {} } fixUp(s, notes); if (root.Engine && s.turn && s.turn.active) { try { root.Engine.after(s, notes); } catch (e) { if (typeof console !== 'undefined') console.error(e); } } for (const n of notes) log(s, null, n, 'auto'); return notes.length > 0 || key() !== before; }, landCheck: (s, pid) => landCheck(JSON.parse(JSON.stringify(s)), pid), extraLands: (s, pid) => extraLands(s, pid), PI };
 })(typeof window !== 'undefined' ? window : globalThis);
+// Node (tests, simulations): the rulebook comes along with the rules.
+if (typeof module !== 'undefined' && typeof require === 'function' && !globalThis.Rulebook) { try { require('./rulebook.js'); } catch (e) { /* the page loads it with a script tag */ } }

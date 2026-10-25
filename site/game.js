@@ -277,7 +277,7 @@
     });
     savePriv();
     const land = cards.every(isLand);
-    const r = await act({ type: 'enter', zone, from, cards: send, tapped: !!opts.tapped, pos: opts.pos, row: opts.row, land: !!opts.playLand, tg: opts.tg, mode: opts.mode, x: opts.x, wardPaid: !!opts.wardPaid, fromPool: opts.fromPool, cast: !!opts.cast, alt: opts.alt, via: opts.via, sacCost: opts.sacCost, mayPlay: opts.mayPlay, msg: msgFor(zone, Object.assign({ land }, opts), from) });
+    const r = await act({ type: 'enter', zone, from, cards: send, tapped: !!opts.tapped, pos: opts.pos, row: opts.row, land: !!opts.playLand, tg: opts.tg, mode: opts.mode, x: opts.x, wardPaid: !!opts.wardPaid, fromPool: opts.fromPool, cast: !!opts.cast, alt: opts.alt, via: opts.via, perm: opts.perm, top: opts.top, sacCost: opts.sacCost, mayPlay: opts.mayPlay, msg: msgFor(zone, Object.assign({ land }, opts), from) });
     if (r.ok) lastAct = { zone, ids, t: Date.now() };
     if (!r.ok) {
       // Only put the cards back if the table really refused. If we just never heard back, look at the board:
@@ -304,6 +304,7 @@
   };
   // Cast a card from your hand onto the stack, with targets/mode/X already chosen.
   G.castFromHand = (id, opts) => toPublic(P.hand, [id], 'stack', Object.assign({ cast: true }, opts || {}), 'hand');
+  G.castFromLibrary = (id, opts) => toPublic(P.library, [id], 'stack', Object.assign({ cast: true }, opts || {}), 'library');
   G.castPublic = (id, opts) => act(Object.assign({ type: 'move', ids: [id], to: 'stack', cast: true }, opts || {}));
   G.pass = () => G.S && G.S.prio ? act({ type: 'pass', top: G.S.prio.top }) : null;
   G.activate = (id, i, tg, x, fromPool) => act({ type: 'activate', id, i, tg, x, fromPool });

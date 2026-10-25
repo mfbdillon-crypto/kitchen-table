@@ -46,7 +46,9 @@
     digFind: t => G.digFind(t),
     digFinish: (t, hits, rest, dest) => G.digFinish(t, hits, rest, dest),
     fromHand: (ids, zone, o) => G.fromHand(ids, zone, o),
-    move: (ids, to, extra) => G.move(ids, to, null, extra)
+    move: (ids, to, extra) => G.move(ids, to, null, extra),
+    castFromLibrary: async (id, o) => { await G.castFromLibrary(id, o); return { ok: !G.P.library.some(c => c.id === id), err: 'the table refused the spell' }; },
+    playTop: async (id, perm) => { await G.fromLibrary([id], 'battlefield', { playLand: true, perm }); return { ok: !G.P.library.some(c => c.id === id), err: 'the table refused the land' }; }
   };
   function setup() {
     const pc = precon();

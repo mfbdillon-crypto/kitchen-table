@@ -14,7 +14,8 @@
     if (/^each opponent$|^your opponents$|^each of your opponents$/.test(s)) return { k: 'eachOpp' };
     if (/^each player$|^all players$/.test(s)) return { k: 'eachPlayer' };
     if (/^each other player$/.test(s)) return { k: 'eachOther' };
-    if (/^that player$|^they$|^that opponent$|^the defending player$|^defending player$/.test(s)) return { k: 'evPlayer' };
+    if (/^the defending player$|^defending player$|^the player or planeswalker it's attacking$|^the player it's attacking$|^the player (?:this|that creature) is attacking$/.test(s)) return { k: 'defender' };
+    if (/^that player$|^they$|^that opponent$/.test(s)) return { k: 'evPlayer' };
     if (/^its controller$|^that creature's controller$|^that permanent's controller$|^their controller$/.test(s)) return { k: 'controllerOf', of: { k: 'ev' } };
     if (/^its owner$|^their owners?$/.test(s)) return { k: 'ownerOf', of: { k: 'ev' } };
     if (/^enchanted (?:creature|permanent)'s controller$|^enchanted player$/.test(s)) return { k: 'controllerOf', of: { k: 'attached' } };
@@ -30,6 +31,7 @@
     if ((m = s.match(/^any number of (?:other )?target (.+)$/))) return { k: 't', upTo: true, n: 99, what: m[1] };
     if ((m = s.match(/^(?:up to (\w+) )?(?:(\w+) )?(?:other |another )?target (.+)$/))) return { k: 't', upTo: !!m[1], n: amt(m[1] || m[2] || 1) || 1, what: m[3] };
     if (s === 'any target') return { k: 't', what: 'any target' };
+    if ((m = s.match(/^(?:each |all )?((?:[a-z]+ )*?(?:creatures?|permanents?|artifacts?|enchantments?|lands?|tokens?)) (?:the )?defending player controls$/))) return { k: 'each', other: false, what: m[1], ctrl: 'defender' };
     if ((m = s.match(/^each (other )?(.+?)(?: you control| your opponents control| an opponent controls| target player controls| that player controls)?$/))) return { k: 'each', other: !!m[1], what: m[2], ctrl: /you control/.test(s) ? 'you' : /opponents? control/.test(s) ? 'opp' : /that player controls/.test(s) ? 'evPlayer' : 'any' };
     if ((m = s.match(/^all (other )?(.+?)(?: you control| your opponents control)?$/))) return { k: 'each', other: !!m[1], what: m[2], ctrl: /you control/.test(s) ? 'you' : /opponents control/.test(s) ? 'opp' : 'any' };
     if ((m = s.match(/^(other )?((?:[a-z]+ )*?(?:creatures|permanents|artifacts|enchantments|lands|tokens|[a-z]+s)) you control$/))) return { k: 'each', other: !!m[1], what: m[2], ctrl: 'you' };
@@ -159,6 +161,10 @@
     if ((m = s.match(/^(you|its controller) (?:may )?draws? (a card|up to two cards|two cards) at the beginning of the next turn's upkeep$/))) return [wrap({ op: 'delayedDraw', who: m[1] === 'you' ? { k: 'you' } : { k: 'targetCtrl', i: 0 }, n: /two/.test(m[2]) ? 2 : 1 })];
     if (/^each attacking creature and each blocking creature doesn't untap during its controller's next untap step$/.test(s)) return [wrap({ op: 'skipUntap', what: { k: 'each', what: 'attacking creature', ctrl: 'any' } }), wrap({ op: 'skipUntap', what: { k: 'each', what: 'blocking creature', ctrl: 'any' } })];
     if ((m = s.match(/^(?:its|their) owners? shuffles? (it|them) into (?:their|its) library$/))) return [wrap({ op: 'move', what: { k: 'ev' }, to: 'library', pos: 'shuffle' })];
+    if ((m = s.match(/^for each creature, its controller sacrifices it unless they pay (\w+) life$/))) return [wrap({ op: 'payLifeOrSac', n: amt(m[1]) || { v: 'X' }, what: 'creature' })];
+    if (/^(?:then )?note your life total$/.test(s)) return [wrap({ op: 'noteLife' })];
+    if ((m = s.match(/^shuffle up to (\w+) target cards from graveyards into their owners' libraries$/))) return [wrap({ op: 'move', what: { k: 't', i: st.ti++, upTo: true, n: amt(m[1]) || 3, what: 'card from a graveyard' }, to: 'library', pos: 'shuffle' })];
+    if ((m = s.match(/^put (up to \w+ target cards|target card) from (?:graveyards|a graveyard) on the bottom of (?:their|its) owners?'? librar(?:y|ies)(?: in any order)?$/))) { const n = /up to (\w+)/.exec(m[1]); return [wrap({ op: 'move', what: { k: 't', i: st.ti++, upTo: !!n, n: n ? amt(n[1]) || 1 : 1, what: 'card from a graveyard' }, to: 'library', pos: 'bottom' })]; }
     if ((m = body.match(/^shuffles? up to (\w+) target cards from (?:their|your) graveyard into (?:their|your) library$/))) return [wrap({ op: 'move', what: { k: 't', i: st.ti++, upTo: true, n: amt(m[1]) || 3 }, to: 'library', pos: 'shuffle' })];
     if ((m = s.match(/^(tap|untap) another target (.+)$/))) return [wrap({ op: m[1], what: targetOf('target ' + m[2], st) })];
     if ((m = s.match(/^(target .+?|it|that creature|this) phases out$/))) { const what = targetOf(m[1], st) || (m[1] === 'it' && st.ti > 0 ? { k: 't', i: st.ti - 1 } : null); if (what) return [wrap({ op: 'phaseOut', what })]; }
@@ -285,6 +291,7 @@
     if ((m = s.match(/^(.+?) gets? ([+-]\d+)\/([+-]\d+) until end of turn for each (.+)$/)) && !/\b(?:it|this way|devoured|exiled|that)\b/.test(m[4])) return [wrap({ op: 'pump', what: targetOf(m[1], st), p: m[2], t: m[3], per: m[4], eot: true })];
     if (/^until end of turn, (.+?) gets ([+-]\d+)\/([+-]\d+)$/.test(s)) { m = s.match(/^until end of turn, (.+?) gets ([+-]\d+)\/([+-]\d+)$/); return [wrap({ op: 'pump', what: targetOf(m[1], st), p: m[2], t: m[3], eot: true })]; }
     if ((m = s.match(/^(target player|target opponent|each opponent|that player) reveals (?:their|his or her) hand$/))) return [wrap({ op: 'reveal', who: who(m[1]) })];
+    if ((m = s.match(/^tap all (.+ defending player controls)$/))) return [wrap({ op: 'tap', what: obj(m[1]) })];
     if ((m = s.match(/^tap all (.+)$/))) return [wrap({ op: 'tap', what: { k: 'each', what: m[1], ctrl: /target player controls/.test(m[1]) ? 't' : 'any' } })];
     if ((m = s.match(/^(target .+?) phases out$/))) return [wrap({ op: 'phase', what: targetOf(m[1], st) })];
     if (/^the ring tempts you$/.test(s)) return [wrap({ op: 'ring' })];
@@ -338,7 +345,8 @@
   // ---------------- a whole ability ----------------
   function parse(text, opts, st0) {
     const st = st0 || { ti: 0 };
-    const t0 = String(text || '').toLowerCase().replace(/\([^)]*\)/g, '').replace(/ {2,}/g, ' ').replace(/,? and after this phase, there is an additional combat phase/g, '. after this phase, there is an additional combat phase').replace(/[“”]/g, '"')
+    const t0 = String(text || '').toLowerCase().replace(/\([^)]*\)/g, '').replace(/ {2,}/g, ' ').replace(/(if you (?:do|pay)[^.]*?),? and after this phase, there is an additional combat phase/g, '$1, then after this phase, there is an additional combat phase').replace(/,? and after this phase, there is an additional combat phase/g, '. after this phase, there is an additional combat phase')
+      .replace(/\bpay (two|three|four|five|six|seven|eight|nine|ten|\d+) \{e\}/g, (a, n) => 'pay ' + '{e}'.repeat(({ two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 })[n] || +n)).replace(/\bif you pay, /g, 'if you do, ').replace(/[“”]/g, '"')
       .replace(/\.?\s*(?:it|they) (?:has|have|gains?) "[^"]*"(?: until end of turn)?\.?/g, '.').trim();
     // "Exile/reveal cards from the top of your library until you exile a nonland permanent card. Put that card onto the
     // battlefield or into your hand." (Illuna, Auspicious Starrix, The Regalia): one effect, done on the owner's device.
@@ -349,7 +357,10 @@
     // Impulse draw: "Exile the top card of your library. Until the end of your next turn, you may play it." (Riku, Jeska's Will…)
     const t0i = t1.replace(/exile the top (card|two cards|three cards|four cards|x cards|\w+ cards) of your library\.\s*(until the end of your next turn|until end of turn|until your next end step|this turn)?,?\s*you may play (?:it|them|that card|those cards)( this turn| until end of turn| until the end of your next turn)?\./g,
       (all, n, w1, w2) => { const w = (w1 || w2 || 'this turn').trim(); const k = /next turn|next end step/.test(w) ? 'next' : 'eot'; const nn = n === 'card' ? 1 : (n.split(' ')[0]); return `__impulse:${nn}:${k}__.`; });
-    const t0s = t0i.replace(/sacrifice any number of lands\. search your library for up to that many land cards, put them onto the battlefield tapped, then shuffle\./g, '__scapeshift__.');
+    const t0g = t0i.replace(/choose up to (\w+) target cards in graveyards\. the owners of those cards shuffle them into their libraries\./g, (a, n) => `shuffle up to ${n} target cards from graveyards into their owners' libraries.`);
+    // Myr Battlesphere: "you may tap X untapped Myr you control. If you do, this gets +X/+0 … and deals X damage to the player…"
+    const t0x = t0g.replace(/you may tap (?:x|any number of) untapped ([a-z]+?)s? you control\. if you do, this gets \+x\/\+0 until end of turn and deals x damage to (?:the player or planeswalker it's attacking|defending player|the defending player)\./g, (a, w) => `__tapx:${w}__.`);
+    const t0s = t0x.replace(/sacrifice any number of lands\. search your library for up to that many land cards, put them onto the battlefield tapped, then shuffle\./g, '__scapeshift__.');
     const t0t = t0s.replace(/until your next turn, your life total can't change and you gain protection from everything\. all permanents you control phase out\./g, '__teferi__.');
     const t1a = t0t.replace(/choose a color\. add an amount of mana of that color equal to your devotion to that color\./g, '__devotion__.');
     const t1b = t1a.replace(/(?:reveal|look at) the top card of your library\. if it's an? ([a-z ]+?) card( of the chosen type)?, (you may )?(?:reveal it and )?put it (onto the battlefield|into your hand)\.(?: otherwise, you may put (?:that card|it) on the bottom of your library\.)?/g,
@@ -375,12 +386,15 @@
       if (/^activate (?:this ability )?only\b|^this ability costs (?:\{[^}]+\})+ less to activate\b/.test(sent)) continue;   // checked when it's activated (602.5)
       // Cost changes and "can't be countered" are about casting it, not what it does (601.2f, 101.2).
       if (/^this(?: spell)? costs? (?:\{[^}]+\})+ (?:less|more) to cast\b|^this spell can't be countered\.?$|^affinity for /.test(sent)) continue;   // paid as it's cast (601.2f)
+      { const tr = root.Rulebook && root.Rulebook.tempRule(sent); if (tr) { ops.push({ op: 'ruleFx', until: tr.until, line: tr.line }); continue; } }
       const im = sent.match(/^__impulse:(\w+):(next|eot)__\.?$/);
       if (im) { ops.push({ op: 'impulse', n: amt(im[1]) || 1, until: im[2] }); continue; }
       const tt = sent.match(/^__tutortop:([a-z ]+)__\.?$/);
       if (tt) { ops.push({ op: 'search', n: 1, filter: tt[1], dest: 'top' }); continue; }
       const fn = sent.match(/^__finale:([a-z ]+)__\.?$/);
       if (fn) { ops.push({ op: 'search', n: 1, filter: fn[1], mvMax: { v: 'X' }, dest: 'battlefield' }); continue; }
+      const tx = sent.match(/^__tapx:([a-z]+)__\.?$/);
+      if (tx) { ops.push({ op: 'tapX', what: tx[1], then: [{ op: 'pump', what: { k: 'self' }, p: '+x', t: '+0', kws: '', eot: true, xv: { v: 'lastX' } }, { op: 'dmg', src: 'self', n: { v: 'lastX' }, to: { k: 'defender' } }] }); continue; }
       if (/^__rashmi__\.?$/.test(sent)) { ops.push({ op: 'rashmi' }); continue; }
       if (/^__scapeshift__\.?$/.test(sent)) { ops.push({ op: 'sacSearch', what: 'land', filter: 'land', tapped: true }); continue; }
       if (/^__teferi__\.?$/.test(sent)) { ops.push({ op: 'teferi' }); continue; }
@@ -394,12 +408,13 @@
       // Reflexive triggers (603.12): "When you do, ..." is a new ability whose targets are chosen then.
       const rf = sent.replace(/\.$/, '').match(/^when you do, (.+)$/);
       if (rf) { const inner = parse(rf[1] + '.', opts); ops.push({ op: 'reflexive', text: rf[1], ops: inner.ops }); if (!inner.understood) understood = false; continue; }
-      const ti = sent.replace(/\.$/, '').match(/^((?:draw a card|you gain \d+ life|create [^,]+?|scry \d+)) if (you control .+|you have .+|it's your turn|you're the monarch|an opponent .+)$/);
+      const ti = sent.replace(/\.$/, '').match(/^((?:draw a card|you gain \d+ life|create [^,]+?|scry \d+)) if (you control .+|you have .+|it's your turn|you're the monarch|an opponent .+|your life total is .+)$/);
       if (ti) { const inner = parse(ti[1] + '.', opts, st); ops.push({ op: 'if', cond: ti[2], ops: inner.ops }); if (!inner.understood) understood = false; continue; }
       const cm = sent.replace(/\.$/, '').replace(/^then (?=if )/, '').match(/^if (?!you do\b|they do\b|a player does\b|the player does\b|that player does\b)([^,]+), (.+?)( instead)?$/);
       if (cm) {
-        const inner = parse(cm[2] + '.', opts, st);
-        ops.push({ op: cm[3] ? 'instead' : 'if', cond: cm[1], ops: inner.ops });
+        const lead = /^instead,? /.test(cm[2]);
+        const inner = parse(cm[2].replace(/^instead,? /, '') + '.', opts, st);
+        ops.push({ op: cm[3] || lead ? 'instead' : 'if', cond: cm[1], ops: inner.ops });
         if (!inner.understood) understood = false;
         continue;
       }

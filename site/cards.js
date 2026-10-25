@@ -861,13 +861,17 @@
   function abilities(c) {
     const out = [];
     for (const line of lines(c)) {
-      const m = line.match(/^((?:\{[^}]+\}|,|\s|tap|sacrifice this[a-z ]*|sacrifice (?:an?|another) [a-z ]+?|discard a card|pay \d+ life|remove [a-z ]+ counters? from this[a-z ]*)+?):\s*(.+)$/i);
+      const m = line.match(/^((?:\{[^}]+\}|,|\s|tap|sacrifice this[a-z ]*|sacrifice (?:an?|another) [a-z ]+?|discard a card|pay \d+ life|pay (?:\{E\})+|pay (?:one|two|three|four|five|six|seven|eight|nine|ten|x|\d+) \{E\}|exile this[a-z ]*|remove [a-z ]+ counters? from this[a-z ]*)+?):\s*(.+)$/i);
       if (!m) continue;
+      // Energy (107.14): "Pay {E}{E}" / "Pay six {E}" / "Pay X {E}".
+      const em = m[1].match(/pay ((?:\{E\})+)|pay (\w+) \{E\}/i);
+      const energy = em ? (em[1] ? em[1].length / 3 : (/^x$/i.test(em[2]) ? 'X' : toNum(em[2]) || 1)) : 0;
+      if (em) m[1] = m[1].replace(/,?\s*pay (?:(?:\{E\})+|\w+ \{E\})/i, '').replace(/^\s*,\s*/, '') || '';
       const sacOther = (m[1].match(/sacrifice (?:an?|another) ([a-z ]+?)\s*(?:,|$)/i) || [])[1] || null;
       const life = +((m[1].match(/pay (\d+) life/i) || [])[1] || 0);
       // Tap-only mana abilities are used by tapping the card; ones with other costs (Kykar's "Sacrifice a Spirit: Add {R}") are in the menu.
-      if (/^add\b/i.test(m[2]) && !sacOther && !life && !/\{\d+\}/.test(m[1])) continue;
-      out.push({ cost: m[1].trim(), tap: /\{T\}/.test(m[1]), sac: /sacrifice this/i.test(m[1]), sacOther: sacOther && sacOther.trim(), life, manaAb: /^add\b/i.test(m[2]), mana: parseCost(m[1].replace(/\{T\}|\{Q\}/g, '')), text: m[2].trim() });
+      if (/^add\b/i.test(m[2]) && !sacOther && !life && !energy && !/\{\d+\}/.test(m[1])) continue;
+      out.push({ exileSelf: /exile this/i.test(m[1]) || undefined, energy: energy || undefined, cost: (m[1].trim() + (energy ? (m[1].trim() ? ', ' : '') + 'Pay ' + (energy === 'X' ? 'X {E}' : '{E}'.repeat(energy)) : '')).trim(), tap: /\{T\}/.test(m[1]), sac: /sacrifice this/i.test(m[1]), sacOther: sacOther && sacOther.trim(), life, manaAb: /^add\b/i.test(m[2]), mana: parseCost(m[1].replace(/\{T\}|\{Q\}/g, '')), text: m[2].trim() });
     }
     // Crew N (702.122): tap untapped creatures with total power N or more — the Vehicle becomes an artifact creature until end of turn.
     for (const line of lines(c)) {
