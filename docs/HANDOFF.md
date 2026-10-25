@@ -18,6 +18,28 @@
   - Then a browser play-through of the human flows with test/ui_*.mjs, plus a manual check of the lobby on a phone width.
 - **Flaky test:** `test/ui_lib.mjs` "revealed to the table while choosing" once showed 2 of 3 (a timing race; it passes on rerun).
 
+## UI tasks requested 2026-10-25 11:32 (do these with the testing pass)
+1. **Lobby → pick a deck:** at the top of that window show the picked deck, its sleeve and its playmat. Put all the other deck options at the bottom, so there's no scrolling past them to select the deck or reach those settings.
+2. **Add AI → deck:** show every available deck ready to click. Drop the "select ready-made decks" button.
+3. **House rules:** make it its own window where the host can change every aspect of the game. Build it on the rulebook DEFAULTS table so each default rule can be edited. It must include:
+   - number of commanders allowed
+   - number of cards in a deck
+   - whether players can play from the graveyard or other zones by default
+   - lands per turn
+   - starting life, commander damage, free mulligan
+   - any other default worth changing — make it comprehensive.
+4. **Join with a code:** make "join another game with an invite code" more prominent in the lobby.
+5. **Keep or mulligan:**
+   - Whenever the game asks a person to keep or mulligan, open the hand bar automatically (on phones too).
+   - Move the keep/mulligan controls out of the way of the hand: put them in the hand bar itself, on the side where the Library / Draw buttons later appear.
+6. **☰ menu and top bar:** keep only what's needed while a game is going.
+   - Setup belongs in the lobby. Debug-only things belong in dev mode.
+   - Nobody can add or remove an AI once the game has started, so remove those entries mid-game.
+   - Re-evaluate every item in the menu.
+7. **Change your name:** give it a clear, prominent place in the lobby. Remove it from the in-game menu.
+8. **Split view:** the log takes the top 30% of the board area and the board the bottom 70% (stacked vertically, not side by side).
+9. **Tabs:** order them "My board", then "Current turn", then the others.
+
 ## Known gaps / next work
 - About 110 rarer card clauses are still handled "by hand" — run `node tools/manual_cov.js` to list them.
 - The cast permission check trusts `alt: 'free'` from devices: an effect-driven cast skips the permission check. Tighten this with a pending-grant list.
