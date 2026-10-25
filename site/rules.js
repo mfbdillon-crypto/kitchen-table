@@ -868,6 +868,15 @@
             if (src.tapped) return { ok: false, err: `${cardName(src)} is already tapped.` };
             if ((src.faceDown || isType(src, 'creature')) && sick(s, src) && !(C.has(src, 'haste', s))) return { ok: false, err: `${cardName(src)} hasn’t been under your control since your turn began, so it can’t use {T} abilities yet (summoning sickness, 302.6).` };
           }
+          // Activation restrictions (602.5): "Activate only as a sorcery / once each turn / during your turn / if …".
+          const restr = String(ab.text || '').toLowerCase().match(/activate (?:this ability )?only ([^.]+)/g) || [];
+          const sorc = /^level \d+\.?$/i.test(ab.text || '') || restr.some(r => /as a sorcery/.test(r));
+          if (sorc && !ab.equip && (s.turn.active !== pid || stackCards(s).length || !/^Main/.test(PHASES[s.turn.phase]))) return { ok: false, err: 'Activate this only as a sorcery: in your main phase with an empty stack (602.5d).' };
+          if (restr.some(r => /during your turn/.test(r)) && s.turn.active !== pid) return { ok: false, err: 'Activate this only during your turn.' };
+          if (restr.some(r => /during your upkeep/.test(r)) && (s.turn.active !== pid || PHASES[s.turn.phase] !== 'Upkeep')) return { ok: false, err: 'Activate this only during your upkeep.' };
+          const onceKey = src.id + '#' + (a.i | 0);
+          if (restr.some(r => /once each turn/.test(r))) { s.turn.actOnce = s.turn.actOnce || {}; if (s.turn.actOnce[onceKey] === s.turn.n) return { ok: false, err: 'This ability can be activated only once each turn.' }; }
+          { const cnd = restr.map(r => (r.match(/^if (.+)$/) || [])[1]).find(Boolean); if (cnd && root.Oracle && root.Oracle.conditionHolds(s, src, cnd) === false) return { ok: false, err: `Activate this only if ${cnd}.` }; }
           if (ab.equip && (s.turn.active !== pid || stackCards(s).length || !/^Main/.test(PHASES[s.turn.phase]))) return { ok: false, err: 'Equip only as a sorcery: in your main phase with an empty stack (702.6a).' };
           {
             const reqs0 = C.targetsIn(ab.text), tg0 = cleanTargets(a.tg, reqs0.length);
@@ -905,6 +914,7 @@
           // "Discard a card" in the cost (Pack Rat): the hand is private, so the owner's page discards it (602.2b).
           if (/discard (?:a|one) card/i.test(ab.cost || '')) { if (!(me.handCount > 0)) return { ok: false, err: 'You need a card in hand to discard.' }; todo(s, pid, { k: 'discard', n: 1, src: cardName(src) + ' (cost)' }); }
           if (ab.tap) src.tapped = true;
+          if (restr.some(r => /once each turn/.test(r))) { s.turn.actOnce = s.turn.actOnce || {}; s.turn.actOnce[onceKey] = s.turn.n; }
           spendPool(s, pid, ab.mana, num(a.x, 0, 99) || 0, a.fromPool);
           // Mana abilities don't use the stack (605.3).
           if (ab.manaAb && root.Effects) {
@@ -1445,6 +1455,7 @@
       return;
     }
     if (c.token) { delete s.cards[c.id]; notes.push(`${nm} (a copy) resolved`); return; }
+    if (!s.cards[c.id] || s.cards[c.id].zone !== 'stack') { notes.push(`${nm} resolved`); return; }   // it put itself somewhere else (Black Sun's Zenith)
     moveOne(s, c, 'graveyard', 'top', null, notes);
     notes.push(`${nm} resolved${eff.effects.length ? '' : ''}${!eff.understood ? ' — the table can’t do all of its text by itself, so finish it by hand' : ''}`);
   }

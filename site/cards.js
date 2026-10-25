@@ -37,8 +37,20 @@
   function nameOf(c) { const f = face(c); return (f && f.n) || (c && c.d && c.d.n) || ''; }
   function rawText(c) { if (!c || c.faceDown) return ''; const f = face(c); return (f && f.o) || ''; }
   // Rules text with reminder text removed and the card's own name replaced by "this".
+  // Classes (716): on the battlefield a Class has only the abilities of the levels it has reached, plus the
+  // activated ability that gains the next level.
+  function levelText(c, o) {
+    if (!c || c.zone !== 'battlefield' || !/\bclass\b/i.test(typeLine(c))) return o;
+    const lvl = (c.counters && c.counters.level) || 1, out = [];
+    for (const line of String(o || '').split('\n')) {
+      const m = line.match(/^(?:\{[^}]+\})+: level (\d+)\s*$/i);
+      if (m) { const n = +m[1]; if (n <= lvl) continue; if (n === lvl + 1) out.push(line); break; }
+      out.push(line);
+    }
+    return out.join('\n');
+  }
   function text(c) {
-    let t = rawText(c).replace(/\([^)]*\)/g, '');
+    let t = levelText(c, rawText(c)).replace(/\([^)]*\)/g, '');
     const n = nameOf(c);
     if (n) {
       const short = n.split(',')[0];
@@ -388,8 +400,17 @@
     const t = spellText(c);
     const m = t.match(/choose (one or more|one or both|any number|one|two|three)\s*(?:—|-)?\s*\n?([\s\S]*)/i);
     if (!m) return null;
-    const modes = m[2].split(/\n|•/).map(x => x.replace(/^[•\s]+/, '').trim()).filter(x => x && !/^choose/i.test(x));
-    return modes.length >= 2 ? { pick: /one or both|one or more|any number/i.test(m[1]) ? 'many' : toNum(m[1]) || 1, modes } : null;
+    const parts = m[2].split(/\n|•/).map(x => x.replace(/^[•\s]+/, '').trim());
+    // The rest of the "Choose …" line ("You may choose the same mode more than once." / "If you control a commander as
+    // you cast this spell, you may choose both.") is a rule about choosing, not a mode.
+    const head = /^[.\s—-]/.test(m[2]) || /^\.?\s*(you may|if )/i.test(parts[0] || '') ? parts.shift() || '' : '';
+    const modes = parts.filter(x => x && !/^choose/i.test(x));
+    if (modes.length < 2) return null;
+    const out = { pick: /one or both|one or more|any number/i.test(m[1]) ? 'many' : toNum(m[1]) || 1, modes };
+    if (/choose the same mode more than once/i.test(head)) out.repeat = true;
+    const more = head.match(/if (.+?), (?:you may )?choose (both|two|any number)(?: instead)?/i);
+    if (more) { out.more = { cond: more[1].toLowerCase(), pick: /any number/i.test(more[2]) ? 'many' : 2 }; }
+    return out;
   }
 
   function targetsIn(str) {
@@ -603,6 +624,18 @@
   function sacCost(c) {
     const m = text(c).toLowerCase().match(/as an additional cost to cast this spell, sacrifice (?:a|an) ([a-z ]+?)(?: or discard a card)?\./);
     return m ? m[1].trim() : null;
+  }
+  // How many modes may be chosen right now ("If you control a commander as you cast this spell, you may choose both").
+  function modePick(s, c, md, by) {
+    if (!md) return 1;
+    const base = md.pick === 'many' ? md.modes.length : md.pick;
+    if (!md.more || !s) return base;
+    const cond = md.more.cond, mine = Object.values(s.cards || {}).filter(o => o.zone === 'battlefield' && o.ctrl === by);
+    let ok = false, mm;
+    if (/you control a commander/.test(cond)) ok = mine.some(o => o.cmdr);
+    else if ((mm = cond.match(/you control an? ([a-z]+)/))) ok = mine.some(o => matchesWhat(o, mm[1]));
+    else if ((mm = cond.match(/an opponent has (\w+) or more cards in their graveyard/))) { const n = toNum(mm[1]) || 8; ok = (s.seats || []).some(p => p !== by && Object.values(s.cards).filter(o => o.zone === 'graveyard' && o.owner === p).length >= n); }
+    return ok ? (md.more.pick === 'many' ? md.modes.length : Math.max(base, md.more.pick)) : base;
   }
   // Cost reductions (601.2f): "This spell costs {1} less to cast for each creature on the battlefield" (Blasphemous Act),
   // "costs {X} less, where X is the greatest power among creatures you control" (The Great Henge), affinity, and statics
@@ -823,6 +856,6 @@
   // Does this permanent have flash, or is it an instant? (can be cast at any time you have priority)
   function instantSpeed(c) { return /\binstant\b/i.test(typeLine(c)) || has(c, 'flash'); }
 
-  root.Cards = { sacCost, costReduction, KEYWORDS, colorsOf, face, typeLine, isType, nameOf, text, rawText, keywords, has, statics, pt, parseCost, costOf, manaValue, costTotal, manaSource, pay,
+  root.Cards = { levelText, modePick, sacCost, costReduction, KEYWORDS, colorsOf, face, typeLine, isType, nameOf, text, rawText, keywords, has, statics, pt, parseCost, costOf, manaValue, costTotal, manaSource, pay,
     setState, notCreatureNow, wardCost, targetReqs, targetsIn, legalTarget, targetChoices, reqLabel, protections, protectedFrom, blockProblem, matchesWhat, helpfulTarget, orderChoices, modesOf, effectsIn, effectsOf, abilities, triggers, instantSpeed, isPermanentCard, toNum, spellText };
 })(typeof window !== 'undefined' ? window : globalThis);

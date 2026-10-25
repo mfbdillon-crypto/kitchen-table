@@ -662,6 +662,12 @@
           notes.push(`All combat damage${o.non ? ' by non-' + o.non.replace(/^./, x => x.toUpperCase()) + ' creatures' : ''} is prevented this turn (${srcName})`);
           break;
         }
+        case 'level': {
+          const c = s.cards[srcId]; if (!c || c.zone !== 'battlefield') break;
+          c.counters.level = o.n; notes.push(`${cardName(c)} is level ${o.n} now (716.2)`);
+          emit({ type: 'classLevel', card: c, n: o.n, player: c.ctrl });
+          break;
+        }
         case 'extraTurn': { s.extraTurns = (s.extraTurns || []).concat([by]); notes.push(`${nameOf(s, by)} will take an extra turn after this one (${srcName}, 500.7)`); break; }
         case 'tap': { const cs = cards(o.what); for (const c of cs) c.tapped = true; if (cs.length) notes.push(`${srcName} tapped ${R.listNames(cs.map(cardName))}`); break; }
         case 'addMana': {
@@ -674,7 +680,7 @@
         case 'counters': {
           const n = val(typeof o.n === 'number' && o.n < 0 ? -o.n : o.n) * (typeof o.n === 'number' && o.n < 0 ? -1 : 1);
           const { ps, cs } = both(o.on);
-          for (const c of cs) addCounter(c, o.kind, n);
+          for (const c of cs) addCounter(c, o.kind === '+1/+1|loyalty' ? (R.isType(c, 'planeswalker') ? 'loyalty' : '+1/+1') : o.kind, n);
           for (const p of ps) { const P = s.players[p]; if (P && /poison/.test(o.kind)) P.poison = Math.max(0, P.poison + n); }
           if (cs.length || ps.length) notes.push(`${srcName} ${n > 0 ? 'put' : 'removed'} ${Math.abs(n)} ${o.kind === 'any' ? '' : o.kind + ' '}counter${Math.abs(n) > 1 ? 's' : ''} ${n > 0 ? 'on' : 'from'} ${R.listNames(cs.map(cardName).concat(ps.map(p => nameOf(s, p))))}`);
           break;
@@ -682,10 +688,12 @@
         case 'doubleCounters': for (const c of cards(o.on)) { const k = String(o.kind).toLowerCase(); if (c.counters[k]) addCounter(c, k, c.counters[k]); } break;
         case 'pump': {
           const cs = cards(o.what);
-          const mult = o.per ? val({ v: 'count', what: o.per, ctrl: /you control/.test(o.per) ? 'you' : 'any' }) : 1;
+          const perPoison = o.per && /^poison counters? its controller has$/.test(o.per);
+          const mult = o.per && !perPoison ? val({ v: 'count', what: o.per, ctrl: /you control/.test(o.per) ? 'you' : 'any' }) : 1;
           const XX = o.xv ? val(o.xv) : X;
-          const num = v => /x/.test(v) ? Math.sign(parseInt(v.replace(/x/, '1'), 10)) * XX : parseInt(v, 10) * mult;
-          const p = num(o.p), t = num(o.t);
+          let num = v => /x/.test(v) ? Math.sign(parseInt(v.replace(/x/, '1'), 10)) * XX : parseInt(v, 10) * mult;
+          let p = num(o.p), t = num(o.t);
+          if (perPoison) { const base = [parseInt(o.p, 10), parseInt(o.t, 10)]; for (const c of cs) { const k = ((s.players[c.ctrl] || {}).poison) || 0; if (!k) continue; c.mod = [(c.mod ? c.mod[0] : 0) + base[0] * k, (c.mod ? c.mod[1] : 0) + base[1] * k]; badge(c, { label: `${base[0] * k}/${base[1] * k}`, until: 'eot' }); } notes.push(`${srcName}: creatures got -1/-1 for each poison counter their controller has`); break; }
           for (const c of cs) { c.mod = [(c.mod ? c.mod[0] : 0) + p, (c.mod ? c.mod[1] : 0) + t]; badge(c, { label: `${p >= 0 ? '+' : ''}${p}/${t >= 0 ? '+' : ''}${t}`, until: 'eot' }); if (o.kws) grantTo(c, o.kws); }
           if (cs.length) notes.push(`${R.listNames(cs.map(cardName))} got ${p >= 0 ? '+' : ''}${p}/${t >= 0 ? '+' : ''}${t}${o.kws ? ' and ' + o.kws : ''} until end of turn (${srcName})`);
           break;
@@ -705,7 +713,7 @@
           for (const c of cs) {
             const nm = cardName(c);
             if (o.delayed) { s.delayed = (s.delayed || []).concat([{ step: 'end', id: c.id, to: o.to, by: o.control === 'you' ? by : c.owner, tapped: o.tapped, src: srcName, n: s.turn.n }]); notes.push(`${nm} will return at the beginning of the next end step (${srcName})`); continue; }
-            R.moveOne(s, c, o.to, 'top', o.to === 'battlefield' ? { by: o.control === 'owner' ? c.owner : by, tapped: o.tapped, backFace: !!o.transformed } : null, notes);
+            R.moveOne(s, c, o.to, o.pos || 'top', o.to === 'battlefield' ? { by: o.control === 'owner' ? c.owner : by, tapped: o.tapped, backFace: !!o.transformed } : null, notes);
             notes.push(`${srcName} ${o.to === 'exile' ? 'exiled' : o.to === 'hand' ? 'returned' : 'put'} ${nm}${o.to === 'hand' ? ' to its owner’s hand' : o.to === 'battlefield' ? ' onto the battlefield' : ''}`);
           }
           break;

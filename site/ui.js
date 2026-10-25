@@ -675,17 +675,21 @@
   }
   function chooseModes(card, md) {
     return new Promise(resolve => {
-      const n = md.pick === 'many' ? md.modes.length : md.pick;
+      // "If you control a commander…, you may choose both" (Akroma's Will) and "you may choose the same mode more than once" (Confluences).
+      const n = CD.modePick ? CD.modePick(S(), card, md, KEY) : md.pick === 'many' ? md.modes.length : md.pick;
+      const upTo = md.pick === 'many' || n > (md.pick === 'many' ? 0 : md.pick);
       const sel = [];
       let done = false;
-      const finish = v => { if (done) return; done = true; closeModal(true); resolve(v); };
-      openModal(`${R.cardName(card)} — choose ${md.pick === 'many' ? 'one or more' : n === 1 ? 'one' : n}`, b => {
-        b.append(h('div', { class: 'modes' }, md.modes.map((m, i) => h('button', { class: 'mode' + (sel.includes(i) ? ' on' : ''), onclick: () => {
-          if (sel.includes(i)) sel.splice(sel.indexOf(i), 1); else if (sel.length < n) sel.push(i);
+      const finish = v => { if (done) return; done = true; closeModal(true); resolve(v ? v.slice().sort((a, b) => a - b) : v); };
+      openModal(`${R.cardName(card)} — choose ${md.pick === 'many' ? 'one or more' : upTo ? (md.pick === 1 ? 'one' : md.pick) + ' (or up to ' + n + ')' : n === 1 ? 'one' : n}${md.repeat ? ' — the same one more than once if you like' : ''}`, b => {
+        b.append(h('div', { class: 'modes' }, md.modes.map((m, i) => { const k = sel.filter(x => x === i).length; return h('button', { class: 'mode' + (k ? ' on' : ''), onclick: () => {
+          if (md.repeat) { if (sel.length < n) sel.push(i); else if (k) sel.splice(sel.indexOf(i), 1); }
+          else if (sel.includes(i)) sel.splice(sel.indexOf(i), 1); else if (sel.length < n) sel.push(i);
           if (n === 1 && sel.length === 1) return finish(sel.slice());
           refreshModal();
-        } }, m))));
-        if (n > 1) b.append(h('div', { class: 'row' }, h('button', { class: 'primary', disabled: !sel.length || (md.pick !== 'many' && sel.length !== n), onclick: () => finish(sel.slice()) }, `Choose (${sel.length})`), h('button', { onclick: () => finish(null) }, 'Cancel')));
+        } }, (k > 1 ? `×${k} ` : '') + m); })));
+        const minN = md.pick === 'many' ? 1 : md.pick;
+        if (n > 1) b.append(h('div', { class: 'row' }, h('button', { class: 'primary', disabled: sel.length < minN || sel.length > n, onclick: () => finish(sel.slice()) }, `Choose (${sel.length})`), md.repeat ? h('button', { onclick: () => { sel.length = 0; refreshModal(); } }, 'Clear') : null, h('button', { onclick: () => finish(null) }, 'Cancel')));
       }, { live: true, onClose: () => finish(null) });
     });
   }

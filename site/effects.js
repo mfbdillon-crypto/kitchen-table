@@ -135,6 +135,10 @@
     if (/^takes? the initiative$/.test(body)) return [wrap({ op: 'initiative', who: subj })];
     if ((m = s.match(/^investigate(?: (\w+) times)?$/))) return [wrap({ op: 'token', who: { k: 'you' }, spec: { n: m[1] ? amt(m[1]) : 1, named: 'clue', desc: 'Clue artifact', types: 'Clue artifact' } })];
     if (/^proliferate$/.test(s)) return [wrap({ op: 'proliferate' })];
+    if (/^proliferate twice$/.test(s)) return [wrap({ op: 'proliferate' }), wrap({ op: 'proliferate' })];
+    if ((m = s.match(/^shuffle (this|it|that card|that creature|that permanent) into its owner's library$/))) { const what = obj(m[1]); if (what) return [wrap({ op: 'move', what, to: 'library', pos: 'shuffle' })]; }
+    if ((m = s.match(/^put a \+1\/\+1 counter or a loyalty counter on (it|that permanent|target .+)$/))) { const on = m[1] === 'it' && st.ti > 0 ? { k: 't', i: st.ti - 1 } : targetOf(m[1], st); if (on) return [wrap({ op: 'counters', n: 1, kind: '+1/+1|loyalty', on })]; }
+    if ((m = s.match(/^you (untap all .+)$/))) { const r = clause(m[1], st); if (r) return r; }
     if ((m = s.match(/^amass (\w+) (\d+|x)$/))) return [wrap({ op: 'amass', type: m[1].replace(/s$/, ''), n: amt(m[2]) })];
     if ((m = s.match(/^(?:it|this|target creature you control) explores$/))) return [wrap({ op: 'explore', what: /target/.test(s) ? { k: 't', i: st.ti++ } : obj(m[0].split(' ')[0]) })];
     if (/^(?:this|it) connives$/.test(s)) return [wrap({ op: 'draw', who: { k: 'you' }, n: 1 }), wrap({ op: 'discard', who: { k: 'you' }, n: 1 })];
@@ -149,6 +153,7 @@
     // Mana Drain: "At the beginning of your next main phase, add an amount of {C} equal to that spell's mana value."
     if (/^at the beginning of your next main phase, add an amount of \{c\} equal to that spell's mana value$/.test(s)) return [wrap({ op: 'delayedMana' })];
     if ((m = s.match(/^put (\w+) cards? from your hand on top of your library(?: in any order)?$/))) return [wrap({ op: 'handToTop', n: amt(m[1]) || 1 })];
+    if ((m = s.match(/^level (\d+)$/))) return [wrap({ op: 'level', n: +m[1] })];
     if (/^(?:you )?take an extra turn after this one$/.test(s)) return [wrap({ op: 'extraTurn' })];
     if ((m = s.match(/^tap or untap (target .+|another target .+)$/))) return [wrap({ op: 'tapUntap', what: targetOf(m[1], st) })];
     // "Each player this attacked this turn loses the game" (Angel of Destiny), "each player with exactly 13 life loses the game".
@@ -297,6 +302,7 @@
     for (let sent of sentences) {
       const dg = sent.match(/^__dig:([a-z -]+):(mut|1):(either|battlefield|hand):([01]):(bottom|exile)__\.?$/);
       if (/^as an additional cost to cast this spell, (?:pay x life|sacrifice (?:a|an) [a-z ]+?(?: or discard a card)?)\.?$/.test(sent)) continue;   // paid as it's cast (601.2f)
+      if (/^activate (?:this ability )?only\b/.test(sent)) continue;   // checked when it's activated (602.5)
       // Cost changes and "can't be countered" are about casting it, not what it does (601.2f, 101.2).
       if (/^this(?: spell)? costs? (?:\{[^}]+\})+ (?:less|more) to cast\b|^this spell can't be countered\.?$|^affinity for /.test(sent)) continue;   // paid as it's cast (601.2f)
       if (/^__devotion__\.?$/.test(sent)) { ops.push({ op: 'addDevotion' }); continue; }
@@ -309,7 +315,7 @@
       // Reflexive triggers (603.12): "When you do, ..." is a new ability whose targets are chosen then.
       const rf = sent.replace(/\.$/, '').match(/^when you do, (.+)$/);
       if (rf) { const inner = parse(rf[1] + '.', opts); ops.push({ op: 'reflexive', text: rf[1], ops: inner.ops }); if (!inner.understood) understood = false; continue; }
-      const cm = sent.replace(/\.$/, '').match(/^if (?!you do\b|they do\b|a player does\b)([^,]+), (.+?)( instead)?$/);
+      const cm = sent.replace(/\.$/, '').replace(/^then (?=if )/, '').match(/^if (?!you do\b|they do\b|a player does\b)([^,]+), (.+?)( instead)?$/);
       if (cm) {
         const inner = parse(cm[2] + '.', opts, st);
         ops.push({ op: cm[3] ? 'instead' : 'if', cond: cm[1], ops: inner.ops });

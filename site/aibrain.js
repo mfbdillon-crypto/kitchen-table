@@ -523,8 +523,9 @@
     if (!md) return null;
     const scored = md.modes.map((m, i) => ({ i, eff: Cd.effectsIn(m), text: m })).filter(x => x.eff.understood && x.eff.effects.length);
     if (!scored.length) return undefined;
-    const pick = md.pick === 'many' ? 1 : md.pick || 1;
-    const val = x => { const t = low(x.text); let v = 0; if (/destroy|exile|damage|counter target/.test(t)) v += 3; if (/draw/.test(t)) v += 2; if (/create/.test(t)) v += 2; if (/\+1\/\+1|gets \+/.test(t)) v += 1; if (/gain \d+ life/.test(t)) v += 0.5; if (/return/.test(t)) v += 1; return v; };
+    const most = C().modePick ? C().modePick(this.s, card, md, this.me) : md.pick;
+    const pick = md.pick === 'many' ? 1 : Math.max(md.pick || 1, most > (md.pick || 1) ? most : 0);
+    const val = x => { const t = low(x.text); let v = 0; if (/destroy|exile|damage|counter target/.test(t)) v += 3; if (/draw/.test(t)) v += 2; if (/create/.test(t)) v += 2; if (/\+1\/\+1|gets \+/.test(t)) v += 1; if (/gain \d+ life/.test(t)) v += 0.5; if (/return/.test(t)) v += 1; if (/each opponent/.test(t)) v += 1; if (/to each creature|each creature gets|destroy all creatures/.test(t)) { const mine = this.creatures(this.me).length, theirs = Math.max(0, ...this.opps().map(p => this.creatures(p).length)); v += theirs > mine + 1 ? 1 : -4; } return v; };
     scored.sort((a, b) => val(b) - val(a));
     const ok = [];
     for (const x of scored) {
@@ -532,7 +533,10 @@
       const t = this.chooseTargets(card, [x.i], x.eff);
       if (t) ok.push(x.i);
     }
-    return ok.length === pick ? ok.sort((a, b) => a - b) : undefined;
+    // Confluences: the best mode again for the slots left.
+    if (md.repeat) while (ok.length && ok.length < pick) ok.push(ok[0]);
+    if (ok.length >= (md.pick === 'many' ? 1 : md.pick || 1) && ok.length <= pick) return ok.sort((a, b) => a - b);
+    return undefined;
   };
   P.selfHarm = function (eff, x, card) {
     let n = card && /pay x life/i.test(C().text(card)) ? (x || 0) : 0;
@@ -1309,24 +1313,31 @@
     const keepN = incoming >= life - 4 ? Math.ceil(mineC.length / 2) : incoming >= life * 0.6 ? 1 : 0;
     const homeGuard = new Set(mineC.filter(c => !this.kw(c).has('vigilance')).sort((a, b) => this.pt(b)[1] - this.pt(a)[1]).slice(0, keepN).map(c => c.id));
     const list = [], why = [];
-    const stall = s.turn.n > 10 * s.seats.filter(p => Rr.alive(s, p)).length;
+    const stall = s.turn.n > 6 * s.seats.filter(p => Rr.alive(s, p)).length;
     for (const c of mineC) {
       if (homeGuard.has(c.id)) { why.push(`${Rr.cardName(c)} stays home to block`); continue; }
       if (this.pt(c)[0] <= 0) continue;
       if (C().manaSource(c) && this.pt(c)[0] <= 1 && !this.profile.arch.includes('tokens')) continue;
       // The opponent to hit: whoever threatens my plan most, if the attack is safe there.
       let best = null;
+      const pw = this.pt(c)[0];
+      const toxN = ((/toxic (\d+)/i.exec(C().text(c)) || [])[1] * 1 || 0) + (this.kw(c).has('infect') ? pw : 0);
       for (const p of order) {
         const bl = this.blockersFor(c, p);
         const risk = this.trickRisk(p);
-        const bad = bl.some(b => { const r = this.fight(c, b); return r.aDies && !r.bDies; });
-        const trade = bl.some(b => { const r = this.fight(c, b); return r.aDies && r.bDies && this.value(b) < this.value(c); });
-        const trickBad = risk > 0.35 && bl.some(b => { const r = this.fight(c, b, 0, 2); return r.aDies; });
+        const outs = bl.map(b => ({ b, r: this.fight(c, b) }));
+        const bad = outs.some(o => o.r.aDies && !o.r.bDies);
+        const trade = outs.some(o => o.r.aDies && o.r.bDies && this.value(o.b) < this.value(c));
+        const trickBad = risk > 0.35 && bl.some(b => this.fight(c, b, 0, 2).aDies);
+        // Blockers that would only die to it don't really stop it (nobody chumps unless it's lethal).
+        const realBl = outs.filter(o => o.r.aDies || !o.r.bDies).length;
+        const lifeP = Math.max(1, this.life(p));
         // Damage counts for more against whoever threatens my plan most (relative to the top threat), never by grudge.
         const topScore = Math.max(0.1, ...this.threats.map(x => x.score));
         const weight = 0.5 + this.threatOf(p) / topScore;
-        const dies = bl.some(b => this.fight(c, b).aDies);
-        const ev = (bl.length ? 0.4 : 1) * this.pt(c)[0] * weight - (bad ? this.value(c) : 0) - (trade ? this.value(c) * 0.6 : dies && !stall ? this.value(c) * 0.35 : 0) - (trickBad ? this.value(c) * risk : 0) - (this.isProtect(c) && bl.length ? 3 : 0);
+        const dies = outs.some(o => o.r.aDies);
+        const hitV = (this.kw(c).has('infect') ? 0 : pw) + toxN * (lifeP / 10);
+        const ev = (realBl ? 0.4 : bl.length ? 0.85 : 1) * hitV * weight - (bad ? this.value(c) : 0) - (trade ? this.value(c) * 0.6 : dies && !stall ? this.value(c) * 0.35 : 0) - (trickBad ? this.value(c) * risk : 0) - (this.isProtect(c) && bl.length ? 3 : 0);
         if (!best || ev > best.ev) best = { p, ev, bad, trickBad };
       }
       if (best && (best.ev > 0.3 || (stall && !best.bad))) { list.push({ id: c.id, p: best.p, why: best.trickBad ? 'risky' : 'safe' }); }

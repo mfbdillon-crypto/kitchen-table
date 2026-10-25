@@ -98,6 +98,7 @@
       return { type: 'enter', self: false, other: !!m[1] && /another|other/.test(m[1]), what: (m[2] || '') + m[3].replace(/s$/, ''), who: m[4] ? who(m[4]) : /under your control/.test(e) ? 'you' : 'any', many: /one or more/.test(m[1] || '') };
     }
     if (/^this mutates$/.test(e)) return { type: 'mutate', self: true };
+    if ((m = e.match(/^this (?:class )?becomes level (\d+)$/))) return { type: 'classLevel', self: true, n: +m[1] };
     if (/^this dies$|^this is put into (?:a|your) graveyard from the battlefield$/.test(e)) return { type: 'die', self: true };
     if ((m = e.match(/^(another |one or more (?:other )?)?((?:nontoken |token |legendary |non-?[a-z]+ |[a-z]+ )*?)?(creatures?|permanents?|artifacts?|[a-z]+s?)( you control| an opponent controls| your opponents control)? (?:dies|die|is put into a graveyard from the battlefield)$/))) {
       return { type: 'die', self: false, other: !!m[1] && /another|other/.test(m[1]), what: (m[2] || '') + m[3].replace(/s$/, ''), who: m[4] ? who(m[4]) : 'any', many: /one or more/.test(m[1] || '') };
@@ -250,7 +251,7 @@
   // ---------------- the model ----------------
   function model(c) {
     if (!c || !c.d) return null;
-    const key = (c.d.n || '') + '|' + (c.face || 0) + '|' + (c.faceDown ? 1 : 0) + (c.d.mk ? '|' + c.d.mk : '');
+    const key = (c.d.n || '') + '|' + (c.face || 0) + '|' + (c.faceDown ? 1 : 0) + (c.d.mk ? '|' + c.d.mk : '') + (c.zone === 'battlefield' && c.counters && c.counters.level ? '|L' + c.counters.level : '') + (c.zone === 'battlefield' ? '|bf' : '');
     if (cache.has(key)) return cache.get(key);
     const f = faceOf(c) || {};
     const name = f.n || c.d.n || '';
@@ -261,7 +262,7 @@
       loyalty: f.loy || f.l || null, keywords: [], costs: [], abilities: [], unknown: []
     };
     const isSpell = m.types.includes('instant') || m.types.includes('sorcery');
-    const lines = stripReminder(f.o || '').split('\n').map(x => x.trim()).filter(Boolean);
+    const lines = stripReminder(C() && C().levelText ? C().levelText(c, f.o || '') : (f.o || '')).split('\n').map(x => x.trim()).filter(Boolean);
     let modal = null;
     for (let raw of lines) {
       if (modal && /^[•●]/.test(raw)) { modal.modes.push(selfRef(raw.replace(/^[•●]\s*/, ''), name)); continue; }
@@ -386,6 +387,7 @@
       case 'token': return ev.type === 'token' && ev.player === ctrl;
       case 'tapped': case 'untapped': return ev.type === E.type && ev.card && ev.card.id === src.id;
       case 'targeted': return ev.type === 'targeted' && ev.card && ev.card.id === src.id && (!E.oppOnly || ev.player !== ctrl);
+      case 'classLevel': return ev.type === 'classLevel' && ev.card && ev.card.id === src.id && ev.n === E.n;
       case 'mutate': return ev.type === 'mutate' && ev.card && ev.card.id === src.id;
       case 'chapter': return ev.type === 'chapter' && ev.card && ev.card.id === src.id && a.chapter.includes(ev.n);
       case 'counter': return ev.type === 'counter' && (E.kind === 'any' || ev.kind === E.kind) && (E.self ? ev.card && ev.card.id === src.id : ev.card && ev.card.ctrl === ctrl && (!E.what || whatOk(E.what, ev.card)));
