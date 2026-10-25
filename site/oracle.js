@@ -184,11 +184,11 @@
     return { event: ev, eventText: evText.trim(), condition: cond, optional, effect: rest.trim(), oncePerTurn: /this ability triggers only once each turn/i.test(line) };
   }
   // ---------------- activated abilities ----------------
-  const COST_PART = /^(?:\{[^}]+\}|tap|untap|sacrifice [^,:]+|discard [^,:]+|pay \d+ life|pay [^,:]+|exile [^,:]+|remove [^,:]+|return [^,:]+ to its owner's hand|put [^,:]+ counters? on [^,:]+|mill [^,:]+|tap an untapped [^,:]+|tap [^,:]+ untapped [^,:]+|collect evidence \d+|forage|exert this|reveal [^,:]+|[+−-]\d+|0)$/i;
+  const COST_PART = /^(?:\{[^}]+\}|tap|untap|sacrifice [^,:]+|discard [^,:]+|pay \d+ life|pay [^,:]+|exile [^,:]+|remove [^,:]+|return [^,:]+ to its owner's hand|put [^,:]+ counters? on [^,:]+|mill [^,:]+|tap an untapped [^,:]+|tap [^,:]+ untapped [^,:]+|collect evidence \d+|forage|exert this|reveal [^,:]+|[+−-]\d+|[+−-]x|0)$/i;
   function parseActivated(line) {
     const m = line.match(/^((?:[^:"]|"[^"]*")+?):\s+(.+)$/);
     if (!m) return null;
-    const costText = m[1].trim();
+    const costText = m[1].trim().replace(/^\[([+−\-]?(?:\d+|x))\]$/i, '$1');
     const parts = costText.split(/,\s*/);
     if (!parts.every(p => COST_PART.test(p.trim()) || /^\{[^}]+\}(\{[^}]+\})*$/.test(p.trim()))) return null;
     const loy = costText.match(/^([+−-]?\d+)$/);

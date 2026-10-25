@@ -881,8 +881,8 @@
     }
     // Planeswalker loyalty abilities: "+1: …", "−3: …"
     if (isType(c, 'planeswalker')) for (const line of lines(c)) {
-      const m = line.match(/^([+−\-]?\d+|0):\s*(.+)$/);
-      if (m) out.push({ cost: m[1], loyalty: +m[1].replace('−', '-'), text: m[2].trim(), mana: parseCost('') });
+      const m = line.match(/^\[?([+−\-]?\d+|0|[+−\-]x)\]?:\s*(.+)$/i);
+      if (m) out.push({ cost: m[1], loyalty: /x/i.test(m[1]) ? 0 : +m[1].replace('−', '-'), loyaltyX: /x/i.test(m[1]) || undefined, text: m[2].trim(), mana: parseCost('') });
     }
     return out;
   }
