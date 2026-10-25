@@ -129,7 +129,7 @@
     for (const st of plan.steps) {
       const m = this.markOf(st.key);
       if (m) continue;
-      if (st.kind === 'land') { if (!inMain) continue; const r = await io.playLand(st.id); this.did(st, r); return true; }
+      if (st.kind === 'land') { if (!inMain) continue; const ex = io.s().cards[st.id]; const r = ex && ex.zone === 'exile' ? await this.act({ type: 'move', ids: [st.id], to: 'battlefield', playLand: true }) : await io.playLand(st.id); this.did(st, r); return true; }
       if (st.kind === 'cast') {
         if (!inMain) continue;
         if (st.main2 && main1) continue;
@@ -184,7 +184,7 @@
     const h = this.io.hand().find(c => c.id === id);
     if (h) return Object.assign({ zone: 'hand', counters: {}, face: 0, owner: this.io.me(), ctrl: this.io.me() }, h);
     const c = this.io.s().cards[id];
-    return c && (c.zone === 'command' || c.zone === 'graveyard') ? c : null;
+    return c && (c.zone === 'command' || c.zone === 'graveyard' || (c.zone === 'exile' && c.mayPlay)) ? c : null;
   };
   // Cast an option (or activate an ability response).
   E.execOption = async function (o, when) {
@@ -353,6 +353,17 @@
         B.note('did', `${t.k} ${top.length}: kept ${decisions.filter(d => d.dest === 'top').length} on top`);
         return;
       }
+      if (t.k === 'freeCast') {
+        const want = String(t.filter || 'card');
+        const pool = (t.from === 'graveyard' ? B.cards(c => c.zone === 'graveyard' && c.owner === me) : hand()).filter(c => !R().isType(c, 'land') && (t.mvMax == null || (+c.d.cmc || 0) <= t.mvMax) && (want === 'card' || C().matchesWhat(Object.assign({ zone: 'stack' }, c), want)));
+        const opts = pool.map(c => B.option(c, C().instantSpeed(c) ? 'instant' : 'main', { sources: [] }) || B.option(c, 'main', { sources: [] })).filter(Boolean).sort((a, b) => b.score - a.score);
+        const o = opts[0];
+        if (!o) { B.note('did', `${t.src}: nothing worth casting for free`); return; }
+        const r = o.card.zone === 'hand' ? await io.castFromHand(o.id, { tg: o.tg, mode: o.mode, alt: 'free', fromPool: [] }) : await io.castPublic(o.id, { tg: o.tg, mode: o.mode, alt: 'free', fromPool: [] });
+        B.note('did', `${t.src}: cast ${o.name} for free${r && r.ok === false ? ' (refused: ' + r.err + ')' : ''}`);
+        return;
+      }
+      if (t.k === 'impulse') { const ids = await io.impulse(t); B.note('did', `exiled ${ids.length} from the top to play (${t.src})`); return; }
       if (t.k === 'handToTop') {
         const ids = B.worstCards(hand(), t.n || 1).map(c => c.id);
         await io.handToTop(ids);
@@ -370,13 +381,15 @@
           B.note('did', `looked at ${top.length} and put them back: ${order.map(c => c.d.n).join(', ')}`);
           return;
         }
-        const pickN = /put (?:two|2) of them into your hand/.test(text) ? 2 : /into your hand/.test(text) ? 1 : 0;
+        const anyN = /any number of [a-z ]*cards? from among them/.test(text);
+        const pickN = anyN ? 99 : /put (?:two|2) of them into your hand/.test(text) ? 2 : /into your hand|onto the battlefield/.test(text) ? 1 : 0;
         const want = c => { const cc = Object.assign({ zone: 'library', counters: {}, face: 0 }, c); return (B.isKey(cc) ? 10 : 0) + (roles(cc).has('ramp') ? 3 : 0) + (roles(cc).has('removal') ? 2 : 0) + ((+c.d.cmc || 0) <= B.manaNow() + 1 ? 2 : 0); };
-        const filt = (text.match(/(?:reveal|put) (?:a|an|up to \w+) ([a-z ]+?) cards? from among/) || [])[1];
+        const filt = (text.match(/(?:reveal|put) (?:a|an|up to \w+|any number of) ([a-z ]+?) cards? from among/) || [])[1];
         const okC = c => !filt || C().matchesWhat(Object.assign({ zone: 'library', counters: {}, face: 0 }, c), filt);
         const best = top.filter(okC).sort((a, b) => want(b) - want(a)).slice(0, pickN);
         const rest = /graveyard/.test(text) && !/bottom/.test(text) ? 'graveyard' : 'bottom';
-        const decisions = top.map(c => ({ id: c.id, dest: best.includes(c) ? 'hand' : rest }));
+        const toBf = /from among them onto the battlefield/.test(text);
+        const decisions = top.map(c => ({ id: c.id, dest: best.includes(c) ? (toBf ? 'battlefield' : 'hand') : rest }));
         await io.applyLook('look', top.length, decisions);
         B.note('did', `looked at ${top.length} (${t.src}): took ${best.map(c => c.d.n).join(', ') || 'nothing'}`);
         return;
@@ -384,7 +397,7 @@
       if (t.k === 'fetch' || t.k === 'search') {
         const lib = io.lib();
         const want = String(t.filter || (t.k === 'fetch' ? 'basic land' : 'card')).replace(/ cards?$/, '').replace(/ with .*$/, '').trim();
-        const fits = c => { const cc = Object.assign({ zone: 'library', counters: {}, face: 0, owner: me }, c); return want === 'card' || C().matchesWhat(cc, want) || (t.k === 'fetch' && /\bbasic\b/i.test(R().typeLine(cc)) && /\bland\b/i.test(R().typeLine(cc))); };
+        const fits = c => { const cc = Object.assign({ zone: 'library', counters: {}, face: 0, owner: me }, c); return (t.mvMax == null || (+c.d.cmc || 0) <= t.mvMax) && (want === 'card' || C().matchesWhat(cc, want) || (t.k === 'fetch' && /\bbasic\b/i.test(R().typeLine(cc)) && /\bland\b/i.test(R().typeLine(cc)))); };
         const pool = lib.filter(fits);
         // The plan decides: a missing combo piece, a key card, or the land color I need.
         const need = new Set(); for (const c of hand()) { const cost = C().costOf(c); for (const col of 'WUBRG') if (cost[col]) need.add(col); }
@@ -392,12 +405,14 @@
         const missing = B.comboMissing();
         const score = c => { const cc = Object.assign({ zone: 'library', counters: {}, face: 0 }, c); let v = 0; if (missing && missing.cards.includes(c.d.n)) v += 20; if (B.isKey(cc)) v += 8; if (B.isFinisher(cc) && B.finishReady()) v += 6; const m = C().manaSource(Object.assign({ zone: 'battlefield' }, cc)); if (m) for (const col of m.colors) if (need.has(col) && !have.has(col)) v += 3; v += (+c.d.cmc || 0) * 0.2; return v; };
         const ids = pool.sort((a, b) => score(b) - score(a)).slice(0, t.n || 1).map(c => c.id);
+        // "Into your hand or graveyard": big creatures go to the graveyard for a reanimation deck.
+        if (t.dest === 'handOrGy') { const c0 = lib.find(c => c.id === ids[0]); const gy = c0 && B.profile.arch.some(a => /reanimat|graveyard/.test(a)) && (+c0.d.cmc || 0) >= 5 && /creature/i.test(((c0.d.faces || [])[0] || {}).t || ''); t = Object.assign({}, t, { dest: gy ? 'graveyard' : 'hand' }); }
         await io.searchTake(ids, t);
         B.note('did', `searched (${t.src}): took ${ids.map(id => (lib.find(c => c.id === id) || { d: { n: '?' } }).d.n).join(', ') || 'nothing'}`);
         return;
       }
       if (t.k === 'cascade') {
-        const hit = await io.cascadeReveal(t.mv || 0);
+        const hit = await io.cascadeReveal(t.mv || 0, !!t.top);
         if (!hit) return;
         const card = Object.assign({ zone: 'hand', counters: {}, face: 0, owner: me, ctrl: me }, hit);
         const o = B.option(card, 'instant', { sources: [] }) || B.option(card, 'main', { sources: [] });

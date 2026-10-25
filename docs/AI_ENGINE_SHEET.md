@@ -11,6 +11,7 @@
 | `choose` | “As this enters, choose a color / creature type / player” | `{ value: "white" \| "Dragon" \| playerId }` | brain.answerAsk → choose |
 | `enterOpt` | “Pay 2 life or it enters tapped” / “reveal a card or it enters tapped” | `{ yes: true\|false }` | brain.answerAsk → enterOpt |
 | `legend` | Legend rule: keep one of my same-name legends (704.5j) | `{ keep: cardId }` | brain.answerAsk → legend |
+| `payUntap` | Mudslide: pay {2} each to untap any of my tapped creatures | `{ ids: [cardId, …] } (the table taps my lands for it)` | brain.answerAsk → payUntap |
 | `pay` | “That player may pay {2}. If they don’t, …” (Smothering Tithe): pay to stop the rest from happening | `{ yes: true\|false } (true: the table taps my lands for it)` | brain.answerAsk → pay |
 | `mutate` | My mutating spell merged with its host: keep the mutating card on top, or put it under (702.140c) | `{ top: true\|false }` | brain.answerAsk → mutate |
 | `copy` | Clone: which creature it enters as a copy of | `{ pick: cardId \| null }` | brain.answerAsk → copy |
@@ -33,6 +34,8 @@
 | `fetch` | Search for basic lands | executor.onTodo → colors my hand needs |
 | `search` | Search the library for a card | executor.onTodo → missing combo piece, key card, needed color |
 | `cascade` | Cascade / discover N: reveal and maybe cast free (discover: or put it into my hand) | executor.onTodo → cast it unless it has no good target |
+| `freeCast` | You may cast a spell (of a kind, up to a mana value) from your hand or graveyard without paying its mana cost | executor.onTodo → best castable fit, cast with alt free |
+| `impulse` | Exile the top N cards; I may play them this turn / until the end of my next turn (Riku, Jeska’s Will) | executor.onTodo → io.impulse; the plan then casts or plays them from exile |
 | `handToTop` | Put N cards from my hand on top of my library (Brainstorm) | executor.onTodo → brain.worstCards |
 | `dig` | Reveal until N matching cards (Illuna, Auspicious Starrix, The Regalia) → battlefield / hand / either | executor.onTodo → battlefield when I may choose |
 | `fromHand` | Put a card from hand onto the battlefield | executor.onTodo → best for the plan |

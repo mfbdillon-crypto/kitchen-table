@@ -35,7 +35,7 @@
     return dev < (toNum(m[3]) || 5);
   }
   function nameOf(c) { const f = face(c); return (f && f.n) || (c && c.d && c.d.n) || ''; }
-  function rawText(c) { if (!c || c.faceDown) return ''; const f = face(c); return (f && f.o) || ''; }
+  function rawText(c) { if (!c || c.faceDown) return ''; const f = face(c); const o = (f && f.o) || ''; return c.gained && c.zone === 'battlefield' ? o + '\n' + c.gained.join('\n') : o; }
   // Rules text with reminder text removed and the card's own name replaced by "this".
   // Classes (716): on the battlefield a Class has only the abilities of the levels it has reached, plus the
   // activated ability that gains the next level.
@@ -592,6 +592,7 @@
     const nm = x => nameOf(x);
     if (bk.has("can't block")) return `${nm(b)} can’t block.`;
     if (ak.has('unblockable')) return `${nm(a)} can’t be blocked.`;
+    { const P = s && s.players && s.players[a.ctrl]; if (P && P.ring && P.ringBearer === a.id && (pt(s, b) || [0])[0] > (pt(s, a) || [0])[0]) return `${nm(a)} is the Ring-bearer — creatures with greater power can’t block it.`; }
     if (ak.has('flying') && !bk.has('flying') && !bk.has('reach')) return `${nm(a)} has flying — only creatures with flying or reach can block it (702.9b).`;
     if (protectedFrom(a, b, s)) return `${nm(a)} has protection from ${nm(b)}’s qualities, so ${nm(b)} can’t block it (702.16f).`;
     const t = text(a).toLowerCase(), bp = (pt(s, b) || [0, 0])[0], ap = (pt(s, a) || [0, 0])[0];
@@ -621,10 +622,13 @@
     }));
   }
   // "As an additional cost to cast this spell, sacrifice a creature" (Village Rites, Bone Splinters, Harrow…) → 'creature'.
+  function discardCost(c) { return /as an additional cost to cast this spell, discard (?:a|one) card/i.test(text(c)); }
   function sacCost(c) {
     const m = text(c).toLowerCase().match(/as an additional cost to cast this spell, sacrifice (?:a|an) ([a-z ]+?)(?: or discard a card)?\./);
     return m ? m[1].trim() : null;
   }
+  // "If you control a commander, you may cast this spell without paying its mana cost" (Fierce Guardianship, Deflecting Swat…).
+  function freeWithCommander(s, c, by) { return /if you control a commander, you may cast this(?: spell)? without paying its mana cost/i.test(text(c)) && !!s && Object.values(s.cards || {}).some(o => o.cmdr && o.ctrl === by && o.zone === 'battlefield'); }
   // How many modes may be chosen right now ("If you control a commander as you cast this spell, you may choose both").
   function modePick(s, c, md, by) {
     if (!md) return 1;
@@ -856,6 +860,6 @@
   // Does this permanent have flash, or is it an instant? (can be cast at any time you have priority)
   function instantSpeed(c) { return /\binstant\b/i.test(typeLine(c)) || has(c, 'flash'); }
 
-  root.Cards = { levelText, modePick, sacCost, costReduction, KEYWORDS, colorsOf, face, typeLine, isType, nameOf, text, rawText, keywords, has, statics, pt, parseCost, costOf, manaValue, costTotal, manaSource, pay,
+  root.Cards = { discardCost, freeWithCommander, levelText, modePick, sacCost, costReduction, KEYWORDS, colorsOf, face, typeLine, isType, nameOf, text, rawText, keywords, has, statics, pt, parseCost, costOf, manaValue, costTotal, manaSource, pay,
     setState, notCreatureNow, wardCost, targetReqs, targetsIn, legalTarget, targetChoices, reqLabel, protections, protectedFrom, blockProblem, matchesWhat, helpfulTarget, orderChoices, modesOf, effectsIn, effectsOf, abilities, triggers, instantSpeed, isPermanentCard, toNum, spellText };
 })(typeof window !== 'undefined' ? window : globalThis);

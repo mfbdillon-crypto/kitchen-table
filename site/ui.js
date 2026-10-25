@@ -310,6 +310,7 @@
     if (G.picking && c.zone !== 'hand' && c.zone !== 'library') { const st = pickState({ c: c.id }); if (st) el.classList.add(st); }
     if (G.combatPick && c.zone === 'battlefield') { const st = combatState(c); if (st) el.classList.add(st); }
     if (c.ab) el.append(h('div', { class: 'abtext' }, h('b', null, 'Ability'), ' ', c.ab.text));
+    { const RP = S().players[c.ctrl]; if (c.zone === 'battlefield' && RP && RP.ring && RP.ringBearer === c.id) el.append(h('div', { class: 'tag chosen', title: 'The Ring-bearer: legendary, can’t be blocked by creatures with greater power' + (RP.ring >= 2 ? '; loots when it attacks' : '') + (RP.ring >= 3 ? '; its blockers are sacrificed at end of combat' : '') + (RP.ring >= 4 ? '; combat damage to a player drains each opponent for 3' : '') }, '💍 ' + RP.ring)); }
     if (c.mutNames && c.zone === 'battlefield') el.append(h('div', { class: 'tag chosen', title: 'Mutated: ' + c.mutNames.join(' over ') + ' (top to bottom)' }, 'Mutated ×' + c.mutNames.length));
     if (c.chosen && c.zone === 'battlefield') el.append(h('div', { class: 'tag chosen', title: 'Chosen as it entered' }, 'Chosen: ' + (S().players[c.chosen] ? nameOf(c.chosen) : c.chosen)));
     if (c.noUntap && c.zone === 'battlefield') el.append(h('div', { class: 'tag nou' }, 'Doesn’t untap'));
@@ -520,6 +521,10 @@
         const perm = graveyardPermission(c);
         if (perm) items.push({ label: `Cast it from your graveyard (${perm})`, fn: () => castFlow(c, 'public', { kind: 'normal', cost: R.face(c).mc }) });
         if (perm && G.isLand(c)) items.push({ label: `Play it from your graveyard (${perm})`, fn: () => G.act({ type: 'move', ids: [c.id], to: 'battlefield', land: true }) });
+        if (c.zone === 'exile' && c.mayPlay && c.owner === KEY) {
+          if (R.isType(c, 'land')) items.push({ label: 'Play it (your land for the turn)', fn: () => G.act({ type: 'move', ids: [c.id], to: 'battlefield', playLand: true }).then(r => { if (r && !r.ok && r.err) G.toast(r.err, 'err'); }) });
+          else items.push({ label: `Cast it from exile — ${R.face(c).mc || 'free'}`, fn: () => castFlow(c, 'public') });
+        }
         if (c.zone === 'exile' && c.warpedOut) items.push({ label: `Cast it from exile (warp) — ${R.face(c).mc}`, fn: () => castFlow(c, 'public', { kind: 'normal', cost: R.face(c).mc }) });
         if (opts.length || perm) items.push({ sep: true });
       }
@@ -707,13 +712,14 @@
   }
   // Cast a card: choose its mode, X and targets if it needs them, then put it on the stack.
   // v6: every way to cast this card from where it is (normal cost, flashback, kicker, evoke, dash, warp, overload…).
-  const ALT_LABEL = { normal: 'Cast it', flashback: 'Flashback', escape: 'Escape', 'jump-start': 'Jump-start', retrace: 'Retrace', disturb: 'Disturb (back face)', harmonize: 'Harmonize',
+  const ALT_LABEL = { cmdrfree: 'Cast it free (you control a commander)', normal: 'Cast it', flashback: 'Flashback', escape: 'Escape', 'jump-start': 'Jump-start', retrace: 'Retrace', disturb: 'Disturb (back face)', harmonize: 'Harmonize',
     kicker: 'Cast with kicker', multikicker: 'Cast with multikicker', buyback: 'Cast with buyback', bargain: 'Cast with bargain', evoke: 'Evoke', dash: 'Dash', blitz: 'Blitz', overload: 'Overload',
     surge: 'Surge', spectacle: 'Spectacle', prowl: 'Prowl', emerge: 'Emerge', madness: 'Madness', foretell: 'Foretell', plot: 'Plot', warp: 'Warp', bestow: 'Bestow', mutate: 'Mutate', prototype: 'Prototype', cleave: 'Cleave', sneak: 'Sneak' };
   function castOptions(card, zone) {
     const m = window.Oracle && card.d ? Oracle.model(card) : null;
     const out = [];
     if (!m) return [{ kind: 'normal', cost: R.face(card) && R.face(card).mc || '' }];
+    if (CD.freeWithCommander && CD.freeWithCommander(S(), card, KEY) && (zone === 'hand')) out.push({ kind: 'cmdrfree', cost: '' });
     for (const k of m.costs) {
       if (k.ability || k.faceDown) continue;
       if (k.kind === 'normal') { if (zone === 'hand' || zone === 'command' || zone === 'public') out.push(k); continue; }
@@ -1055,6 +1061,11 @@
     const e = myAsks().find(x => x.kind === 'enterOpt');
     if (e) return h('div', { class: 'prio mine', role: 'alert' }, h('span', { class: 'pring' }), h('div', { class: 'ptext' }, h('b', null, `${e.name}: `), e.text),
       h('button', { class: 'primary', onclick: () => answer(e, { yes: true }) }, e.life ? `Pay ${e.life} life` : 'I reveal one'), h('button', { onclick: () => answer(e, { yes: false }) }, 'Let it enter tapped'));
+    const pu = myAsks().find(x => x.kind === 'payUntap');
+    if (pu) { G._pu = G._pu || {}; const sel = G._pu[pu.id] = G._pu[pu.id] || [];
+      return h('div', { class: 'prio mine', role: 'alert' }, h('span', { class: 'pring' }), h('div', { class: 'ptext' }, h('b', null, `${pu.name}: `), `pay ${pu.cost} for each creature to untap it.`,
+        h('div', { class: 'row wrap' }, pu.ids.filter(id => S().cards[id]).map(id => h('button', { class: 'chip' + (sel.includes(id) ? ' on' : ''), onclick: () => { const i = sel.indexOf(id); if (i >= 0) sel.splice(i, 1); else sel.push(id); render(); } }, R.cardName(S().cards[id]))))),
+        h('button', { class: 'primary', onclick: () => answer(pu, { ids: sel.slice() }) }, sel.length ? `Pay for ${sel.length}` : 'Untap none')); }
     const py = myAsks().find(x => x.kind === 'pay');
     if (py) return h('div', { class: 'prio mine', role: 'alert' }, h('span', { class: 'pring' }), h('div', { class: 'ptext' }, h('b', null, `${py.name}: `), `pay ${py.cost}? If you don’t, ${String(py.text || '').replace(/^you /, nameOf(py.by) + ' ').replace(/^./, m => m)}.`),
       h('button', { class: 'primary', onclick: () => answer(py, { yes: true }) }, `Pay ${py.cost}`), h('button', { onclick: () => answer(py, { yes: false }) }, 'Don’t pay'));
@@ -1819,8 +1830,8 @@
     if (t.k === 'search') {
       const sel = []; let done = false;
       const want = String(t.filter || 'card').replace(/ cards?$/, '').replace(/ with .*$/, '').trim();
-      const fits = c => want === 'card' || CD.matchesWhat(Object.assign({ zone: 'library', owner: KEY, counters: {}, face: 0 }, c), want);
-      const finish = async ids => { if (done) return; done = true; closeModal(true); await G.fetchLands(ids, t); ack(); setTimeout(pumpAsks, 50); };
+      const fits = c => (t.mvMax == null || (+((c.d || {}).cmc) || 0) <= t.mvMax) && (want === 'card' || CD.matchesWhat(Object.assign({ zone: 'library', owner: KEY, counters: {}, face: 0 }, c), want));
+      const finish = async ids => { if (done) return; done = true; closeModal(true); let tt = t; if (t.dest === 'handOrGy' && ids.length) tt = Object.assign({}, t, { dest: await new Promise(r => choose(t.src, 'Put it into your hand or your graveyard?', [{ label: 'Into my hand', primary: true, fn: () => r('hand') }, { label: 'Into my graveyard', fn: () => r('graveyard') }])) }); await G.fetchLands(ids, tt); ack(); setTimeout(pumpAsks, 50); };
       openModal(`${t.src}: search your library for ${t.n > 1 ? (t.upTo ? 'up to ' : '') + t.n + ' × ' : 'a '}${t.filter || 'card'}`, b => {
         const pool = G.P.library.filter(fits);
         b.append(h('p', { class: 'muted' }, `${t.dest === 'battlefield' ? 'It goes onto the battlefield' + (t.tapped ? ' tapped' : '') : 'It goes into your hand'}. ${String(t.filter || '').includes('with') ? 'Check the “' + t.filter + '” part yourself.' : ''}`));
@@ -1830,7 +1841,7 @@
       return;
     }
     if (t.k === 'cascade') {
-      const hit = G.cascadeReveal(t.mv || 0);
+      const hit = G.cascadeReveal(t.mv || 0, !!t.top);
       if (!hit) { ack(); return pumpAsks(); }
       const disc = !!t.discover;
       choose(`${t.src}: ${disc ? 'discover' : 'cascade'}`, `You hit ${hit.d.n}. Cast it without paying its mana cost${disc ? ', or put it into your hand' : ''}?`, [
@@ -1853,6 +1864,18 @@
       return;
     }
     // "Look at the top N cards…": the look window, with the card's instructions on top.
+    if (t.k === 'freeCast') {
+      const want = String(t.filter || 'card');
+      const fits = c => !R.isType(c, 'land') && (t.mvMax == null || (+((c.d || {}).cmc) || 0) <= t.mvMax) && (want === 'card' || CD.matchesWhat(Object.assign({}, c, { zone: 'stack' }), want));
+      const pool = t.from === 'graveyard' ? Object.values(S().cards).filter(c => c.zone === 'graveyard' && c.owner === KEY && fits(c)) : G.P.hand.map(c => handCard(c)).filter(fits);
+      if (!pool.length) { G.toast(`${t.src}: nothing you could cast for free.`, 'info'); ack(); return pumpAsks(); }
+      openModal(`${t.src}: cast a ${want === 'card' ? 'spell' : want} free${t.mvMax != null ? ' (mana value ' + t.mvMax + ' or less)' : ''}`, b => {
+        b.append(h('div', { class: 'strip pick' }, pool.map(c => cardEl(c, { noMenu: true, onClick: async () => { closeModal(true); await castFlow(t.from === 'graveyard' ? c : G.P.hand.find(x => x.id === c.id), t.from === 'graveyard' ? 'public' : 'hand', { kind: 'free', cost: '' }); ack(); setTimeout(pumpAsks, 50); } }))));
+        b.append(h('div', { class: 'row' }, h('button', { onclick: () => { closeModal(true); ack(); setTimeout(pumpAsks, 50); } }, 'Don’t cast anything')));
+      }, { live: true, sticky: true, noEsc: true });
+      return;
+    }
+    if (t.k === 'impulse') { G.impulse(t).then(() => { ack(); setTimeout(pumpAsks, 50); }); return; }
     if (t.k === 'handToTop') {
       const n = Math.min(t.n || 1, G.P.hand.length), sel = [];
       if (!n) { ack(); return pumpAsks(); }

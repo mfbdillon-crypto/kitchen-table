@@ -111,7 +111,7 @@
   // A card that leaves the battlefield becomes a new object (400.7): counters, tapped status,
   // modifiers and attachments go away, and it returns to its owner's control.
   function leaveBattlefield(s, c, notes) {
-    c.loySeen = false; c.defSeen = false; c.noUntap = false; c.skipUntap = false; c.via = null; c.zeroT = false; c.zeroOk = false;
+    c.loySeen = false; c.defSeen = false; c.noUntap = false; c.skipUntap = false; c.via = null; c.gained = null; c.zeroT = false; c.zeroOk = false;
     c.counters = {}; c.tapped = false; c.mod = null; c.attachedTo = null; c.ctrl = c.owner; c.row = null;
     c.dmg = 0; c.dtd = false; c.grant = null; c.ctlT = null; c.alt = null; c.eot = null; c.chosen = null; c.animated = null; c.animPT = null; c.regen = 0; if (c.origD) { c.d = c.origD; c.origD = null; c.copyOf = null; }
     if (s.combat && s.combat.att) { delete s.combat.att[c.id]; for (const a of Object.values(s.combat.att)) a.blk = (a.blk || []).filter(x => x !== c.id); }
@@ -429,7 +429,8 @@
             if (s.cards[c.id]) return { ok: false, err: 'That card is already in play.' };
             s.cards[c.id] = c;
             c.zone = 'limbo';
-            if (typeof a.via === 'string' && /^[a-z]{2,12}$/.test(a.via) && to === 'battlefield') c.via = a.via;   // "put onto the battlefield with this ability" (Kodama)
+            if (typeof a.via === 'string' && /^[a-z]{2,12}$/.test(a.via) && to === 'battlefield') c.via = a.via;
+            if (to === 'exile' && a.mayPlay && /^(eot|next)$/.test(a.mayPlay.until)) c.mayPlay = { by: pid, until: a.mayPlay.until, from: num(a.mayPlay.from, 0, 99999) || s.turn.n };   // "put onto the battlefield with this ability" (Kodama)
             moveOne(s, c, to, a.pos, { by: pid, tapped: a.tapped, faceDown: c.faceDown, row: a.row, backFace: c.face === 1 }, notes);
             names.push(cardName(c));
             if (to === 'stack') onCast(s, pid, c, a);
@@ -456,6 +457,9 @@
             if (!canAct(s, pid, c) && !steal && !finishing(s, pid)) return { ok: false, err: `You don't control ${cardName(c)}.` };
             if (c.zone === to && to !== 'battlefield') continue;
             if (to === 'stack' && ids.length === 1) { const err = castCheck(s, pid, c, a); if (err) return { ok: false, err }; }
+            // Playing a land from exile (impulse draw): it's the land drop for the turn (305.2).
+            if (a.playLand && to === 'battlefield' && ids.length === 1 && isType(c, 'land')) { const err = landCheck(s, pid); if (err) return { ok: false, err, land: true }; s.turn.lands = s.turn.lands || {}; s.turn.lands[pid] = (s.turn.lands[pid] || 0) + 1; }
+            if (to !== 'exile') c.mayPlay = null;
             froms.add(c.zone);
             const nm = cardName(c);
             const ownerName = c.owner !== pid ? nameOf(s, c.owner) + '’s ' : '';
@@ -908,7 +912,7 @@
           if (ab.sacOther) {
             const v = s.cards[a.sac];
             if (!v || v.zone !== 'battlefield' || v.ctrl !== pid || (/another/i.test(ab.cost) && v.id === src.id) || !C.matchesWhat(v, ab.sacOther)) return { ok: false, err: `Choose ${/^[aeiou]/.test(ab.sacOther) ? 'an' : 'a'} ${ab.sacOther} you control to sacrifice.` };
-            sacked = cardName(v); moveOne(s, v, 'graveyard', 'top', { sac: true }, notes);
+            sacked = cardName(v); var sackedCtx = { pw: (C.pt(s, v) || [0])[0], tg: (C.pt(s, v) || [0, 0])[1], mv: +((v.d || {}).cmc) || 0, c: v.id, cName: sacked }; moveOne(s, v, 'graveyard', 'top', { sac: true }, notes);
           }
           if (ab.life) { if (me.life < ab.life) return { ok: false, err: `You need ${ab.life} life to pay.` }; me.life -= ab.life; }
           // "Discard a card" in the cost (Pack Rat): the hand is private, so the owner's page discards it (602.2b).
@@ -925,7 +929,7 @@
           }
           const id = 'ab' + (++s.seq) + '-' + src.id.slice(0, 12);
           s.cards[id] = { id, owner: pid, ctrl: pid, d: src.d, face: src.face || 0, faceDown: false, token: true, cmdr: false, tapped: false, counters: {}, mod: null,
-            attachedTo: null, row: null, zone: 'stack', seq: ++s.seq, ab: { src: src.id, text: String(ab.text).slice(0, 400), name: cardName(src) }, tg, reqs, x: num(a.x, 0, 99) || 0 };
+            attachedTo: null, row: null, zone: 'stack', seq: ++s.seq, ab: { src: src.id, text: String(ab.text).slice(0, 400), name: cardName(src), ctx: typeof sackedCtx !== 'undefined' && sackedCtx ? sackedCtx : undefined }, tg, reqs, x: num(a.x, 0, 99) || 0 };
           wardFor(s, pid, s.cards[id], a);
           if (ab.sac) moveOne(s, src, 'graveyard', 'top', { sac: true }, notes);
           startPrio(s, pid, notes);
@@ -1311,6 +1315,8 @@
       const f = s.cards[a.sacCost[0]]; c.sacked = { name: cardName(f), pw: (C.pt(s, f) || [0])[0], mv: +((f.d || {}).cmc) || 0 };
       moveOne(s, f, 'graveyard', 'top', { sac: true }, []); log(s, pid, `sacrificed ${c.sacked.name} to cast ${cardName(c)}`, 'auto');
     }
+    // "As an additional cost to cast this spell, discard a card" (Unexpected Windfall): the owner's page discards it (602.2b).
+    if (C && !c.faceDown && C.discardCost && C.discardCost(c)) todo(s, pid, { k: 'discard', n: 1, src: cardName(c) + ' (cost)' });
     // "As an additional cost to cast this spell, pay X life" (Toxic Deluge).
     if (C && !c.faceDown && c.x && /as an additional cost to cast this spell, pay x life/i.test(C.text(c)) && s.players[pid]) { s.players[pid].life -= c.x; log(s, pid, `paid ${c.x} life to cast ${cardName(c)}`, 'auto'); }
     if (s.turn && s.turn.active) { const T = s.turn; T.stats = T.stats || { attacked: {}, died: 0, gained: {}, lost: {}, spells: {}, drew: {} }; T.stats.spells[pid] = (T.stats.spells[pid] || 0) + 1; if (root.Engine) root.Engine.emit({ type: 'cast', player: pid, card: c, nth: T.stats.spells[pid] }); }
@@ -1471,6 +1477,7 @@
       food: { n: 'Food', t: 'Token Artifact — Food', o: '{2}, {T}, Sacrifice this artifact: You gain 3 life.' },
       clue: { n: 'Clue', t: 'Token Artifact — Clue', o: '{2}, Sacrifice this artifact: Draw a card.' },
       blood: { n: 'Blood', t: 'Token Artifact — Blood', o: '{1}, {T}, Discard a card, Sacrifice this artifact: Draw a card.' },
+      everywhere: { n: 'Everywhere', t: 'Token Land — Plains Island Swamp Mountain Forest', o: '{T}: Add {W}, {U}, {B}, {R}, or {G}.' },
       map: { n: 'Map', t: 'Token Artifact — Map', o: '{1}, {T}, Sacrifice this artifact: Target creature you control explores.' }
     };
     for (const [k, v] of Object.entries(KNOWN)) if (new RegExp('\\b' + k + '\\b').test(what)) return { n: v.n, faces: [{ n: v.n, t: v.t, img: '', p: '', tg: '', mc: '', o: v.o }] };

@@ -98,6 +98,7 @@
       return { type: 'enter', self: false, other: !!m[1] && /another|other/.test(m[1]), what: (m[2] || '') + m[3].replace(/s$/, ''), who: m[4] ? who(m[4]) : /under your control/.test(e) ? 'you' : 'any', many: /one or more/.test(m[1] || '') };
     }
     if (/^this mutates$/.test(e)) return { type: 'mutate', self: true };
+    if (/^the ring tempts you$|^you choose a creature as your ring-bearer$/.test(e)) return { type: 'tempt' };
     if ((m = e.match(/^this (?:class )?becomes level (\d+)$/))) return { type: 'classLevel', self: true, n: +m[1] };
     if (/^this dies$|^this is put into (?:a|your) graveyard from the battlefield$/.test(e)) return { type: 'die', self: true };
     if ((m = e.match(/^(another |one or more (?:other )?)?((?:nontoken |token |legendary |non-?[a-z]+ |[a-z]+ )*?)?(creatures?|permanents?|artifacts?|[a-z]+s?)( you control| an opponent controls| your opponents control)? (?:dies|die|is put into a graveyard from the battlefield)$/))) {
@@ -117,6 +118,7 @@
     if (/^you attack a player$/.test(e)) return { type: 'youAttack' };
     if ((m = e.match(/^this deals combat damage to (a player|an opponent|a creature|a player or planeswalker|one or more players)$/))) return { type: 'combatDamage', self: true, to: /creature/.test(m[1]) ? 'creature' : 'player' };
     if ((m = e.match(/^(?:a|one or more) ((?:[a-z]+ )*?)creatures? you control deals? combat damage to (a player|an opponent|one or more players)$/))) return { type: 'combatDamage', self: false, who: 'you', what: (m[1] || '') + 'creature', to: 'player' };
+    if ((m = e.match(/^(?:a|an|one or more) ([a-z]+?)s? you control deals? combat damage to (a player|an opponent|one or more players)$/)) && m[1] !== 'creature') return { type: 'combatDamage', self: false, who: 'you', what: m[1], to: 'player' };
     if (/^this deals damage/.test(e)) return { type: 'dealsDamage', self: true };
     if (/^this is dealt damage/.test(e)) return { type: 'dealtDamage', self: true };
     // Spells.
@@ -251,7 +253,7 @@
   // ---------------- the model ----------------
   function model(c) {
     if (!c || !c.d) return null;
-    const key = (c.d.n || '') + '|' + (c.face || 0) + '|' + (c.faceDown ? 1 : 0) + (c.d.mk ? '|' + c.d.mk : '') + (c.zone === 'battlefield' && c.counters && c.counters.level ? '|L' + c.counters.level : '') + (c.zone === 'battlefield' ? '|bf' : '');
+    const key = (c.d.n || '') + '|' + (c.face || 0) + '|' + (c.faceDown ? 1 : 0) + (c.d.mk ? '|' + c.d.mk : '') + (c.zone === 'battlefield' && c.counters && c.counters.level ? '|L' + c.counters.level : '') + (c.zone === 'battlefield' ? '|bf' : '') + (c.gained && c.zone === 'battlefield' ? '|g' + c.gained.length : '');
     if (cache.has(key)) return cache.get(key);
     const f = faceOf(c) || {};
     const name = f.n || c.d.n || '';
@@ -262,7 +264,7 @@
       loyalty: f.loy || f.l || null, keywords: [], costs: [], abilities: [], unknown: []
     };
     const isSpell = m.types.includes('instant') || m.types.includes('sorcery');
-    const lines = stripReminder(C() && C().levelText ? C().levelText(c, f.o || '') : (f.o || '')).split('\n').map(x => x.trim()).filter(Boolean);
+    const lines = stripReminder(C() && C().levelText ? C().levelText(c, (f.o || '') + (c.gained && c.zone === 'battlefield' ? '\n' + c.gained.join('\n') : '')) : (f.o || '')).split('\n').map(x => x.trim()).filter(Boolean);
     let modal = null;
     for (let raw of lines) {
       if (modal && /^[•●]/.test(raw)) { modal.modes.push(selfRef(raw.replace(/^[•●]\s*/, ''), name)); continue; }
@@ -388,6 +390,7 @@
       case 'tapped': case 'untapped': return ev.type === E.type && ev.card && ev.card.id === src.id;
       case 'targeted': return ev.type === 'targeted' && ev.card && ev.card.id === src.id && (!E.oppOnly || ev.player !== ctrl);
       case 'classLevel': return ev.type === 'classLevel' && ev.card && ev.card.id === src.id && ev.n === E.n;
+      case 'tempt': return ev.type === 'tempt' && ev.player === ctrl;
       case 'mutate': return ev.type === 'mutate' && ev.card && ev.card.id === src.id;
       case 'chapter': return ev.type === 'chapter' && ev.card && ev.card.id === src.id && a.chapter.includes(ev.n);
       case 'counter': return ev.type === 'counter' && (E.kind === 'any' || ev.kind === E.kind) && (E.self ? ev.card && ev.card.id === src.id : ev.card && ev.card.ctrl === ctrl && (!E.what || whatOk(E.what, ev.card)));
@@ -427,6 +430,10 @@
     if (/^it wasn't put onto the battlefield with this ability$/.test(c)) return true;   // checked as it resolves (engine fromHand)
     if (/^it's not your turn$/.test(c)) return T.active !== me;
     if (/^it's your turn$/.test(c)) return T.active === me;
+    if ((m = c.match(/^(?:it|this) has (\w+) or more ([+\-\d/]+|[a-z]+) counters on (?:it|this)$/)) || (m = c.match(/^there are (\w+) or more ([+\-\d/]+|[a-z]+) counters on (?:it|this)$/))) { const n = num(m[1]) || 0; return (((src.counters || {})[m[2]]) || 0) >= n; }
+    if (/^you control a commander$/.test(c)) return Object.values(s.cards).some(x => x.cmdr && x.ctrl === me && x.zone === 'battlefield');
+    if ((m = c.match(/^you control (\w+) or fewer ([a-z ]+?)s?$/))) { const n = num(m[1]); if (n != null) return Object.values(s.cards).filter(x => x.zone === 'battlefield' && x.ctrl === me && C().matchesWhat(x, m[2])).length <= n; }
+    if ((m = c.match(/^you control an? ([a-z ]+?) with power (\d+) or greater$/))) return Object.values(s.cards).some(x => x.zone === 'battlefield' && x.ctrl === me && C().matchesWhat(x, m[1]) && ((C().pt(s, x) || [0])[0] >= +m[2]));
     if (/^you control your commander$/.test(c)) return Object.values(s.cards).some(x => x.cmdr && x.owner === me && x.ctrl === me && x.zone === 'battlefield');
     if ((m = c.match(/^you control (\w+) or more ([a-z ]+?)s?$/i))) { const n = num(m[1]) || 0; const w = m[2].toLowerCase(); return Object.values(s.cards).filter(x => x.zone === 'battlefield' && x.ctrl === me && (C().matchesWhat(x, w) || C().isType(x, w))).length >= n; }
     if ((m = c.match(/^you have (\d+) or more life$/))) return (s.players[me] || {}).life >= +m[1];

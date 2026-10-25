@@ -119,6 +119,7 @@
     if ((m = body.match(/^draws? an additional card$/))) return [wrap({ op: 'draw', who: subj, n: 1 })];
     if ((m = body.match(/^discards? (\w+) cards?(?: at random)?$/)) || (m = body.match(/^discards? a card(?: at random)?$/))) return [wrap({ op: 'discard', who: subj, n: m[1] ? amt(m[1]) : 1, random: /at random/.test(body) })];
     if (/^discards? (?:your|their) hand$/.test(body)) return [wrap({ op: 'discard', who: subj, n: 99, all: true })];
+    if ((m = body.match(/^mills? cards equal to (.+)$/))) { const n = variable(m[1]); if (n) return [wrap({ op: 'mill', who: subj, n })]; }
     if ((m = body.match(/^mills? (\w+) cards?$/))) return [wrap({ op: 'mill', who: subj, n: amt(m[1]) })];
     if ((m = body.match(/^gains? (\d+|x|that much) life$/))) return [wrap({ op: 'life', who: subj, n: m[1] === 'that much' ? { v: 'lastAmount' } : amt(m[1]), sign: 1 })];
     if ((m = body.match(/^gains? life equal to (.+)$/))) return [wrap({ op: 'life', who: subj, n: variable(m[1]), sign: 1 })];
@@ -126,7 +127,7 @@
     if ((m = body.match(/^loses? (\d+|x|that much) life$/))) return [wrap({ op: 'life', who: subj, n: amt(m[1]) || { v: 'lastAmount' }, sign: -1 })];
     if ((m = body.match(/^loses? life equal to (.+)$/))) return [wrap({ op: 'life', who: subj, n: variable(m[1]), sign: -1 })];
     if ((m = body.match(/^loses? (\d+) life for each (.+)$/))) return [wrap({ op: 'life', who: subj, n: { v: 'count', what: m[2], ctrl: 'any', times: +m[1] }, sign: -1 })];
-    if ((m = body.match(/^(?:each )?(?:sacrifices?) (an?|one|two|three) (.+?)(?: of (?:their|his or her) choice)?$/))) return [wrap({ op: 'sacrifice', who: subj, n: amt(m[1]), what: m[2].replace(/(?<!s)s$/, '') })];
+    if ((m = body.match(/^(?:each )?(?:sacrifices?) (an?|one|two|three) (.+?)(?: of (?:their|his or her) choice)?$/))) { st.edict = m[2].replace(/(?<!s)s$/, ''); return [wrap({ op: 'sacrifice', who: subj, n: amt(m[1]), what: st.edict })]; }
     if ((m = s.match(/^sacrifice this unless you (?:sacrifice (a|an|one|two) ([a-z ]+)|pay ((?:\{[^}]+\})+))$/))) return [wrap(m[3] ? { op: 'sacUnlessPay', cost: m[3] } : { op: 'sacUnless', n: amt(m[1]), what: m[2] })];
     if ((m = body.match(/^sacrifices? (this|it|that creature|that permanent|enchanted creature|another permanent|another creature)$/))) return [wrap({ op: 'sacrifice', who: subj, n: 1, what: m[1] === 'this' ? { k: 'self' } : /another/.test(m[1]) ? m[1].replace('another ', '') : obj(m[1]), other: /another/.test(m[1]) })];
     if ((m = body.match(/^scry (\d+|x|one|two|three)$/))) return [wrap({ op: 'scry', who: subj, n: amt(m[1]) })];
@@ -135,6 +136,23 @@
     if (/^takes? the initiative$/.test(body)) return [wrap({ op: 'initiative', who: subj })];
     if ((m = s.match(/^investigate(?: (\w+) times)?$/))) return [wrap({ op: 'token', who: { k: 'you' }, spec: { n: m[1] ? amt(m[1]) : 1, named: 'clue', desc: 'Clue artifact', types: 'Clue artifact' } })];
     if (/^proliferate$/.test(s)) return [wrap({ op: 'proliferate' })];
+    // Path to Exile / Assassin's Trophy / Ghost Quarter: the target's controller may get a basic land.
+    if ((m = s.match(/^(?:its controller|that player|that land's controller|that permanent's controller) may search their library for an? (?:basic land card|land card with a basic land type), put (?:it|that card) onto the battlefield( tapped)?(?:,? then shuffle)?$/))) return [wrap({ op: 'fetchFor', who: { k: 'targetCtrl', i: Math.max(0, st.ti - 1) }, tapped: !!m[1] })];
+    // "At the beginning of the next end step, sacrifice/exile that token [unless you pay an amount of {E} equal to its mana value]."
+    if ((m = s.match(/^at the beginning of the next end step, (sacrifice|exile) (that token|those tokens|the token|the tokens|it|them)( unless you pay an amount of \{e\} equal to its mana value)?$/)) && st.madeToken) return [wrap({ op: 'delayedToken', to: m[1] === 'exile' ? 'exile' : 'graveyard', energy: !!m[3] })];
+    // Mudslide-style: "that player may choose any number of tapped creatures without flying they control and pay {2} for each".
+    if ((m = s.match(/^that player may choose any number of tapped (creatures(?: without flying)?) they control and pay ((?:\{[^}]+\})+) for each creature chosen this way$/))) return [wrap({ op: 'payUntap', what: m[1].replace(/s\b/, ''), cost: m[2] })];
+    // Urza's Saga: "This gains '{T}: Add {C}.'" — the permanent gets a new ability for as long as it stays.
+    if ((m = s.match(/^this gains "(.+)"$/))) return [wrap({ op: 'gainAbility', text: m[1].replace(/\{([a-z0-9/]+)\}/g, (x, y) => '{' + y.toUpperCase() + '}').replace(/^./, x => x.toUpperCase()) })];
+    if ((m = s.match(/^remove all (\w+) counters from (this|it)$/))) return [wrap({ op: 'removeAll', kind: m[1] })];
+    if ((m = s.match(/^add one mana of any color for each (\w+) counter removed this way$/))) return [wrap({ op: 'addMana', units: { v: 'X', each: 'WUBRG' }, n: { v: 'lastAmount' } })];
+    if ((m = s.match(/^each player who can't discards a card$/)) && st.edict) return [wrap({ op: 'discardIfNone', what: st.edict })];
+    if (/^create a tapped colorless land token named everywhere that is every basic land type$/.test(s)) return [wrap({ op: 'token', who: { k: 'you' }, spec: { n: 1, tapped: true, p: null, t: null, desc: 'everywhere', named: 'everywhere', kws: '', colors: [], types: 'land' } })];
+    // The Locust God: "return it to its owner's hand at the beginning of the next end step".
+    if ((m = s.match(/^return (it|this|that card) to its owner's hand at the beginning of the next end step$/))) return [wrap({ op: 'move', what: m[1] === 'this' ? { k: 'self' } : { k: 'ev' }, to: 'hand', delayed: true })];
+    // Arcane Denial: draws at the beginning of the next turn's upkeep.
+    if ((m = s.match(/^(you|its controller) (?:may )?draws? (a card|up to two cards|two cards) at the beginning of the next turn's upkeep$/))) return [wrap({ op: 'delayedDraw', who: m[1] === 'you' ? { k: 'you' } : { k: 'targetCtrl', i: 0 }, n: /two/.test(m[2]) ? 2 : 1 })];
+    if (/^the ring tempts you$/.test(s)) return [wrap({ op: 'tempt' })];
     if (/^proliferate twice$/.test(s)) return [wrap({ op: 'proliferate' }), wrap({ op: 'proliferate' })];
     if ((m = s.match(/^shuffle (this|it|that card|that creature|that permanent) into its owner's library$/))) { const what = obj(m[1]); if (what) return [wrap({ op: 'move', what, to: 'library', pos: 'shuffle' })]; }
     if ((m = s.match(/^put a \+1\/\+1 counter or a loyalty counter on (it|that permanent|target .+)$/))) { const on = m[1] === 'it' && st.ti > 0 ? { k: 't', i: st.ti - 1 } : targetOf(m[1], st); if (on) return [wrap({ op: 'counters', n: 1, kind: '+1/+1|loyalty', on })]; }
@@ -163,8 +181,8 @@
     if ((m = s.match(/^add (one|two|three) mana of any (?:one )?color$/))) return [wrap({ op: 'addMana', units: Array(amt(m[1])).fill('WUBRG') })];
     // Tokens.
     if ((m = body.match(/^creates? (.+)$/))) {
-      const tm = m[1].match(/^a token that's a copy of (.+?)(?:,? except .+)?$/);
-      if (tm) return [wrap({ op: 'copyToken', who: subj, of: targetOf(tm[1], st) })];
+      const tm = m[1].match(/^a (tapped and attacking |tapped )?token that's a copy of (.+?)(?:,? except .+)?$/);
+      if (tm) { st.madeToken = true; return [wrap({ op: 'copyToken', who: subj, of: targetOf(tm[2], st), tapped: !!tm[1], attacking: /attacking/.test(tm[1] || '') })]; }
       const forEach = m[1].match(/^(.+?) for each (.+)$/);
       const spec = tokenSpec(forEach ? forEach[1] : m[1].replace(/, where x is .+$/, ''));
       if (spec) { if (forEach) spec.n = { v: 'count', what: forEach[2].replace(/ you control$/, ''), ctrl: /you control/.test(forEach[2]) ? 'you' : 'any' }; return [wrap({ op: 'token', who: subj, spec })]; }
@@ -202,8 +220,15 @@
     if ((m = s.match(/^(.+?) fights? (.+)$/))) { const a = targetOf(m[1], st), b = targetOf(m[2], st); if (a && b) return [wrap({ op: 'fight', a, b })]; }
     if (/^transform (this|it)$/.test(s)) return [wrap({ op: 'transform', what: { k: 'self' } })];
     // Library.
-    if ((m = s.match(/^search your library for (up to )?(an?|one|two|three|four|five|\w+) (.+?) cards?(?: with [^,]+)?, (?:reveal (?:it|them|that card|those cards), )?(?:and )?put (?:it|them|that card|those cards|one of them|one) (into your hand|onto the battlefield)( tapped)?(?:(?: and the other| and the rest) into your hand)?(?:, then shuffle)?$/))) {
-      return [wrap({ op: 'search', n: amt(m[2]) || 1, upTo: !!m[1], filter: m[3], dest: /hand/.test(m[4]) ? 'hand' : 'battlefield', tapped: !!m[5], split: /the other into your hand/.test(s) })];
+    // Jarad's Orders / Dina's Guidance: one into your hand and the other into your graveyard / "into your hand or graveyard".
+    if ((m = s.match(/^search your library for up to two ([a-z ]+?) cards and reveal them$/))) { st.pendingSearch = m[1]; return []; }
+    if (/^search your library for two cards$/.test(s)) { st.pendingSearch = 'card'; return []; }
+    if (st.pendingSearch && /^put one into your hand and the other into your graveyard$/.test(s)) { const f = st.pendingSearch; st.pendingSearch = null; return [wrap({ op: 'search', n: 2, upTo: true, filter: f, dest: 'hand', splitGy: true })]; }
+    if ((m = s.match(/^search your library for an? ([a-z ]+?) card, reveal it, put it into your hand or graveyard(?:, then shuffle)?$/))) return [wrap({ op: 'search', n: 1, filter: m[1], dest: 'handOrGy' })];
+    if ((m = s.match(/^search your library for (up to )?(an?|one|two|three|four|five|\w+) (.+?) cards?( with [^,]+)?, (?:reveal (?:it|them|that card|those cards), )?(?:and )?put (?:it|them|that card|those cards|one of them|one) (into your hand|onto the battlefield)( tapped)?(?:(?: and the other| and the rest) into your hand)?(?:, then shuffle)?$/))) {
+      // "with mana value 3 or less" / "with mana cost {0} or {1}": the most it may cost.
+      const w = m[4] || '', mv = w.match(/mana value (\d+) or less/) || w.match(/mana cost \{(\d)\}(?: or \{(\d)\})?/);
+      return [wrap({ op: 'search', n: amt(m[2]) || 1, upTo: !!m[1], filter: m[3], mvMax: mv ? Math.max(+mv[1], +(mv[2] || 0)) : undefined, dest: /hand/.test(m[5]) ? 'hand' : 'battlefield', tapped: !!m[6], split: /the other into your hand/.test(s) })];
     }
     if ((m = s.match(/^look at the top (\w+) cards? of your library/))) return [wrap({ op: 'look', n: amt(m[1]), text: raw })];
     if ((m = s.match(/^reveal the top (\w+) cards? of your library/))) return [wrap({ op: 'look', n: amt(m[1]), reveal: true, text: raw })];
@@ -251,6 +276,12 @@
     if ((m = s.match(/^(?:put|reveal|return) (.+?) from among (?:them|those cards|the milled cards|the cards milled this way|the revealed cards)(?: (into your hand|onto the battlefield|to your hand|on top of your library))?( tapped)?$/))) return [wrap({ op: 'fromAmong', filter: m[1], dest: !m[2] ? 'reveal' : /battlefield/.test(m[2]) ? 'battlefield' : /top/.test(m[2]) ? 'top' : 'hand', tapped: !!m[3] })];
     if ((m = s.match(/^put (?:it|that card|one|one of them|one pile) into your hand and the (?:other|rest)(?: pile)? into your graveyard$/))) return [wrap({ op: 'split', a: 'hand', b: 'graveyard' })];
     if (/^put (?:it|that card|them|those cards) into your hand$/.test(s)) return [wrap({ op: 'move', what: { k: 'ev' }, to: 'hand' })];
+    // "You may cast a spell with mana value 4 or less from your hand without paying its mana cost" (Baral's Expertise,
+    // Press the Enemy, Diviner of Mist): the owner picks one and casts it free.
+    if ((m = s.match(/^cast (an? .+?|an? (?:instant or sorcery )?spell[^,]*?) from your (hand|graveyard)(?: with mana value (\d+) or less)? without paying its mana cost$/))) {
+      const f = m[1].replace(/^an? /, ''), mv = f.match(/with mana value (\d+) or less/) || (m[3] ? [0, m[3]] : null);
+      return [wrap({ op: 'freeCast', from: m[2], filter: f.replace(/ with mana value .+$/, '').replace(/ with equal or lesser mana value$/, '').replace(/ spell$/, '').trim() || 'card', mvMax: mv ? +mv[1] : /equal or lesser mana value/.test(f) ? { v: 'evMV' } : undefined })];
+    }
     if ((m = s.match(/^cast (.+?) without paying (?:its|their) mana costs?$/))) return [wrap({ op: 'freeCast', filter: m[1] })];
     if ((m = s.match(/^play (?:it|that card|them|those cards)(?: this turn| until (?:the end of your next turn|your next end step))$/))) return [wrap({ op: 'mayPlay', what: { k: 'ev' }, until: /next/.test(s) ? 'nextTurn' : 'eot' })];
     if ((m = s.match(/^(you and (?:that player|target opponent|target player)) each (.+)$/))) { const r = clause('you ' + m[2], st), r2 = clause((/target/.test(m[1]) ? 'target player ' : 'that player ') + m[2].replace(/^(\w+)/, x => x.endsWith('s') ? x : x + 's'), st); if (r && r2) return r.concat(r2).map(wrap); }
@@ -281,30 +312,45 @@
   // ---------------- a whole ability ----------------
   function parse(text, opts, st0) {
     const st = st0 || { ti: 0 };
-    const t0 = String(text || '').toLowerCase().replace(/\([^)]*\)/g, '').replace(/[“”]/g, '"')
+    const t0 = String(text || '').toLowerCase().replace(/\([^)]*\)/g, '').replace(/ {2,}/g, ' ').replace(/[“”]/g, '"')
       .replace(/\.?\s*(?:it|they) (?:has|have|gains?) "[^"]*"(?: until end of turn)?\.?/g, '.').trim();
     // "Exile/reveal cards from the top of your library until you exile a nonland permanent card. Put that card onto the
     // battlefield or into your hand." (Illuna, Auspicious Starrix, The Regalia): one effect, done on the owner's device.
-    const t1 = t0.replace(/(?:exile|reveal) cards from the top of your library until you (?:exile|reveal) (a|an|x) ((?:nonland |non-?[a-z]+ )*(?:permanent|creature|land|artifact|enchantment|nonland)) cards?(, where x is the number of times this creature has mutated)?\. put (?:that card|those [a-z ]*cards|it) (onto the battlefield(?: tapped)?(?: or into your hand)?|into your hand)(?: and the rest on the bottom of your library in a random order)?\./g,
+    const t1 = t0.replace(/(?:exile|reveal) cards from the top of your library until you (?:exile|reveal) (a|an|x) ((?:nonland |non-?[a-z]+ )*(?:permanent|creature|land|artifact|enchantment|nonland)) cards?(, where x is the number of times this(?: creature)? has mutated)?\. put (?:that card|those [a-z ]*cards|it) (onto the battlefield(?: tapped)?(?: or into your hand)?|into your hand)(?: and the rest on the bottom of your library in a random order)?\./g,
       (all, a, what, mut, dest) => `__dig:${what.trim()}:${mut ? 'mut' : 1}:${/or into your hand/.test(dest) ? 'either' : /battlefield/.test(dest) ? 'battlefield' : 'hand'}:${/tapped/.test(dest) ? 1 : 0}:${/rest on the bottom/.test(all) ? 'bottom' : 'exile'}__.`);
     // "Reveal the top card of your library. If it's a creature card, put it onto the battlefield. Otherwise, you may put that
     // card on the bottom of your library." (Lurking Predators, Herald's Horn): a one-card dig.
-    const t1a = t1.replace(/choose a color\. add an amount of mana of that color equal to your devotion to that color\./g, '__devotion__.');
+    // Impulse draw: "Exile the top card of your library. Until the end of your next turn, you may play it." (Riku, Jeska's Will…)
+    const t0i = t1.replace(/exile the top (card|two cards|three cards|four cards|x cards|\w+ cards) of your library\.\s*(until the end of your next turn|until end of turn|until your next end step|this turn)?,?\s*you may play (?:it|them|that card|those cards)( this turn| until end of turn| until the end of your next turn)?\./g,
+      (all, n, w1, w2) => { const w = (w1 || w2 || 'this turn').trim(); const k = /next turn|next end step/.test(w) ? 'next' : 'eot'; const nn = n === 'card' ? 1 : (n.split(' ')[0]); return `__impulse:${nn}:${k}__.`; });
+    const t1a = t0i.replace(/choose a color\. add an amount of mana of that color equal to your devotion to that color\./g, '__devotion__.');
     const t1b = t1a.replace(/(?:reveal|look at) the top card of your library\. if it's an? ([a-z ]+?) card( of the chosen type)?, (you may )?(?:reveal it and )?put it (onto the battlefield|into your hand)\.(?: otherwise, you may put (?:that card|it) on the bottom of your library\.)?/g,
       (all, what, chosen, may, dest) => `__top:${what.trim()}:${chosen ? 1 : 0}:${/battlefield/.test(dest) ? 'battlefield' : 'hand'}:${/otherwise/.test(all) ? 1 : 0}__.`);
+    // Worldly / Enlightened Tutor: "search your library for a creature card, reveal it, then shuffle and put the card on top".
+    const t1c = t1b.replace(/search your library for an? ([a-z ]+?) card, reveal it, then shuffle and put (?:the|that) card on top\./g, (all, f) => `__tutortop:${f}__.`)
+    // Rashmi: "reveal the top card of your library. you may cast it without paying its mana cost if it's a spell with lesser mana value. if you don't cast it, put it into your hand."
+      .replace(/reveal the top card of your library\. you may cast it without paying its mana cost if it's a spell with lesser mana value\. if you don't cast it, put it into your hand\./g, '__rashmi__.');
     // "That player may pay {2}. If they don't, you create a Treasure token." (Smothering Tithe, Rhystic Study): the other
     // player chooses whether to pay; if they don't, the rest happens.
-    const t2 = t1b.replace(/\b(that player|its controller|they|that opponent) may pay ((?:\{[^}]+\})+)\. if (?:they|that player|the player|he or she|its controller) (?:doesn't|don't|do not), ([^.]+)\./g, (all, w, cost, rest) => `__payor|${w}|${cost}|${rest}__.`);
+    const t2 = t1c.replace(/\b(that player|its controller|they|that opponent) may pay ((?:\{[^}]+\})+)\. if (?:they|that player|the player|he or she|its controller) (?:doesn't|don't|do not), ([^.]+)\./g, (all, w, cost, rest) => `__payor|${w}|${cost}|${rest}__.`);
     // "where X is …" applies to the clause before it.
     const sentences = t2.replace(/\.?\n/g, '. ').split(/(?<=\.)\s+|(?<=\.)$/).map(x => x.trim()).filter(Boolean);
     const ops = [];
     let understood = true;
     for (let sent of sentences) {
       const dg = sent.match(/^__dig:([a-z -]+):(mut|1):(either|battlefield|hand):([01]):(bottom|exile)__\.?$/);
+      if (/^as an additional cost to cast this spell, discard (?:a|one) card\.?$/.test(sent)) continue;
       if (/^as an additional cost to cast this spell, (?:pay x life|sacrifice (?:a|an) [a-z ]+?(?: or discard a card)?)\.?$/.test(sent)) continue;   // paid as it's cast (601.2f)
-      if (/^activate (?:this ability )?only\b/.test(sent)) continue;   // checked when it's activated (602.5)
+      if (/^if you control a commander, you may cast this(?: spell)? without paying its mana cost\.?$/.test(sent)) continue;
+      if (/^if that spell would be put into (?:your|a) graveyard, exile it instead\.?$/.test(sent)) continue;   // the free spell is exiled afterwards (not tracked)   // an alternative cost
+      if (/^activate (?:this ability )?only\b|^this ability costs (?:\{[^}]+\})+ less to activate\b/.test(sent)) continue;   // checked when it's activated (602.5)
       // Cost changes and "can't be countered" are about casting it, not what it does (601.2f, 101.2).
       if (/^this(?: spell)? costs? (?:\{[^}]+\})+ (?:less|more) to cast\b|^this spell can't be countered\.?$|^affinity for /.test(sent)) continue;   // paid as it's cast (601.2f)
+      const im = sent.match(/^__impulse:(\w+):(next|eot)__\.?$/);
+      if (im) { ops.push({ op: 'impulse', n: amt(im[1]) || 1, until: im[2] }); continue; }
+      const tt = sent.match(/^__tutortop:([a-z ]+)__\.?$/);
+      if (tt) { ops.push({ op: 'search', n: 1, filter: tt[1], dest: 'top' }); continue; }
+      if (/^__rashmi__\.?$/.test(sent)) { ops.push({ op: 'rashmi' }); continue; }
       if (/^__devotion__\.?$/.test(sent)) { ops.push({ op: 'addDevotion' }); continue; }
       const tc = sent.match(/^__top:([a-z -]+):([01]):(battlefield|hand):([01])__\.?$/);
       if (tc) { ops.push({ op: 'dig', what: tc[1], n: 1, top: true, chosen: tc[2] === '1', dest: tc[3], mayBottom: tc[4] === '1', rest: 'top', tapped: false }); continue; }
@@ -315,7 +361,7 @@
       // Reflexive triggers (603.12): "When you do, ..." is a new ability whose targets are chosen then.
       const rf = sent.replace(/\.$/, '').match(/^when you do, (.+)$/);
       if (rf) { const inner = parse(rf[1] + '.', opts); ops.push({ op: 'reflexive', text: rf[1], ops: inner.ops }); if (!inner.understood) understood = false; continue; }
-      const cm = sent.replace(/\.$/, '').replace(/^then (?=if )/, '').match(/^if (?!you do\b|they do\b|a player does\b)([^,]+), (.+?)( instead)?$/);
+      const cm = sent.replace(/\.$/, '').replace(/^then (?=if )/, '').match(/^if (?!you do\b|they do\b|a player does\b|the player does\b|that player does\b)([^,]+), (.+?)( instead)?$/);
       if (cm) {
         const inner = parse(cm[2] + '.', opts, st);
         ops.push({ op: cm[3] ? 'instead' : 'if', cond: cm[1], ops: inner.ops });
@@ -344,7 +390,11 @@
         // The rest of a "look at the top N" ("put one of them into your hand and the rest on the bottom", "put them back in
         // any order") is done in the look window: it goes with the look.
         const lk = ops.length && ops[ops.length - 1].op === 'look' ? ops[ops.length - 1] : null;
-        if (!r && lk && /\b(them|those cards|of them|the rest|that card|the other|it)\b|^you may shuffle/.test(p)) { lk.text = (lk.text || '') + '. ' + p; continue; }
+        // "…put a land card from among them onto the battlefield" right after a look: part of the look window.
+        const lk0 = ops.length && ops[ops.length - 1].op === 'look' ? ops[ops.length - 1] : null;
+        if (lk0 && r && r.length === 1 && (r[0].op === 'fromAmong' || r[0].op === 'rest' || r[0].op === 'split')) { lk0.text = (lk0.text || '') + '. ' + p; continue; }
+        if (!r && ops.length && ops[ops.length - 1].op === 'payUntap' && /^(?:if (?:they|the player|that player) (?:do|does),? )?untap those creatures$/.test(p)) continue;
+        if (!r && lk && /\b(them|those cards|of them|the rest|that card|the other|it|the revealed cards?)\b|^you may shuffle/.test(p)) { lk.text = (lk.text || '') + '. ' + p; continue; }
         if (!r) { understood = false; ops.push({ op: 'manual', text: p.replace(/^./, x => x.toUpperCase()) }); continue; }
         for (const o of r) { if (xvar && o.op === 'pump' && /x/.test(String(o.p) + String(o.t))) o.xv = xvar; if (xvar && (o.n && o.n.v === 'X')) o.n = xvar; if (xvar && o.spec && (o.spec.p === 'x' || (o.spec.n && o.spec.n.v === 'X'))) { o.spec.x = xvar; if (o.spec.n && o.spec.n.v === 'X') o.spec.n = xvar; } ops.push(o); }
       }

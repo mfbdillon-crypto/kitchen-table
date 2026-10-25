@@ -310,6 +310,7 @@
     const cost = C().costOf(c);
     if (c.zone === 'command' && c.cmdr) cost.g += 2 * ((this.s.tax || {})[c.id] || 0);
     if (C().costReduction) cost.g = Math.max(0, cost.g - C().costReduction(this.s, c, this.me));
+    if (C().freeWithCommander && C().freeWithCommander(this.s, c, this.me)) return C().parseCost('');
     return cost;
   };
   P.mv = function (c) { return C().costTotal(this.costOf(c), 0); };
@@ -557,6 +558,7 @@
     if (this.desperate() && (rl.has('removal') || rl.has('fog') || rl.has('wipe'))) v += 3;
     if (this.isKey(card)) v += o.perm || rl.has('draw') || rl.has('ramp') || rl.has('tutor') ? 4 : 0;
     if (this.isProtect(card)) v += 1.5;
+    if (card.zone === 'exile' && card.mayPlay) v += 2.5;   // use it before it's gone
     if (card.cmdr) {
       const role = prof.cmdrRole || 'value';
       v += role === 'engine' ? 6 : role === 'threat' ? 4 : role === 'enabler' ? 4 : 2.5;
@@ -752,6 +754,7 @@
     for (const c of Object.values(s.cards)) if (c.zone === 'battlefield' || c.zone === 'stack' || c.zone === 'command') parts.push(c.id + (c.tapped ? 't' : '') + (c.zone[0]) + JSON.stringify(c.counters || {}).length);
     for (const p of s.seats) parts.push(p + ':' + this.life(p) + ':' + ((s.players[p] || {}).poison || 0) + ':' + ((s.players[p] || {}).handCount || 0));
     parts.push(Object.values(s.cards).filter(c => c.zone === 'graveyard').length);
+    parts.push('x:' + Object.values(s.cards).filter(c => c.zone === 'exile' && c.mayPlay && c.owner === this.me).map(c => c.id).join(','));
     return parts.join('|');
   };
   // What changed since the last plan, in words (for the change log).
@@ -805,7 +808,7 @@
     const out = [];
     if (a.route.route !== b.route.route) out.push(`route ${a.route.route} → ${b.route.route}`);
     const as = a.steps.map(x => x.key), bs = b.steps.map(x => x.key);
-    const gone = x => (this.doneCheck && this.doneCheck(x.key)) || (x.kind === 'cast' && !this.view.hand.some(c => c.id === x.id) && !this.cmdZone().some(c => c.id === x.id)) || (x.kind === 'land' && !this.view.hand.some(c => c.id === x.id)) || (x.kind === 'attack' && this.s.combat && this.s.combat.n === this.s.turn.n) || ['abilities', 'end'].includes(x.kind);
+    const gone = x => (this.doneCheck && this.doneCheck(x.key)) || (x.kind === 'cast' && !this.view.hand.some(c => c.id === x.id) && !this.cmdZone().some(c => c.id === x.id) && !(this.s.cards[x.id] && ['graveyard', 'exile'].includes(this.s.cards[x.id].zone))) || (x.kind === 'land' && !this.view.hand.some(c => c.id === x.id)) || (x.kind === 'attack' && this.s.combat && this.s.combat.n === this.s.turn.n) || ['abilities', 'end'].includes(x.kind);
     const add = b.steps.filter(x => !as.includes(x.key) && !['abilities', 'end'].includes(x.kind)).map(x => x.label), rem = a.steps.filter(x => !bs.includes(x.key) && !gone(x)).map(x => x.label);
     if (add.length) out.push('new moves: ' + add.join('; '));
     if (rem.length) out.push('dropped: ' + rem.join('; '));
@@ -875,7 +878,7 @@
     let srcs = this.sources();
     const pending = steps.find(x => x.kind === 'land');
     if (pending) { const lc = this.view.hand.find(c => c.id === pending.id); const m = lc && Cd.manaSource(Object.assign({ zone: 'battlefield' }, lc)); if (m && !/enters (?:the battlefield )?tapped/i.test(Cd.text(lc))) srcs = srcs.concat([{ id: lc.id, amount: m.amount, colors: m.colors, units: m.units, name: lc.d.n, pending: true }]); }
-    const cands = this.handCards().concat(this.cmdZone()).concat(this.gyCastables()).map(c => this.option(c, 'main', { sources: srcs })).filter(Boolean).filter(o => o.score > 0);
+    const cands = this.handCards().concat(this.cmdZone()).concat(this.gyCastables()).concat(this.exileCards().filter(c => !R().isType(c, 'land'))).map(c => this.option(c, 'main', { sources: srcs })).filter(Boolean).filter(o => o.score > 0);
     // What I'd like to hold up: the best answer in hand for an opponent's turn.
     // Last round's held answer: did it get used? (adapts how much mana it keeps open)
     if (this.holding && this.holding.turn !== T.n) { this.holdWaste = this.holding.fired ? Math.max(0, (this.holdWaste || 0) - 1) : (this.holdWaste || 0) + 1; if (!this.holding.fired) this.note('replan', `Held ${this.holding.name} all round and didn't need it (held mana wasted ${this.holdWaste}× in a row — keeping less open)`); this.holding = null; }
@@ -937,6 +940,10 @@
     for (const st of steps) if (!tp.planned.includes(st.label)) tp.planned.push(st.label);
   };
   P.extraLands = function () { return /additional land/i.test(this.bf(this.me).map(c => C().text(c)).join(' ')) ? 1 : 0; };
+  // Cards I may play from exile (impulse draw).
+  // Cards I can cast at instant speed from: hand and exile (impulse).
+  P.spellPool = function () { return this.handCards().concat(this.exileCards().filter(c => !R().isType(c, 'land'))); };
+  P.exileCards = function () { return this.cards(c => c.zone === 'exile' && c.owner === this.me && c.mayPlay); };
   P.gyCastables = function () {
     // "During each of your turns, you may cast a creature spell from your graveyard" (Karador) and similar.
     const perm = this.bf(this.me).some(c => /you may cast (?:a |one )?creature spells? from your graveyard/i.test(C().text(c)));
@@ -976,6 +983,9 @@
   };
   P.chooseLand = function () {
     const Cd = C();
+    // Exiled lands I may play only this round go first.
+    const exL = this.exileCards().filter(c => R().isType(c, 'land'));
+    if (exL.length) return Object.assign({}, exL[0], { why: 'from exile before it expires' });
     const lands = this.handCards().filter(c => R().isType(c, 'land'));
     if (!lands.length) return null;
     const have = new Set(this.sources().flatMap(s => s.colors.split('')));
@@ -1022,7 +1032,7 @@
   // Which instant-speed answer is worth keeping mana for on opponents' turns.
   P.holdChoice = function (srcs) {
     const Cd = C();
-    const inst = this.handCards().filter(c => Cd.instantSpeed(c) && !R().isType(c, 'land'));
+    const inst = this.spellPool().filter(c => Cd.instantSpeed(c) && !R().isType(c, 'land'));
     let best = null;
     for (const c of inst) {
       const rl = roles(c);
@@ -1054,9 +1064,9 @@
     const keep = (this.plan && this.plan.responses) || [];
     if (this.level === 'easy') {
       // Easy only uses obvious ones: save a creature from removal with a protection spell.
-      for (const c of this.handCards().filter(c => Cd.instantSpeed(c) && roles(c).has('protection'))) out.push({ key: 'protect:' + c.id, ev: 'target', card: c.id, name: Rr.cardName(c), label: `if my creature is targeted by removal → ${Rr.cardName(c)}`, prio: 2 });
+      for (const c of this.spellPool().filter(c => Cd.instantSpeed(c) && roles(c).has('protection'))) out.push({ key: 'protect:' + c.id, ev: 'target', card: c.id, name: Rr.cardName(c), label: `if my creature is targeted by removal → ${Rr.cardName(c)}`, prio: 2 });
     } else {
-      for (const c of this.handCards().filter(c => Cd.instantSpeed(c) && !Rr.isType(c, 'land'))) {
+      for (const c of this.spellPool().filter(c => Cd.instantSpeed(c) && !Rr.isType(c, 'land'))) {
         const rl = roles(c), nm = Rr.cardName(c);
         if (rl.has('counter')) out.push({ key: 'counter:' + c.id, ev: 'cast', card: c.id, name: nm, label: `counter: a spell that wipes or removes my key cards, an opponent's win condition or combo piece, the top threat's engine, or a counter aimed at my spell → ${nm}`, prio: 5 });
         if (rl.has('protection')) out.push({ key: 'protect:' + c.id, ev: 'target', card: c.id, name: nm, label: `if ${this.bf(this.me).filter(x => this.isProtect(x)).map(x => Rr.cardName(x)).slice(0, 3).join(', ') || 'my key creature'} is targeted or a wipe is cast → ${nm}`, prio: 4 });
@@ -1081,7 +1091,7 @@
   P.planScenarios = function (plan) {
     const Rr = R(), s = this.s, me = this.me;
     const list = [];
-    const hand = this.handCards();
+    const hand = this.spellPool();
     const second = plan.routes[1];
     const key = this.bf(me).filter(c => (this.isKey(c) || this.isProtect(c)) && !c.cmdr);
     const cm = this.myCommanders()[0];
@@ -1114,7 +1124,7 @@
     const top = Rr.stackTop(s);
     for (const r of plan.responses) {
       if (r.fired) continue;
-      const card = r.card ? this.handCards().find(c => c.id === r.card) : null;
+      const card = r.card ? this.spellPool().find(c => c.id === r.card) : null;
       if (r.card && !card) continue;
       let o = null, why = '';
       if (r.ev === 'cast' && top && top.ctrl !== me) {
@@ -1147,7 +1157,7 @@
         const seats = Rr._int.rotate(s, s.turn.active);
         const beforeMe = seats[(seats.indexOf(me) - 1 + seats.length) % seats.length] === s.turn.active || seats[seats.indexOf(s.turn.active) + 1] === me;
         if (!beforeMe && this.level !== 'hard') continue;
-        if (!beforeMe && plan.responses.some(x => !x.fired && x.ev === 'cast' && this.handCards().some(c => c.id === x.card))) continue;   // keep the counter mana
+        if (!beforeMe && plan.responses.some(x => !x.fired && x.ev === 'cast' && this.spellPool().some(c => c.id === x.card))) continue;   // keep the counter mana
         o = this.option(card, 'instant', { minValue: 3 }); why = 'end of turn';
       } else if (r.ev === 'blocks' && ctx.blocks) {
         o = this.combatTrick(card); why = 'wins the fight';
@@ -1170,7 +1180,7 @@
     if (rd.kill.has(n)) return `${nm} is ${Rr.nameOf(s, top.ctrl)}’s engine`;
     if (top.cmdr && rd.counter.includes('commander') && this.threatOf(top.ctrl) >= (this.threats[0] || {}).score) return `${nm} is the top threat’s commander`;
     const mv = (top.d && +top.d.cmc) || 0;
-    const counters = this.handCards().filter(c => roles(c).has('counter')).length;
+    const counters = this.spellPool().filter(c => roles(c).has('counter')).length;
     if (mv >= (counters >= 2 ? 5 : 6) && this.threatOf(top.ctrl) >= ((this.threats[0] || {}).score || 0) * 0.8) return `${nm} is a big threat from the top threat`;
     // A pump/overrun in the middle of an attack on me that would make it lethal (Akroma's Will, Craterhoof…).
     const K = s.combat;
@@ -1472,6 +1482,14 @@
         return { yes: true, why: 'free to enter untapped' };
       }
       case 'legend': { const list = ask.ids.map(id => s.cards[id]).filter(Boolean).sort((a, b) => this.value(b) - this.value(a) + (a.tapped - b.tapped)); return { keep: (list[0] || {}).id || ask.ids[ask.ids.length - 1], why: 'keep the better one' }; }
+      case 'payUntap': {
+        // Untap the best blockers/attackers with spare land mana, keeping enough for the plan on my own turn.
+        const cost = C().costTotal(C().parseCost(ask.cost), 0);
+        let lands = this.bf(me).filter(c => !c.tapped && R().isType(c, 'land') && C().manaSource(c)).length;
+        if (s.turn.active === me) lands -= Math.min(lands, Math.max(0, ...this.handCards().filter(c => !R().isType(c, 'land')).map(c => this.mv(c))));
+        const ids = ask.ids.map(id => s.cards[id]).filter(Boolean).sort((a, b) => this.value(b) - this.value(a)).slice(0, Math.floor(lands / Math.max(1, cost))).map(c => c.id);
+        return { ids, why: ids.length ? 'untap my best creatures with spare mana' : 'no spare mana' };
+      }
       case 'pay': {
         // Pay with spare mana: never on my own turn if it costs me a spell; keep mana held for answers.
         const cost = C().costTotal(C().parseCost(ask.cost), 0);

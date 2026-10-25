@@ -62,6 +62,11 @@
         const k = STEP_KEY[R.PHASES[i]]; if (!k) continue;
         evs.push({ type: 'step', step: k, player: T.active });
         if (k === 'main1') loreUp(s, T.active, evs, notes);
+        if (k === 'upkeep' && s.delayedDraws && s.delayedDraws.length) {
+          const due = s.delayedDraws.filter(x => x.after < T.n);
+          for (const x of due) { R.todo(s, x.pid, { k: 'draw', n: x.n, src: x.src }); notes.push(`${nameOf(s, x.pid)} draws ${x.n > 1 ? x.n + ' cards' : 'a card'} (${x.src})`); }
+          s.delayedDraws = s.delayedDraws.filter(x => !due.includes(x));
+        }
         if ((k === 'main1' || k === 'main2') && s.delayedMana && s.delayedMana.length) {
           const due = s.delayedMana.filter(x => x.pid === T.active && (x.after < T.n || k === 'main2' && x.after === T.n && x.step !== 'main2'));
           for (const x of due) { R.addPool(s, x.pid, Array(x.n).fill('C')); notes.push(`${nameOf(s, x.pid)} added {C}×${x.n} (${x.src})`); }
@@ -96,6 +101,7 @@
       }
       if (e.to === 'graveyard') evs.push({ type: 'toGraveyard', card: now || c, from: e.from });
     }
+    ringEvents(s, evs, notes);
     if (!evs.length) return place(s, notes);
     const onBf = Object.values(s.cards).filter(c => c.zone === 'battlefield' && !c.faceDown && c.d);
     const leftIds = new Set(left.map(c => c.id));
@@ -128,6 +134,17 @@
       }
     }
     return place(s, notes);
+  }
+  // The Ring's abilities (701.54c): level 2 loots when the Ring-bearer attacks, level 3 makes its blockers be sacrificed
+  // at end of combat, level 4 drains 3 when it deals combat damage to a player.
+  function ringBearerOf(s, c) { const P = c && s.players[c.ctrl]; return P && P.ring && P.ringBearer === c.id ? P.ring : 0; }
+  function ringEvents(s, evs, notes) {
+    const R = I();
+    for (const ev of evs) {
+      if (ev.type === 'attack' && ev.card && ringBearerOf(s, ev.card) >= 2) { R.todo(s, ev.card.ctrl, { k: 'draw', n: 1, src: 'the Ring' }); R.todo(s, ev.card.ctrl, { k: 'discard', n: 1, src: 'the Ring' }); notes.push(`${cardName(ev.card)} attacks with the Ring: draw a card, then discard a card`); }
+      if (ev.type === 'block' && ev.att && s.cards[ev.att] && ringBearerOf(s, s.cards[ev.att]) >= 3 && ev.card) { s.delayed = (s.delayed || []).concat([{ step: 'endCombat', id: ev.card.id, to: 'graveyard', sac: true, src: 'the Ring', n: s.turn.n }]); notes.push(`${cardName(ev.card)} blocked the Ring-bearer — it will be sacrificed at end of combat`); }
+      if (ev.type === 'combatDamage' && ev.to === 'player' && ev.card && ringBearerOf(s, ev.card) >= 4) { for (const p of s.seats) if (p !== ev.card.ctrl && R.alive(s, p) && s.players[p]) s.players[p].life -= 3; notes.push(`The Ring: each opponent of ${nameOf(s, ev.card.ctrl)} loses 3 life`); }
+    }
   }
   // Teysa Karlov, Panharmonicon, Yarok, Elesh Norn (Mother of Machines), Isshin: some events make triggered abilities
   // trigger an additional time (or not at all, for an opponent's Elesh Norn).
@@ -460,6 +477,7 @@
         case 'eachPlayer': return s.seats.filter(p => R.alive(s, p));
         case 'eachOther': return s.seats.filter(p => p !== by && R.alive(s, p));
         case 'evPlayer': return ctx.p ? [ctx.p] : [];
+        case 'targetCtrl': { const t = (legal[w.i] || []).find(x => x.c) || ((item.tg || [])[w.i] || []).find(x => x.c); const c = t && s.cards[t.c]; return c ? [c.zone === 'battlefield' ? c.ctrl : c.owner] : []; }
         case 'controllerOf': { if (w.of && w.of.k === 'attached') { const at = s.cards[src.attachedTo]; return at ? [at.ctrl] : []; } const c = s.cards[ctx.c]; return c ? [c.zone === 'battlefield' ? c.ctrl : c.owner] : ctx.ctrl ? [ctx.ctrl] : []; }
         case 'ownerOf': { const c = s.cards[ctx.c]; return c ? [c.owner] : []; }
         case 't': return (legal[w.i] || []).filter(t => t.p).map(t => t.p);
@@ -570,7 +588,7 @@
       if (life) { const n = life[1] === 'x' ? X : +life[1]; if (P.life < n) return false; P.life -= n; return true; }
       return payMana(s, by, String(cost), notes);
     };
-    const condOk = cond => { const r = O().conditionHolds(s, Object.assign({}, src, { ctrl: by }), cond); if (r === null) { st.manual.push(`Check: if ${cond}`); return false; } return r; };
+    const condOk = cond => { const xm = String(cond).match(/^x is (\d+) or (more|greater|less|fewer)$/); if (xm) { const v = st.lastX != null ? st.lastX : (ctx.mv || X || 0); return /less|fewer/.test(xm[2]) ? v <= +xm[1] : v >= +xm[1]; } const r = O().conditionHolds(s, Object.assign({}, src, { ctrl: by }), cond); if (r === null) { st.manual.push(`Check: if ${cond}`); return false; } return r; };
     const runList = (list, off) => {
       for (let k = 0; k < list.length; k++) {
         const o = shiftOp(list[k], off || 0);
@@ -626,7 +644,17 @@
           }
           break;
         }
-        case 'copyToken': for (const c of cards(o.of)) { if (!c.d) continue; R.makeToken(s, by, JSON.parse(JSON.stringify(c.d)), 1, false, notes); notes.push(`${nameOf(s, by)} created a token copy of ${cardName(c)}`); } break;
+        case 'copyToken': for (const c of cards(o.of)) {
+          if (!c.d) continue;
+          const before = new Set(Object.keys(s.cards));
+          R.makeToken(s, by, JSON.parse(JSON.stringify(c.d)), 1, !!o.tapped, notes);
+          const made = Object.keys(s.cards).filter(id => !before.has(id));
+          st.tokens = made;
+          if (o.attacking && s.combat && s.combat.att) { const myAtt = s.combat.att[srcId] || Object.values(s.combat.att).find(x => x) || null; if (myAtt) for (const id of made) s.combat.att[id] = { def: myAtt.def, blk: [] }; }
+          emit({ type: 'token', player: by });
+          notes.push(`${nameOf(s, by)} created a token copy of ${cardName(c)}${o.attacking ? ', tapped and attacking' : ''}`);
+        } break;
+        case 'delayedToken': for (const id of st.tokens || []) { s.delayed = (s.delayed || []).concat([{ step: 'end', id, to: o.to, by, sac: o.to === 'graveyard', energy: !!o.energy, src: srcName, n: s.turn.n }]); } break;
         case 'proliferate': {
           const got = [];
           for (const c of Object.values(s.cards)) {
@@ -668,6 +696,31 @@
           emit({ type: 'classLevel', card: c, n: o.n, player: c.ctrl });
           break;
         }
+        // The Ring tempts you (701.54): the Ring gains its next ability, and you choose a Ring-bearer.
+        case 'payUntap': {
+          const p = players({ k: 'evPlayer' })[0] || s.turn.active; if (!p || !s.players[p]) break;
+          const ids = Object.values(s.cards).filter(c => c.zone === 'battlefield' && c.ctrl === p && c.tapped && (c.faceDown || R.isType(c, 'creature')) && !(/without flying/.test(o.what) && C.has(c, 'flying', s))).map(c => c.id);
+          if (!ids.length) break;
+          if (isAI(s, p) || !R.live(s, p)) { const got = []; for (const id of ids.sort((a, b) => (C.pt(s, s.cards[b]) || [0])[0] - (C.pt(s, s.cards[a]) || [0])[0])) { if (!payMana(s, p, o.cost, notes)) break; s.cards[id].tapped = false; got.push(cardName(s.cards[id])); } if (got.length) notes.push(`${nameOf(s, p)} paid to untap ${R.listNames(got)} (${srcName})`); break; }
+          s.ask = (s.ask || []).concat([{ id: 'a' + (++s.seq), kind: 'payUntap', pid: p, cost: o.cost, name: srcName, ids, since: Date.now() }]);
+          break;
+        }
+        case 'gainAbility': { const c = s.cards[srcId]; if (!c || c.zone !== 'battlefield') break; c.gained = (c.gained || []).concat([String(o.text).slice(0, 300)]); notes.push(`${cardName(c)} gained “${o.text}”`); break; }
+        case 'removeAll': { const c = s.cards[srcId]; if (!c) break; st.last = (c.counters || {})[o.kind] || 0; if (c.counters) delete c.counters[o.kind]; notes.push(`${cardName(c)}: removed ${st.last} ${o.kind} counter${st.last === 1 ? '' : 's'}`); break; }
+        case 'discardIfNone': for (const p of s.seats) { if (!R.alive(s, p)) continue; const has = Object.values(s.cards).some(c => c.zone === 'battlefield' && c.ctrl === p && C.matchesWhat(c, o.what)); if (!has) { R.todo(s, p, { k: 'discard', n: 1, src: srcName }); notes.push(`${nameOf(s, p)} had nothing to sacrifice, so they discard a card (${srcName})`); } } break;
+        case 'delayedDraw': for (const p of players(o.who)) { s.delayedDraws = (s.delayedDraws || []).concat([{ pid: p, n: o.n, after: s.turn.n, src: srcName }]); notes.push(`${nameOf(s, p)} will draw ${o.n > 1 ? o.n + ' cards' : 'a card'} at the beginning of the next upkeep (${srcName})`); } break;
+        case 'rashmi': R.todo(s, by, { k: 'cascade', mv: ctx.mv || 0, top: true, discover: true, src: srcName }); notes.push(`${nameOf(s, by)} reveals the top card of their library (${srcName})`); break;
+        case 'tempt': {
+          const P = s.players[by]; if (!P) break;
+          P.ring = Math.min(4, (P.ring || 0) + 1);
+          const mine = Object.values(s.cards).filter(c => c.zone === 'battlefield' && c.ctrl === by && (c.faceDown || R.isType(c, 'creature')));
+          const cur = P.ringBearer && s.cards[P.ringBearer] && s.cards[P.ringBearer].zone === 'battlefield' && s.cards[P.ringBearer].ctrl === by ? s.cards[P.ringBearer] : null;
+          const pick = cur || mine.sort((a, b) => ((C.pt(s, b) || [0])[0] - (C.pt(s, a) || [0])[0]) || (a.token - b.token))[0];
+          P.ringBearer = pick ? pick.id : null;
+          notes.push(`The Ring tempts ${nameOf(s, by)} (level ${P.ring})${pick ? ' — ' + cardName(pick) + ' is the Ring-bearer' : ''}`);
+          emit({ type: 'tempt', player: by });
+          break;
+        }
         case 'extraTurn': { s.extraTurns = (s.extraTurns || []).concat([by]); notes.push(`${nameOf(s, by)} will take an extra turn after this one (${srcName}, 500.7)`); break; }
         case 'tap': { const cs = cards(o.what); for (const c of cs) c.tapped = true; if (cs.length) notes.push(`${srcName} tapped ${R.listNames(cs.map(cardName))}`); break; }
         case 'addMana': {
@@ -690,7 +743,7 @@
           const cs = cards(o.what);
           const perPoison = o.per && /^poison counters? its controller has$/.test(o.per);
           const mult = o.per && !perPoison ? val({ v: 'count', what: o.per, ctrl: /you control/.test(o.per) ? 'you' : 'any' }) : 1;
-          const XX = o.xv ? val(o.xv) : X;
+          const XX = o.xv ? val(o.xv) : X; st.lastX = XX;
           let num = v => /x/.test(v) ? Math.sign(parseInt(v.replace(/x/, '1'), 10)) * XX : parseInt(v, 10) * mult;
           let p = num(o.p), t = num(o.t);
           if (perPoison) { const base = [parseInt(o.p, 10), parseInt(o.t, 10)]; for (const c of cs) { const k = ((s.players[c.ctrl] || {}).poison) || 0; if (!k) continue; c.mod = [(c.mod ? c.mod[0] : 0) + base[0] * k, (c.mod ? c.mod[1] : 0) + base[1] * k]; badge(c, { label: `${base[0] * k}/${base[1] * k}`, until: 'eot' }); } notes.push(`${srcName}: creatures got -1/-1 for each poison counter their controller has`); break; }
@@ -790,7 +843,7 @@
         case 'transform': { const c = src && s.cards[src.id]; if (c && c.d && c.d.faces.length > 1) { const nm = cardName(c); c.face = c.face ? 0 : 1; c.row = R.rowFor(c); notes.push(`${nm} transformed into ${cardName(c)}`); } break; }
         case 'search': {
           if (/^basic (?:land|plains|island|swamp|mountain|forest)/.test(o.filter) || o.filter === 'basic land') R.todo(s, by, { k: 'fetch', n: o.n, dest: o.dest, tapped: o.tapped, split: o.split, filter: o.filter, src: srcName });
-          else R.todo(s, by, { k: 'search', n: o.n, upTo: o.upTo, dest: o.dest, tapped: o.tapped, filter: o.filter, src: srcName });
+          else R.todo(s, by, { k: 'search', n: o.n, upTo: o.upTo, dest: o.dest, tapped: o.tapped, filter: o.filter, mvMax: o.mvMax, splitGy: !!o.splitGy, src: srcName });
           break;
         }
         case 'attach': { const at = src && s.cards[src.id], t = cards(o.to)[0]; if (at && t && at.zone === 'battlefield') { at.attachedTo = t.id; notes.push(`${cardName(at)} is now attached to ${cardName(t)}`); } break; }
@@ -829,9 +882,14 @@
           if (n) { s.delayedMana = (s.delayedMana || []).concat([{ pid: by, n, after: s.turn.n, src: srcName }]); notes.push(`${nameOf(s, by)} will add {C}×${n} at the beginning of their next main phase (${srcName})`); }
           break;
         }
+        case 'fetchFor': for (const p of players(o.who)) { R.todo(s, p, { k: 'fetch', n: 1, dest: 'battlefield', tapped: !!o.tapped, optional: true, src: srcName }); notes.push(`${nameOf(s, p)} may search for a basic land (${srcName})`); } break;
+        case 'impulse': { const n = val(o.n); R.todo(s, by, { k: 'impulse', n, until: o.until, from: s.turn.n, src: srcName }); notes.push(`${nameOf(s, by)} exiles the top ${n > 1 ? n + ' cards' : 'card'} of their library and may play ${n > 1 ? 'them' : 'it'} ${o.until === 'next' ? 'until the end of their next turn' : 'this turn'} (${srcName})`); break; }
         case 'handToTop': R.todo(s, by, { k: 'handToTop', n: val(o.n), src: srcName }); break;
         case 'look': R.todo(s, by, { k: 'look', n: val(o.n), reveal: !!o.reveal, text: o.text, src: srcName }); break;
-        case 'addlCost': case 'altCost': case 'choose': case 'rest': break;
+        case 'addlCost': case 'altCost': case 'choose': case 'rest': case 'newTargets': break;
+        case 'reveal': for (const p of players(o.who)) notes.push(`${nameOf(s, p)} reveals their hand (${srcName}) — they show it to the table`); break;
+        case 'shuffleGy': for (const p of players(o.who)) { const gy = Object.values(s.cards).filter(c => c.zone === 'graveyard' && c.owner === p); for (const c of gy) R.moveOne(s, c, 'library', 'shuffle', null, notes); notes.push(`${nameOf(s, p)} shuffled their graveyard (${gy.length}) into their library (${srcName})`); } break;
+        case 'freeCast': if (o.from === 'hand' || o.from === 'graveyard') { R.todo(s, by, { k: 'freeCast', from: o.from, filter: o.filter, mvMax: o.mvMax == null ? undefined : val(o.mvMax), src: srcName }); notes.push(`${nameOf(s, by)} may cast ${o.filter === 'card' ? 'a spell' : 'a ' + o.filter + ' spell'} from their ${o.from} for free (${srcName})`); } else st.manual.push(o.src || 'Cast it without paying its mana cost'); break;
         case 'manual': st.manual.push(o.text); break;
         default: st.manual.push(o.text || (typeof o.src === 'string' ? o.src : '') || o.op);
       }
@@ -930,6 +988,13 @@
       else notes.push(`${cardName(c)} entered as itself (no copy)`);
       return { ok: true };
     }
+    if (ask.kind === 'payUntap') {
+      const want = (Array.isArray(a.ids) ? a.ids : []).filter(id => ask.ids.includes(id) && s.cards[id] && s.cards[id].tapped);
+      const got = [];
+      for (const id of want) { if (!payMana(s, pid, ask.cost, notes)) break; s.cards[id].tapped = false; got.push(cardName(s.cards[id])); }
+      if (got.length) notes.push(`${nameOf(s, pid)} paid ${ask.cost} each to untap ${R.listNames(got)} (${ask.name})`);
+      return { ok: true };
+    }
     if (ask.kind === 'pay') {
       if (a.yes && payMana(s, pid, ask.cost, notes)) { notes.push(`${nameOf(s, pid)} paid ${ask.cost} (${ask.name})`); place(s, notes); return { ok: true }; }
       if (a.yes) notes.push(`${nameOf(s, pid)} couldn’t pay ${ask.cost} with untapped lands (${ask.name})`);
@@ -972,6 +1037,7 @@
       if (ask.kind === 'manual') { if (now - ask.since > 10 * 60000) { s.ask = s.ask.filter(x => x !== ask); changed = true; } continue; }
       s.ask = s.ask.filter(x => x !== ask); changed = true;
       if (ask.kind === 'assign') { const K = s.combat; if (K && !K.done) { K.assign = K.assign || {}; K.assign[ask.att] = 'auto'; I().combatDamage(s, notes); } continue; }
+      if (ask.kind === 'payUntap') { continue; }
       if (ask.kind === 'pay') { s.ask.push(ask); answer(s, ask.pid, { id: ask.id, yes: false }, notes); continue; }
       if (ask.kind === 'mutate') { s.ask.push(ask); answer(s, ask.pid, { id: ask.id, top: true }, notes); continue; }
       if (ask.kind === 'choose' || ask.kind === 'enterOpt' || ask.kind === 'copy') { s.ask.push(ask); answer(s, ask.pid, { id: ask.id, value: '', yes: false }, notes); continue; }
@@ -988,6 +1054,11 @@
   // ======================= temporary effects =======================
   // Cleanup step (514.2): "until end of turn" effects end; badges and the counters they stood for go away.
   function endOfTurn(s) {
+    // Impulse-drawn cards stop being playable (eot: this turn; next: at the end of their owner's next turn).
+    for (const c of Object.values(s.cards)) {
+      const mp = c.mayPlay; if (!mp) continue;
+      if (c.zone !== 'exile' || (mp.until === 'eot' && s.turn.n >= mp.from) || (mp.until === 'next' && s.turn.active === mp.by && s.turn.n > mp.from)) c.mayPlay = null;
+    }
     for (const c of Object.values(s.cards)) {
       if (!c.eot) continue;
       const keep = [];
@@ -1023,6 +1094,7 @@
       if (d.step !== step) { keep.push(d); continue; }
       const c = s.cards[d.id];
       if (c && c.zone !== 'battlefield') { R.moveOne(s, c, d.to, 'top', d.to === 'battlefield' ? { by: d.by, tapped: d.tapped } : null, notes); notes.push(`${cardName(c)} returned (${d.src})`); }
+      else if (c && c.zone === 'battlefield' && d.to !== 'battlefield' && d.energy && s.players[c.ctrl] && (s.players[c.ctrl].energy || 0) >= ((c.d && +c.d.cmc) || 0)) { const mv = (c.d && +c.d.cmc) || 0; s.players[c.ctrl].energy -= mv; notes.push(`${nameOf(s, c.ctrl)} paid ${mv} energy to keep ${cardName(c)} (${d.src})`); }
       else if (c && c.zone === 'battlefield' && d.to !== 'battlefield') { const nm = cardName(c); R.moveOne(s, c, d.to, 'top', { sac: !!d.sac }, notes); if (d.src === 'warp' && s.cards[c.id]) s.cards[c.id].warpedOut = true; notes.push(`${nm} ${d.to === 'hand' ? 'returned to its owner’s hand' : d.to === 'exile' ? 'was exiled' : 'was sacrificed'} (${d.src})`); }
     }
     s.delayed = keep;
@@ -1059,6 +1131,7 @@
       T.phase = next;
       if (R.PHASES[next] === 'Cleanup') { R.clearMods(s); endOfTurn(s); }
       if (R.PHASES[next] === 'End step') delayed(s, 'end', notes);
+      if (R.PHASES[next] === 'End of combat') delayed(s, 'endCombat', notes);
       check(s, notes);
       // Before the turn ends, the other players get a chance to act in the end step — but only humans who can respond;
       // their screens pass by themselves when they have nothing to do (117.3).

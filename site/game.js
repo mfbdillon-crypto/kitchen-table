@@ -277,7 +277,7 @@
     });
     savePriv();
     const land = cards.every(isLand);
-    const r = await act({ type: 'enter', zone, from, cards: send, tapped: !!opts.tapped, pos: opts.pos, row: opts.row, land: !!opts.playLand, tg: opts.tg, mode: opts.mode, x: opts.x, wardPaid: !!opts.wardPaid, fromPool: opts.fromPool, cast: !!opts.cast, alt: opts.alt, via: opts.via, sacCost: opts.sacCost, msg: msgFor(zone, Object.assign({ land }, opts), from) });
+    const r = await act({ type: 'enter', zone, from, cards: send, tapped: !!opts.tapped, pos: opts.pos, row: opts.row, land: !!opts.playLand, tg: opts.tg, mode: opts.mode, x: opts.x, wardPaid: !!opts.wardPaid, fromPool: opts.fromPool, cast: !!opts.cast, alt: opts.alt, via: opts.via, sacCost: opts.sacCost, mayPlay: opts.mayPlay, msg: msgFor(zone, Object.assign({ land }, opts), from) });
     if (r.ok) lastAct = { zone, ids, t: Date.now() };
     if (!r.ok) {
       // Only put the cards back if the table really refused. If we just never heard back, look at the board:
@@ -311,7 +311,8 @@
   G.block = list => act({ type: 'block', list });
   G.fromLibrary = (ids, zone, opts) => toPublic(P.library, ids, zone, opts, 'library');
   // Cascade (702.85): exile from the top until a nonland card with lesser mana value; it may be cast free; the rest go to the bottom in a random order.
-  G.cascadeReveal = function (mv) {
+  G.cascadeReveal = function (mv, top) {
+    if (top) { const c = P.library.shift(); if (!c) return null; P.hand.push(c); savePriv(); log(`revealed ${c.d.n} from the top of their library`); return !isLand(c) && (+c.d.cmc || 0) < mv ? c : null; }
     const out = []; let hit = null;
     while (P.library.length) { const c = P.library.shift(); out.push(c); if (!isLand(c) && (+c.d.cmc || 0) < mv) { hit = c; break; } }
     const rest = out.filter(c => c !== hit);
@@ -323,6 +324,12 @@
   };
   // "Exile cards from the top of your library until you exile a nonland permanent card…" (Illuna, Auspicious Starrix, The Regalia).
   // digFind looks (top down) for N matching cards; digFinish moves them and the rest where the card says.
+  // Impulse draw: the top N cards go to exile face up, playable for a while.
+  G.impulse = async function (t) {
+    const ids = P.library.slice(0, Math.max(1, t.n || 1)).map(c => c.id);
+    if (ids.length) await toPublic(P.library, ids, 'exile', { mayPlay: { until: t.until, from: t.from }, msg: `exiled {cards} from the top of their library (${t.src}) — they may play ${ids.length > 1 ? 'them' : 'it'} ${t.until === 'next' ? 'until the end of their next turn' : 'this turn'}` });
+    return ids;
+  };
   G.digFind = function (t) {
     const n = Math.max(1, t.n || 1), want = String(t.what || 'card');
     const fits = c => !c.d ? false : want === 'card' || window.Cards.matchesWhat(Object.assign({ zone: 'library', owner: KEY, counters: {}, face: 0 }, c), want);
@@ -529,9 +536,13 @@
   G.fetchLands = async function (ids, t) {
     const chosen = ids.slice(0, t.n || 1);
     const toBf = t.split ? chosen.slice(0, 1) : t.dest === 'battlefield' ? chosen : [];
-    const toHand = t.split ? chosen.slice(1) : t.dest === 'hand' ? chosen : [];
+    const toGy = t.splitGy ? chosen.slice(1) : t.dest === 'graveyard' ? chosen : [];
+    const toHand = t.split ? chosen.slice(1) : t.splitGy ? chosen.slice(0, 1) : t.dest === 'hand' ? chosen : [];
     if (toHand.length) { const cards = take(P.library, toHand); P.hand.push(...cards); }
-    shuffle(P.library); savePriv();
+    if (toGy.length) await G.fromLibrary(toGy, 'graveyard', { msg: `put {cards} into their graveyard (${t.src})` });
+    const toTop = t.dest === 'top' ? take(P.library, chosen) : [];
+    shuffle(P.library); P.library.unshift(...toTop); savePriv();
+    if (toTop.length) log(`searched their library, revealed ${toTop.map(c => c.d.n).join(', ')} and put it on top (${t.src})`);
     if (toBf.length) await G.fromLibrary(toBf, 'battlefield', { tapped: t.tapped, msg: `put {cards} onto the battlefield${t.tapped ? ' tapped' : ''} (${t.src})` });
     log(`searched their library${toHand.length ? `, put ${plural(toHand.length, t.k === 'search' ? 'card' : 'land')} into their hand` : ''} and shuffled (${t.src})`);
   };
