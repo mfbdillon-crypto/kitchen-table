@@ -161,6 +161,8 @@
   function parseTrigger(line) {
     // "Whenever you cast an Aura, Equipment, or Vehicle spell, …": the type list's commas aren't the event's end.
     line = line.replace(/\b(casts? an? [a-z]+(?:, [a-z]+)*),? or ([a-z]+ spells?)/i, (m0, a, b) => a.replace(/, /g, ' or ') + ' or ' + b);
+    // "Whenever a Goblin, Orc, or Army you control dies, …": a list of subtypes.
+    line = line.replace(/\b(a|an|another) ([A-Z][a-z]+), ([A-Z][a-z]+),? or ([A-Z][a-z]+)\b/, (m0, a, x, y, z) => `${a} ${x} or ${y} or ${z}`);
     const m = line.match(/^(when|whenever|at)\s+(.+?),\s+(.+)$/i);
     if (!m) return null;
     let evText = (m[1].toLowerCase() === 'at' ? 'at ' : '') + m[2], rest = m[3];
@@ -303,7 +305,8 @@
       const act = parseActivated(line);
       if (act) { const a = Object.assign({ kind: act.isMana ? 'mana' : 'activated', text: line, abilityWord }, act); m.abilities.push(a); if (MODAL.test(a.effect || '')) { a.modes = []; modal = a; } continue; }
       // On an instant or sorcery, every line that isn't about casting it is part of what it does ("Creatures you control get +2/+1 until end of turn").
-      if (isSpell && !/^(?:this spell|this) (?:can't be countered|costs)|^as an additional cost|^affinity for|^if you control a commander/i.test(line)) { m.abilities.push({ kind: 'spell', text: line }); continue; }
+      if (isSpell && /^(?:escalate|rebound|split second|epic|fuse|transmute|suspend|storm|replicate|buyback|entwine|splice|conspire|demonstrate|casualty|squad|gift|freerunning|bargain)\b/i.test(line)) { m.abilities.push({ kind: 'keyword', text: line }); continue; }
+      if (isSpell && !/^(?:this spell|this) (?:can't be countered|costs)|^as an additional cost|^affinity for|^if you control a commander|^(?:escalate|rebound|split second|epic|fuse|transmute|suspend|storm|replicate|buyback|kicker|multikicker|flashback|cycling|overload|retrace|jump-start|entwine|splice|conspire|demonstrate|casualty|squad|offspring|gift|freerunning|bargain|harmonize|warp|sneak)\b/i.test(line)) { m.abilities.push({ kind: 'spell', text: line }); continue; }
       const rep = parseReplacement(line);
       if (rep) { m.abilities.push(Object.assign({ text: line }, rep, { kind: 'replacement', sub: rep.kind })); continue; }
       const st = parseStatic(line);
@@ -326,7 +329,7 @@
         const nw = { one: 1, two: 2, three: 3, four: 4 };
         // "Choose up to X, where X is the number of times you chose a mode for that spell" (Riku of Many Paths).
         const choose = a.spree ? { min: 1, max: a.modes.length } : !mm ? 1 : /one or more|any number|one or both/.test(mm[1]) ? { min: 1, max: a.modes.length } : mm[2] === 'x' ? { min: 0, max: 'X', modesOfSpell: /number of times you chose a mode/.test(h) } : mm[2] ? { min: /^up to/.test(mm[1]) ? 0 : 1, max: nw[mm[2]] || 1 } : nw[mm[1]] || 1;
-        const pre = a.spree ? '' : h.replace(/choose [^—]*—/, '').replace(/choose [^.—]*(?:—|\.)/, '').replace(/if you control a commander[^.]*\./, '').replace(/you may choose the same mode more than once\.?/, '').replace(/^\s*\./, '').trim();
+        const pre = a.spree ? '' : h.replace(/escalate (?:\{[^}]+\})+/, '').replace(/choose [^—]*—/, '').replace(/choose [^.—]*(?:—|\.)/, '').replace(/if you control a commander[^.]*\./, '').replace(/you may choose the same mode more than once\.?/, '').replace(/^\s*\./, '').trim();
         const preOps = pre ? E.parse(pre) : { ops: [], understood: true, targets: 0 };
         const modes = a.modes.map(x => { const r = E.parse(x.replace(/^\+\s*(?:\{[^}]+\})+\s*—\s*/, '').replace(/^[^—]{1,30} — /, '')); return { text: x, ops: r.ops, understood: r.understood, nTargets: r.targets }; });
         a.ops = preOps.ops.concat([{ op: 'modes', choose, both: /may choose both/.test(h), repeat: /same mode more than once/.test(h), modes }]);

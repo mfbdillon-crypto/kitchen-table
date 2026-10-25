@@ -45,6 +45,7 @@
     // Life totals that changed (119.9 "gains life", "loses life").
     for (const pid of s.seats) {
       const P = s.players[pid]; if (!P) continue;
+      if (P.lifeLock && P.life !== P.lifeLock.v) P.life = P.lifeLock.v;   // Teferi's Protection: the life total can't change
       const was = m.life[pid];
       if (was != null && P.life !== was) {
         const d = P.life - was;
@@ -53,6 +54,7 @@
       }
     }
     m.life = lifeMap(s);
+    for (const pid of s.seats) { const P = s.players[pid]; if (P && P.lifeLock && P.life !== P.lifeLock.v) { P.life = P.lifeLock.v; m.life[pid] = P.life; } }
     // Steps of the turn that began since the last look.
     if (m.turn) {
       const steps = [];
@@ -493,6 +495,9 @@
     const count = v => {
       const w = String(v.what || '').replace(/ (?:you control|on the battlefield|your opponents control|an opponent controls)$/, '');
       const list = Object.values(s.cards).filter(c => c.zone === 'battlefield' && (v.ctrl === 'you' ? c.ctrl === by : v.ctrl === 'opp' ? c.ctrl !== by : true));
+      // "creature you control with a +1/+1 counter on it"
+      const cm = w.match(/^(.+?) (?:you control )?with an? ([+\-\d/]+|[a-z]+) counter on it$/);
+      if (cm) return list.filter(c => C.matchesWhat(c, cm[1].replace(/s$/, '')) && ((c.counters || {})[cm[2]] || 0) > 0).length * (v.times || 1);
       return list.filter(c => C.matchesWhat(c, w.replace(/s$/, '').replace(/ies$/, 'y'))).length * (v.times || 1);
     };
     const val = n => {
@@ -533,7 +538,7 @@
           const what = w.k === 'each' ? String(w.what || 'permanent').replace(/s$/, '').replace(/^creature$/, 'creature') : 'creature';
           return Object.values(s.cards).filter(c => c.zone === 'battlefield' && !(w.other && c.id === srcId) &&
             (w.ctrl === 'you' ? c.ctrl === by : w.ctrl === 'opp' ? c.ctrl !== by : w.ctrl === 'evPlayer' ? c.ctrl === ctx.p : w.ctrl === 'targetP' ? (legal[w.i || 0] || []).some(t => t.p === c.ctrl) : true) &&
-            (what === 'attacking creature' ? !!(s.combat && s.combat.att && s.combat.att[c.id]) : C.matchesWhat(c, what.replace(/ies$/, 'y'))) &&
+            (what === 'attacking creature' ? !!(s.combat && s.combat.att && s.combat.att[c.id]) : what === 'blocking creature' ? !!(s.combat && s.combat.att && Object.values(s.combat.att).some(a => (a.blk || []).includes(c.id))) : C.matchesWhat(c, what.replace(/ies$/, 'y'))) &&
             (!w.with || C.has(c, w.with, s)) && (!w.without || !C.has(c, w.without, s)) && (!w.powerMin || (C.pt(s, c) || [0])[0] >= w.powerMin));
         }
       }
@@ -719,6 +724,16 @@
         case 'delayedDraw': for (const p of players(o.who)) { s.delayedDraws = (s.delayedDraws || []).concat([{ pid: p, n: o.n, after: s.turn.n, src: srcName }]); notes.push(`${nameOf(s, p)} will draw ${o.n > 1 ? o.n + ' cards' : 'a card'} at the beginning of the next upkeep (${srcName})`); } break;
         case 'rashmi': R.todo(s, by, { k: 'cascade', mv: ctx.mv || 0, top: true, discover: true, src: srcName }); notes.push(`${nameOf(s, by)} reveals the top card of their library (${srcName})`); break;
         case 'noLifeGain': { s.turn.noGain = { n: s.turn.n, by }; notes.push(`${nameOf(s, by)}’s opponents can’t gain life this turn (${srcName})`); break; }
+        // Phasing (702.26): a phased-out permanent is treated as though it doesn't exist until its controller's next untap step.
+        case 'phaseOut': for (const c of cards(o.what)) { if (c.zone !== 'battlefield') continue; c.zone = 'phased'; c.phasedBy = c.ctrl; for (const a of Object.values(s.cards)) if (a.attachedTo === c.id && a.zone === 'battlefield') { a.zone = 'phased'; a.phasedBy = c.ctrl; } notes.push(`${cardName(c)} phased out (${srcName})`); } break;
+        case 'teferi': {
+          const P = s.players[by]; if (!P) break;
+          P.lifeLock = { v: P.life }; P.protAll = true;
+          let n = 0; for (const c of Object.values(s.cards)) if (c.zone === 'battlefield' && c.ctrl === by) { c.zone = 'phased'; c.phasedBy = by; n++; }
+          if (s.combat && s.combat.att) for (const id of Object.keys(s.combat.att)) if (s.cards[id] && s.cards[id].zone === 'phased') delete s.combat.att[id];
+          notes.push(`${nameOf(s, by)}'s life total can't change and they have protection from everything until their next turn; ${n} permanents phased out (${srcName})`);
+          break;
+        }
         case 'tempt': {
           const P = s.players[by]; if (!P) break;
           P.ring = Math.min(4, (P.ring || 0) + 1);

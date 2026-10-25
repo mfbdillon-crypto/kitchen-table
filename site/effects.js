@@ -117,12 +117,13 @@
     // Players.
     if ((m = body.match(/^draws? (\w+|x) cards?$/)) || (m = body.match(/^draws? a card$/))) return [wrap({ op: 'draw', who: subj, n: m[1] ? amt(m[1]) : 1 })];
     if ((m = body.match(/^draws? cards equal to (.+)$/))) return [wrap({ op: 'draw', who: subj, n: variable(m[1]) })];
+    if ((m = body.match(/^draws? a card for each (.+? with an? [^ ]+ counter on it)$/))) return [wrap({ op: 'draw', who: subj, n: { v: 'count', what: m[1].replace(/ you control/, ''), ctrl: /you control/.test(m[1]) ? 'you' : 'any' } })];
     if ((m = body.match(/^draws? a card for each (?:creature|permanent|card)s? (?:destroyed|exiled|sacrificed|put into a graveyard) this way$/))) return [wrap({ op: 'draw', who: subj, n: { v: 'lastAmount' } })];
     if ((m = body.match(/^draws? a card for each (.+)$/)) && !/\b(?:it|this way|devoured|exiled|that|those)\b/.test(m[1])) return [wrap({ op: 'draw', who: subj, n: { v: 'count', what: m[1].replace(/ you control$/, ''), ctrl: /you control/.test(m[1]) ? 'you' : 'any' } })];
     if ((m = body.match(/^draws? that many cards$/))) return [wrap({ op: 'draw', who: subj, n: { v: 'thatMany' } })];
     if ((m = body.match(/^draws? an additional card$/))) return [wrap({ op: 'draw', who: subj, n: 1 })];
     if ((m = body.match(/^discards? (\w+) cards?(?: at random)?$/)) || (m = body.match(/^discards? a card(?: at random)?$/))) return [wrap({ op: 'discard', who: subj, n: m[1] ? amt(m[1]) : 1, random: /at random/.test(body) })];
-    if (/^discards? (?:your|their) hand$/.test(body)) return [wrap({ op: 'discard', who: subj, n: 99, all: true })];
+    if (/^discards? (?:your|their) hand$|^discards? all the cards in (?:your|their) hand$/.test(body)) return [wrap({ op: 'discard', who: subj, n: 99, all: true })];
     if ((m = body.match(/^mills? cards equal to (.+)$/))) { const n = variable(m[1]); if (n) return [wrap({ op: 'mill', who: subj, n })]; }
     if ((m = body.match(/^mills? (\w+) cards?$/))) return [wrap({ op: 'mill', who: subj, n: amt(m[1]) })];
     if ((m = body.match(/^gains? (\d+|x|that much) life$/))) return [wrap({ op: 'life', who: subj, n: m[1] === 'that much' ? { v: 'lastAmount' } : amt(m[1]), sign: 1 })];
@@ -156,8 +157,13 @@
     if ((m = s.match(/^return (it|this|that card) to its owner's hand at the beginning of the next end step$/))) return [wrap({ op: 'move', what: m[1] === 'this' ? { k: 'self' } : { k: 'ev' }, to: 'hand', delayed: true })];
     // Arcane Denial: draws at the beginning of the next turn's upkeep.
     if ((m = s.match(/^(you|its controller) (?:may )?draws? (a card|up to two cards|two cards) at the beginning of the next turn's upkeep$/))) return [wrap({ op: 'delayedDraw', who: m[1] === 'you' ? { k: 'you' } : { k: 'targetCtrl', i: 0 }, n: /two/.test(m[2]) ? 2 : 1 })];
+    if (/^each attacking creature and each blocking creature doesn't untap during its controller's next untap step$/.test(s)) return [wrap({ op: 'skipUntap', what: { k: 'each', what: 'attacking creature', ctrl: 'any' } }), wrap({ op: 'skipUntap', what: { k: 'each', what: 'blocking creature', ctrl: 'any' } })];
+    if ((m = s.match(/^(?:its|their) owners? shuffles? (it|them) into (?:their|its) library$/))) return [wrap({ op: 'move', what: { k: 'ev' }, to: 'library', pos: 'shuffle' })];
+    if ((m = body.match(/^shuffles? up to (\w+) target cards from (?:their|your) graveyard into (?:their|your) library$/))) return [wrap({ op: 'move', what: { k: 't', i: st.ti++, upTo: true, n: amt(m[1]) || 3 }, to: 'library', pos: 'shuffle' })];
+    if ((m = s.match(/^(tap|untap) another target (.+)$/))) return [wrap({ op: m[1], what: targetOf('target ' + m[2], st) })];
+    if ((m = s.match(/^(target .+?|it|that creature|this) phases out$/))) { const what = targetOf(m[1], st) || (m[1] === 'it' && st.ti > 0 ? { k: 't', i: st.ti - 1 } : null); if (what) return [wrap({ op: 'phaseOut', what })]; }
     if (/^the ring tempts you$/.test(s)) return [wrap({ op: 'tempt' })];
-    if ((m = s.match(/^put (target .+?|that card|it) on top of (?:its|their) owner's library$/))) { const what = targetOf(m[1], st); if (what) return [wrap({ op: 'move', what, to: 'library', pos: 'top' })]; }
+    if ((m = s.match(/^put (target .+?|that card|it|this) on top of (?:its|their) owner's library$/)) || (m = s.match(/^put (target .+? from your graveyard|that card|it) on top of your library$/))) { const what = targetOf(m[1], st); if (what) return [wrap({ op: 'move', what, to: 'library', pos: 'top' })]; }
     if ((m = s.match(/^put (target .+?|that card|it) into (?:its|their) owner's library (second|third) from the top$/))) { const what = targetOf(m[1], st); if (what) return [wrap({ op: 'move', what, to: 'library', pos: m[2] === 'second' ? 'n2' : 'n3' })]; }
     if ((m = s.match(/^(?:your )?opponents can't gain life this turn$/))) return [wrap({ op: 'noLifeGain' })];
     if ((m = s.match(/^untaps? all basic lands (?:they|you) control$/)) || (m = body.match(/^untaps? all basic lands (?:they|you) control$/))) return [wrap({ op: 'untap', what: { k: 'each', what: 'basic land', ctrl: subj.k === 't' ? 'targetP' : 'you', i: subj.i } })];
@@ -334,7 +340,8 @@
     // Impulse draw: "Exile the top card of your library. Until the end of your next turn, you may play it." (Riku, Jeska's Will…)
     const t0i = t1.replace(/exile the top (card|two cards|three cards|four cards|x cards|\w+ cards) of your library\.\s*(until the end of your next turn|until end of turn|until your next end step|this turn)?,?\s*you may play (?:it|them|that card|those cards)( this turn| until end of turn| until the end of your next turn)?\./g,
       (all, n, w1, w2) => { const w = (w1 || w2 || 'this turn').trim(); const k = /next turn|next end step/.test(w) ? 'next' : 'eot'; const nn = n === 'card' ? 1 : (n.split(' ')[0]); return `__impulse:${nn}:${k}__.`; });
-    const t1a = t0i.replace(/choose a color\. add an amount of mana of that color equal to your devotion to that color\./g, '__devotion__.');
+    const t0t = t0i.replace(/until your next turn, your life total can't change and you gain protection from everything\. all permanents you control phase out\./g, '__teferi__.');
+    const t1a = t0t.replace(/choose a color\. add an amount of mana of that color equal to your devotion to that color\./g, '__devotion__.');
     const t1b = t1a.replace(/(?:reveal|look at) the top card of your library\. if it's an? ([a-z ]+?) card( of the chosen type)?, (you may )?(?:reveal it and )?put it (onto the battlefield|into your hand)\.(?: otherwise, you may put (?:that card|it) on the bottom of your library\.)?/g,
       (all, what, chosen, may, dest) => `__top:${what.trim()}:${chosen ? 1 : 0}:${/battlefield/.test(dest) ? 'battlefield' : 'hand'}:${/otherwise/.test(all) ? 1 : 0}__.`);
     // Worldly / Enlightened Tutor: "search your library for a creature card, reveal it, then shuffle and put the card on top".
@@ -354,7 +361,7 @@
       if (/^as an additional cost to cast this spell, (?:pay x life|sacrifice (?:a|an) [a-z ]+?(?: or discard a card)?)\.?$/.test(sent)) continue;   // paid as it's cast (601.2f)
       if (/^if you control a commander, you may cast this(?: spell)? without paying its mana cost\.?$/.test(sent)) continue;
       if (/^if that spell would be put into (?:your|a) graveyard, exile it instead\.?$/.test(sent)) continue;   // the free spell is exiled afterwards (not tracked)   // an alternative cost
-      if (/^rebound\.?$/.test(sent)) continue;   // handled as it resolves (702.88)
+      if (/^(?:rebound|split second|epic|fuse|escalate (?:\{[^}]+\})+|transmute (?:\{[^}]+\})+|suspend \d+—(?:\{[^}]+\})+)\.?$/.test(sent)) continue;   // keywords handled elsewhere (or by the players)   // handled as it resolves (702.88)
       if (/^activate (?:this ability )?only\b|^this ability costs (?:\{[^}]+\})+ less to activate\b/.test(sent)) continue;   // checked when it's activated (602.5)
       // Cost changes and "can't be countered" are about casting it, not what it does (601.2f, 101.2).
       if (/^this(?: spell)? costs? (?:\{[^}]+\})+ (?:less|more) to cast\b|^this spell can't be countered\.?$|^affinity for /.test(sent)) continue;   // paid as it's cast (601.2f)
@@ -365,6 +372,7 @@
       const fn = sent.match(/^__finale:([a-z ]+)__\.?$/);
       if (fn) { ops.push({ op: 'search', n: 1, filter: fn[1], mvMax: { v: 'X' }, dest: 'battlefield' }); continue; }
       if (/^__rashmi__\.?$/.test(sent)) { ops.push({ op: 'rashmi' }); continue; }
+      if (/^__teferi__\.?$/.test(sent)) { ops.push({ op: 'teferi' }); continue; }
       if (/^__devotion__\.?$/.test(sent)) { ops.push({ op: 'addDevotion' }); continue; }
       const tc = sent.match(/^__top:([a-z -]+):([01]):(battlefield|hand):([01])__\.?$/);
       if (tc) { ops.push({ op: 'dig', what: tc[1], n: 1, top: true, chosen: tc[2] === '1', dest: tc[3], mayBottom: tc[4] === '1', rest: 'top', tapped: false }); continue; }

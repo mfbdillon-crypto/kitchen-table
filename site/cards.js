@@ -411,6 +411,7 @@
     const modes = parts.filter(x => x && !/^choose/i.test(x));
     if (modes.length < 2) return null;
     const out = { pick: /one or both|one or more|any number/i.test(m[1]) ? 'many' : toNum(m[1]) || 1, modes };
+    const esc = t.match(/^escalate ((?:\{[^}]+\})+)/im); if (esc) out.escalate = esc[1];
     if (/choose the same mode more than once/i.test(head)) out.repeat = true;
     const more = head.match(/if (.+?), (?:you may )?choose (both|two|any number)(?: instead)?/i);
     if (more) { out.more = { cond: more[1].toLowerCase(), pick: /any number/i.test(more[2]) ? 'many' : 2 }; }
@@ -489,6 +490,7 @@
     if (t.p) {
       if (!req.kinds.includes('player')) return false;
       if (!s.players[t.p] || s.players[t.p].lost) return false;
+      if (s.players[t.p].protAll && t.p !== by) return false;   // protection from everything
       if (req.ctrl === 'opp' && t.p === by) return false;
       if (req.ctrl === 'you' && t.p !== by) return false;
       return true;
@@ -865,7 +867,7 @@
   function instantSpeed(c) { return /\binstant\b/i.test(typeLine(c)) || has(c, 'flash'); }
 
   // Spree: the extra mana for the modes chosen.
-  function spreeCost(c, mode) { const md = modesOf(c); if (!md || !md.spree || !mode) return null; return parseCost([].concat(mode).map(i => md.spree[i] || '').join('')); }
+  function spreeCost(c, mode) { const md = modesOf(c); if (!md || !mode) return null; if (md.escalate) return parseCost(Array(Math.max(0, [].concat(mode).length - 1)).fill(md.escalate).join('')); if (!md.spree) return null; return parseCost([].concat(mode).map(i => md.spree[i] || '').join('')); }
   root.Cards = { spreeCost, discardCost, freeWithCommander, levelText, modePick, sacCost, costReduction, KEYWORDS, colorsOf, face, typeLine, isType, nameOf, text, rawText, keywords, has, statics, pt, parseCost, costOf, manaValue, costTotal, manaSource, pay,
     setState, notCreatureNow, wardCost, targetReqs, targetsIn, legalTarget, targetChoices, reqLabel, protections, protectedFrom, blockProblem, matchesWhat, helpfulTarget, orderChoices, modesOf, effectsIn, effectsOf, abilities, triggers, instantSpeed, isPermanentCard, toNum, spellText };
 })(typeof window !== 'undefined' ? window : globalThis);

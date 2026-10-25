@@ -1201,6 +1201,7 @@
     for (const pid of s.seats) {
       const P = s.players[pid];
       if (!P || P.lost) continue;
+      if (P.lifeLock && P.life !== P.lifeLock.v) P.life = P.lifeLock.v;   // Teferi's Protection
       let why = null;
       if (P.life <= 0) why = `has ${P.life} life (704.5a)`;
       else if (P.poison >= 10) why = `has ${P.poison} poison counters (704.5c)`;
@@ -1755,6 +1756,9 @@
     // 500.7: extra turns — the most recently created one is taken first.
     while (s.extraTurns && s.extraTurns.length) { const e = s.extraTurns.pop(); if (alive(s, e)) { next = e; log(s, e, 'takes an extra turn', 'alert'); break; } }
     T.active = next; T.n++; T.phase = 0;
+    // 502.1: phased-out permanents of the active player phase in; "until your next turn" protection ends (Teferi's Protection).
+    for (const c of Object.values(s.cards)) if (c.zone === 'phased' && c.phasedBy === next) { c.zone = 'battlefield'; c.phasedBy = null; }
+    if (s.players[next]) { s.players[next].lifeLock = null; s.players[next].protAll = false; }
     // 502.3: the active player untaps their permanents during the untap step.
     let n = 0;
     for (const c of Object.values(s.cards)) {

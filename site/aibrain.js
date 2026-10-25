@@ -117,7 +117,7 @@
     if (/\btoxic \d|\binfect\b|poison counter|proliferate/.test(t)) r.add('poison');
     if (/\bequipment\b/.test(tl)) r.add('equipment');
     if (/\baura\b/.test(tl)) r.add(/enchanted creature (?:gets \+|has |gains |can't be blocked)/.test(t) ? 'aura' : /enchanted creature (?:gets -|can't attack|can't block|doesn't untap)|enchant creature an opponent/.test(t) ? 'removal' : 'aura');
-    if (/prevent all combat damage/.test(t)) r.add('fog');
+    if (/prevent all combat damage|your life total can't change|all permanents you control phase out/.test(t)) r.add('fog');
     if (/target creature (?:you control )?gets \+\d+\/\+\d+/.test(t) && r.has('instant') && !r.has('creature')) r.add('trick');
     if (/creatures you control get \+\d+\/\+\d+ (?:and gain trample )?until end of turn|extra combat|additional combat/.test(t)) r.add('finisher');
     if (/\bvehicle\b/.test(tl)) r.add('vehicle');
