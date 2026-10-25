@@ -179,6 +179,7 @@
     if (to !== 'battlefield' && to !== 'stack') c.ctrl = c.owner; // other zones belong to the owner (400.3)
     if (to === 'stack' && opts.by && from !== 'stack') c.ctrl = opts.by; // whoever casts it controls the spell (110.2)
     if (to === 'battlefield' && from !== 'battlefield') {
+      c.wasCast = from === 'stack';
       if (opts.by) c.ctrl = opts.by; // whoever puts it onto the battlefield controls it (110.2a)
       c.tapped = !!opts.tapped || entersTapped(c, s);
       c.faceDown = keepDown;
@@ -241,7 +242,7 @@
     if (s) for (const o of Object.values(s.cards)) {
       if (o.zone !== 'battlefield' || o.faceDown || !o.d || o.ctrl === c.ctrl) continue;
       const m = root.Cards.text(o).match(/(?:^|\n|\. )((?:[a-z]+(?:, | and | or ))*[a-z]+) your opponents control enter(?: the battlefield)? tapped/i);
-      if (m && m[1].toLowerCase().split(/,\s*(?:and |or )?|\s+and\s+|\s+or\s+/).some(w => w && (w.replace(/s$/, '') === 'permanent' || root.Cards.isType(c, w.replace(/s$/, ''))))) return true;
+      if (m && m[1].toLowerCase().split(/,\s*(?:and |or )?|\s+and\s+|\s+or\s+/).some(w => w && (w.replace(/s$/, '') === 'permanent' || root.Cards.isType(c, w.replace(/s$/, '')) || root.Cards.matchesWhat(Object.assign({}, c, { zone: 'battlefield' }), w.replace(/s$/, ''))))) return true;
     }
     const t = root.Cards.text(c);
     if (t.split(/\n|\.\s+/).some(l => /^(this|this (land|creature|artifact|permanent)) enters(?: the battlefield)? tapped\.?$/i.test(l.trim()))) return true;
@@ -871,6 +872,7 @@
           const C = root.Cards;
           const ab = C.abilities(src)[a.i | 0];
           if (!ab) return { ok: false, err: 'That ability isn’t on the card.' };
+          if ((src.faceDown || isType(src, 'creature')) && Object.values(s.cards).some(o => o.zone === 'battlefield' && o.ctrl !== pid && !o.faceDown && o.d && /activated abilities of creatures your opponents control can't be activated/i.test(C.text(o)))) return { ok: false, err: 'Creatures’ activated abilities can’t be activated right now (Linvala).' };
           if (ab.tap) {
             if (src.tapped) return { ok: false, err: `${cardName(src)} is already tapped.` };
             if ((src.faceDown || isType(src, 'creature')) && sick(s, src) && !(C.has(src, 'haste', s))) return { ok: false, err: `${cardName(src)} hasn’t been under your control since your turn began, so it can’t use {T} abilities yet (summoning sickness, 302.6).` };
@@ -1271,6 +1273,8 @@
       const m = C.text(c).toLowerCase().match(/you may play (an|two|three) additional lands? on each of your turns/);
       if (m) n += { an: 1, two: 2, three: 3 }[m[1]];
     }
+    // Rites of Flourishing: "Each player may play an additional land on each of their turns."
+    if (C) for (const c of Object.values(s.cards)) if (c.zone === 'battlefield' && !c.faceDown && c.d && /each player may play an additional land on each of their turns/i.test(C.text(c))) n += 1;
     return n;
   }
   function cleanTargets(tg, n) {
@@ -1295,6 +1299,15 @@
       const want = C.sacCost(c), id = Array.isArray(a.sacCost) ? a.sacCost[0] : null, f = id && s.cards[id];
       if (!f) return `${cardName(c)} needs you to sacrifice ${/^[aeiou]/.test(want) ? 'an' : 'a'} ${want} as you cast it.`;
       if (f.zone !== 'battlefield' || f.ctrl !== pid || !C.matchesWhat(f, want)) return `${cardName(f)} isn’t ${/^[aeiou]/.test(want) ? 'an' : 'a'} ${want} you control.`;
+    }
+    if (a && a.cast && C && s.turn && s.turn.active) {
+      const st = s.turn.stats || {}, n = (st.spells || {})[pid] || 0, nNC = (st.spellsNC || {})[pid] || 0;
+      for (const o of Object.values(s.cards)) {
+        if (o.zone !== 'battlefield' || o.faceDown || !o.d) continue;
+        const t = C.text(o).toLowerCase();
+        if (/each player can't cast more than one spell each turn/.test(t) && n >= 1) return `Only one spell each turn (${cardName(o)}).`;
+        if (/each player can't cast more than one noncreature spell each turn/.test(t) && nNC >= 1 && !isType(c, 'creature')) return `Only one noncreature spell each turn (${cardName(o)}).`;
+      }
     }
     if (a && a.cast && (s.nameLocks || []).some(m => m.owner === pid && m.name === cardName(c))) return `You can’t cast spells named ${cardName(c)} right now (Reflector Mage).`;
     if (!C || !a || !a.tg) return null;
@@ -1324,7 +1337,7 @@
     if (C && !c.faceDown && C.discardCost && C.discardCost(c)) todo(s, pid, { k: 'discard', n: 1, src: cardName(c) + ' (cost)' });
     // "As an additional cost to cast this spell, pay X life" (Toxic Deluge).
     if (C && !c.faceDown && c.x && /as an additional cost to cast this spell, pay x life/i.test(C.text(c)) && s.players[pid]) { s.players[pid].life -= c.x; log(s, pid, `paid ${c.x} life to cast ${cardName(c)}`, 'auto'); }
-    if (s.turn && s.turn.active) { const T = s.turn; T.stats = T.stats || { attacked: {}, died: 0, gained: {}, lost: {}, spells: {}, drew: {} }; T.stats.spells[pid] = (T.stats.spells[pid] || 0) + 1; if (root.Engine) root.Engine.emit({ type: 'cast', player: pid, card: c, nth: T.stats.spells[pid] }); }
+    if (s.turn && s.turn.active) { const T = s.turn; T.stats = T.stats || { attacked: {}, died: 0, gained: {}, lost: {}, spells: {}, drew: {} }; T.stats.spells[pid] = (T.stats.spells[pid] || 0) + 1; if (!isType(c, 'creature')) { T.stats.spellsNC = T.stats.spellsNC || {}; T.stats.spellsNC[pid] = (T.stats.spellsNC[pid] || 0) + 1; } if (root.Engine) root.Engine.emit({ type: 'cast', player: pid, card: c, nth: T.stats.spells[pid] }); }
     if (C && !c.faceDown) spendPool(s, pid, C.costOf(c), c.x, a && a.fromPool);
     wardFor(s, pid, c, a);
   }
@@ -1767,10 +1780,14 @@
       if (c.zone !== 'battlefield' || c.ctrl !== next || !c.tapped) continue;
       if (c.noUntap) { log(s, next, `${cardName(c)} doesn't untap`, 'auto'); continue; }
       if (c.skipUntap) { c.skipUntap = false; log(s, next, `${cardName(c)} doesn't untap this time`, 'auto'); continue; }
+      if (root.Cards && /(?:^|\n)this doesn't untap during your untap step/i.test(root.Cards.text(c))) continue;   // Basalt Monolith, Mana Vault
+      if (root.Cards && (c.faceDown || isType(c, 'creature')) && !root.Cards.has(c, 'flying', s) && Object.values(s.cards).some(o => o.zone === 'battlefield' && !o.faceDown && o.d && /creatures without flying don't untap during their controllers' untap steps/i.test(root.Cards.text(o)))) continue;   // Mudslide
       // 122.1d: instead of untapping, remove a stun counter.
       if (c.counters && c.counters.stun) { c.counters.stun--; if (!c.counters.stun) delete c.counters.stun; log(s, next, `removed a stun counter from ${cardName(c)} instead of untapping it`, 'auto'); continue; }
       c.tapped = false; n++;
     }
+    // Seedborn Muse: "Untap all permanents you control during each other player's untap step."
+    if (root.Cards) for (const m of Object.values(s.cards)) if (m.zone === 'battlefield' && m.ctrl !== next && !m.faceDown && m.d && /untap all permanents you control during each other player's untap step/i.test(root.Cards.text(m))) for (const c of Object.values(s.cards)) if (c.zone === 'battlefield' && c.ctrl === m.ctrl && c.tapped && !c.noUntap) c.tapped = false;
     T.starts = T.starts || {}; T.starts[next] = T.n;
     T.phase = 1; // untap step has no priority, move straight to upkeep
     T.goal = 'main1'; // upkeep → draw → main 1 by themselves unless something triggers

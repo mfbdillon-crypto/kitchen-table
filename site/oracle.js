@@ -98,6 +98,14 @@
       return { type: 'enter', self: false, other: !!m[1] && /another|other/.test(m[1]), what: (m[2] || '') + m[3].replace(/s$/, ''), who: m[4] ? who(m[4]) : /under your control/.test(e) ? 'you' : 'any', many: /one or more/.test(m[1] || '') };
     }
     if (/^this mutates$/.test(e)) return { type: 'mutate', self: true };
+    if (/^this dies or is put into exile from the battlefield$/.test(e)) return { type: 'leave', self: true, toIn: ['graveyard', 'exile'] };
+    if (/^this attacks or becomes the target of a spell$/.test(e)) return { type: 'attack', self: true, alsoTargeted: true };
+    if (/^a permanent you control is put into a graveyard(?: from the battlefield)?$/.test(e)) return { type: 'leave', self: false, what: 'permanent', who: 'you', toIn: ['graveyard'] };
+    if ((m = e.match(/^an? (creature|permanent|artifact|enchantment) is exiled from the battlefield$/))) return { type: 'leave', self: false, what: m[1], who: 'any', toIn: ['exile'] };
+    if ((m = e.match(/^one or more creatures you control with (flying|trample|menace|deathtouch) deal combat damage to (?:a player|an opponent|one or more players)$/))) return { type: 'combatDamage', self: false, who: 'you', what: 'creature', with: m[1], to: 'player', many: true };
+    if ((m = e.match(/^this becomes crewed( for the first time each turn)?$/))) return { type: 'crewed', self: true, firstEachTurn: !!m[1] };
+    if ((m = e.match(/^you draw your (second|third|fourth|fifth|sixth|seventh) card each turn$/))) return { type: 'draw', who: 'you', nthN: { second: 2, third: 3, fourth: 4, fifth: 5, sixth: 6, seventh: 7 }[m[1]] };
+    if (/^this enters untapped$/.test(e)) return { type: 'enter', self: true, untapped: true };
     if (/^the ring tempts you$|^you choose a creature as your ring-bearer$/.test(e)) return { type: 'tempt' };
     if ((m = e.match(/^this (?:class )?becomes level (\d+)$/))) return { type: 'classLevel', self: true, n: +m[1] };
     if (/^this dies$|^this is put into (?:a|your) graveyard from the battlefield$/.test(e)) return { type: 'die', self: true };
@@ -165,7 +173,7 @@
     line = line.replace(/\b(a|an|another) ([A-Z][a-z]+), ([A-Z][a-z]+),? or ([A-Z][a-z]+)\b/, (m0, a, x, y, z) => `${a} ${x} or ${y} or ${z}`);
     const m = line.match(/^(when|whenever|at)\s+(.+?),\s+(.+)$/i);
     if (!m) return null;
-    let evText = (m[1].toLowerCase() === 'at' ? 'at ' : '') + m[2], rest = m[3];
+    let evText = ((m[1].toLowerCase() === 'at' ? 'at ' : '') + m[2]).replace(/ and whenever you fully unlock a room$/i, ''), rest = m[3];
     // "At the beginning of your end step, if you attacked this turn, …" (603.4)
     let cond = null;
     const ci = rest.match(/^if ([^,]+),\s*(.+)$/i);
@@ -358,7 +366,7 @@
       case 'enter':
         if (ev.type !== 'enter') return E.alsoAttack && ev.type === 'attack' && E.self && ev.card && ev.card.id === src.id;
         if (E.orSelf && ev.card && ev.card.id === src.id) return true;
-        if (E.self) return ev.card && ev.card.id === src.id;
+        if (E.self) return ev.card && ev.card.id === src.id && !(E.untapped && ev.card.tapped);
         if (E.other && ev.card && ev.card.id === src.id) return false;
         if (E.power && ev.card) { const p = (C().pt(s, ev.card) || [0])[0]; if (E.power.le ? p > E.power.n : p < E.power.n) return false; }
         return whoOk(E.who, ev.card && ev.card.ctrl) && whatOk(E.what, ev.card);
@@ -369,9 +377,11 @@
         if (E.other && ev.card && ev.card.id === src.id) return false;
         return whoOk(E.who, ev.ctrl) && whatOk(E.what, ev.card);
       case 'leave':
+        if (E.toIn && ev.type === 'leave' && !E.toIn.includes(ev.to)) return false;
         if (E.self === false) { if (ev.type !== 'leave' || !ev.card || (E.other && ev.card.id === src.id)) return false; if (E.notDie && ev.to === 'graveyard' && ev.card.wasCre) return false; return whoOk(E.who, ev.card.ctrl) && whatOk(E.what, ev.card); }
         return ev.type === 'leave' && ev.card && ev.card.id === src.id;
       case 'attack':
+        if (E.alsoTargeted && ev.type === 'targeted' && ev.card && ev.card.id === src.id) return true;
         if (ev.type !== 'attack') return false;
         if (E.self) return ev.card && ev.card.id === src.id;
         if (E.other && ev.card && ev.card.id === src.id) return false;
@@ -386,10 +396,12 @@
         if (ev.type !== 'combatDamage' || (E.to === 'player' && ev.to !== 'player') || (E.to === 'creature' && ev.to !== 'creature')) return false;
         if (E.attached) return !!(ev.card && src.attachedTo === ev.card.id);
         if (E.toYou) return ev.player === ctrl && ev.card && ev.card.ctrl !== ctrl;
+        if (E.with && ev.card && !C().has(ev.card, E.with, s)) return false;
         return E.self ? !!(ev.card && ev.card.id === src.id) : whoOk(E.who, ev.card && ev.card.ctrl) && whatOk(E.what, ev.card);
+      case 'crewed': return ev.type === 'crewed' && ev.card && ev.card.id === src.id;
       case 'cast': if (E.self) return ev.type === 'cast' && ev.card && ev.card.id === src.id;
         return ev.type === 'cast' && whoOk(E.who, ev.player) && castWhatOk(E.what, ev.card) && (!E.first || ev.nth === 1) && (!E.second || ev.nth === 2);
-      case 'draw': return ev.type === 'draw' && whoOk(E.who, ev.player);
+      case 'draw': return ev.type === 'draw' && whoOk(E.who, ev.player) && (!E.nthN || ev.nth === E.nthN);
       case 'discard': return ev.type === 'discard' && whoOk(E.who, ev.player);
       case 'gainLife': return ev.type === 'gainLife' && whoOk(E.who, ev.player);
       case 'loseLife': return ev.type === 'loseLife' && whoOk(E.who, ev.player);
@@ -441,6 +453,18 @@
     if (/^it's your turn$/.test(c)) return T.active === me;
     if ((m = c.match(/^(?:it|this) has (\w+) or more ([+\-\d/]+|[a-z]+) counters on (?:it|this)$/)) || (m = c.match(/^there are (\w+) or more ([+\-\d/]+|[a-z]+) counters on (?:it|this)$/))) { const n = num(m[1]) || 0; return (((src.counters || {})[m[2]]) || 0) >= n; }
     if ((m = c.match(/^you control exactly (\w+) permanents$/))) return Object.values(s.cards).filter(x => x.zone === 'battlefield' && x.ctrl === me).length === (num(m[1]) || 0);
+    if (/^you cast it$/.test(c)) return !!src.wasCast;
+    if ((m = c.match(/^you control an? ([a-z ]+)$/)) && !/ with /.test(m[1])) return Object.values(s.cards).some(x => x.zone === 'battlefield' && x.ctrl === me && C().matchesWhat(x, m[1]));
+    if (/^you have the initiative$/.test(c)) return (s.table || {}).initiative === me;
+    if ((m = c.match(/^you gained (\w+) or more life this turn$/))) return ((st.gained || {})[me] || 0) >= (num(m[1]) || 0);
+    if (/^you didn't lose life this turn$/.test(c)) return !((st.lost || {})[me]);
+    if (/^this is tapped$/.test(c)) return !!src.tapped;
+    if ((m = c.match(/^each player has (\w+) or less life$/))) return (s.seats || []).every(p => !s.players[p] || s.players[p].life <= (num(m[1]) || 0));
+    if (/^you have more cards in hand than each opponent$/.test(c)) return (s.seats || []).filter(p => p !== me).every(p => ((s.players[me] || {}).handCount || 0) > ((s.players[p] || {}).handCount || 0));
+    if ((m = c.match(/^you have (\w+) or more ([a-z ]+?) cards? in your graveyard$/))) return Object.values(s.cards).filter(x => x.zone === 'graveyard' && x.owner === me && C().matchesWhat(x, m[2])).length >= (num(m[1]) || 0);
+    if ((m = c.match(/^creatures you control have total power (\w+) or greater$/))) return Object.values(s.cards).filter(x => x.zone === 'battlefield' && x.ctrl === me && C().isType(x, 'creature')).reduce((t, x) => t + Math.max(0, (C().pt(s, x) || [0])[0]), 0) >= (num(m[1]) || 0);
+    if (/^there are four or more card types among cards in your graveyard$/.test(c)) { const ty = new Set(); for (const x of Object.values(s.cards)) if (x.zone === 'graveyard' && x.owner === me) for (const t of ['artifact', 'creature', 'enchantment', 'instant', 'land', 'planeswalker', 'sorcery', 'battle', 'kindred']) if (C().isType(x, t)) ty.add(t); return ty.size >= 4; }
+    if ((m = c.match(/^an opponent controls more ([a-z]+?)s? than you$/))) { const n = p => Object.values(s.cards).filter(x => x.zone === 'battlefield' && x.ctrl === p && C().matchesWhat(x, m[1])).length; return (s.seats || []).some(p => p !== me && n(p) > n(me)); }
     if (/^you control a commander$/.test(c)) return Object.values(s.cards).some(x => x.cmdr && x.ctrl === me && x.zone === 'battlefield');
     if ((m = c.match(/^you control (\w+) or fewer ([a-z ]+?)s?$/))) { const n = num(m[1]); if (n != null) return Object.values(s.cards).filter(x => x.zone === 'battlefield' && x.ctrl === me && C().matchesWhat(x, m[2])).length <= n; }
     if ((m = c.match(/^you control an? ([a-z ]+?) with power (\d+) or greater$/))) return Object.values(s.cards).some(x => x.zone === 'battlefield' && x.ctrl === me && C().matchesWhat(x, m[1]) && ((C().pt(s, x) || [0])[0] >= +m[2]));

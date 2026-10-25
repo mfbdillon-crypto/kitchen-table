@@ -128,7 +128,7 @@
           let ok = false; try { ok = O().fires(s, src, a, ev); } catch (e) { ok = false; }
           if (!ok) return;
           if (/\bone or more\b/.test(a.eventText || '') || a.event.many) { const k = src.id + '#' + i + '#' + (ev.player || ''); if (manyDone.has(k)) return; manyDone.add(k); }
-          if (a.oncePerTurn) { T.once = T.once || {}; const k = src.id + '#' + i; if (T.once[k] === T.n) return; T.once[k] = T.n; }
+          if (a.oncePerTurn || (a.event && a.event.firstEachTurn)) { T.once = T.once || {}; const k = src.id + '#' + i; if (T.once[k] === T.n) return; T.once[k] = T.n; }
           const cond = a.condition ? O().conditionHolds(s, src, a.condition) : true;
           if (cond === false) return;
           const times = triggerTimes(s, src, ev);
@@ -600,7 +600,7 @@
       if (life) { const n = life[1] === 'x' ? X : +life[1]; if (P.life < n) return false; P.life -= n; return true; }
       return payMana(s, by, String(cost), notes);
     };
-    const condOk = cond => { const em = String(cond).match(/^(?:that|the) (?:creature|enchantment|artifact|card|permanent|spell|land) is an? ([a-z ]+)$/); if (em && ctx.c && s.cards[ctx.c]) return C.matchesWhat(Object.assign({}, s.cards[ctx.c]), em[1]); const sm = String(cond).match(/^(\w+) or more mana was spent to cast (?:that spell|it)$/); if (sm) return (ctx.mv || 0) >= (({ two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8 })[sm[1]] || +sm[1] || 0); const xm = String(cond).match(/^x is (\d+) or (more|greater|less|fewer)$/); if (xm) { const v = st.lastX != null ? st.lastX : (ctx.mv || X || 0); return /less|fewer/.test(xm[2]) ? v <= +xm[1] : v >= +xm[1]; } const r = O().conditionHolds(s, Object.assign({}, src, { ctrl: by }), cond); if (r === null) { st.manual.push(`Check: if ${cond}`); return false; } return r; };
+    const condOk = cond => { const em = String(cond).match(/^(?:that|the) (?:creature|enchantment|artifact|card|permanent|spell|land) is an? ([a-z ]+)$/); if (em && ctx.c && s.cards[ctx.c]) return C.matchesWhat(Object.assign({}, s.cards[ctx.c]), em[1]); const sm = String(cond).match(/^(?:at least )?(\w+)(?: or more)? mana was spent to cast (?:that spell|it)$/); if (sm) return (ctx.mv || 0) >= (({ two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8 })[sm[1]] || +sm[1] || 0); const xm = String(cond).match(/^x is (\d+) or (more|greater|less|fewer)$/); if (xm) { const v = st.lastX != null ? st.lastX : (ctx.mv || X || 0); return /less|fewer/.test(xm[2]) ? v <= +xm[1] : v >= +xm[1]; } const r = O().conditionHolds(s, Object.assign({}, src, { ctrl: by }), cond); if (r === null) { st.manual.push(`Check: if ${cond}`); return false; } return r; };
     const runList = (list, off) => {
       for (let k = 0; k < list.length; k++) {
         const o = shiftOp(list[k], off || 0);

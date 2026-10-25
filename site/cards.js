@@ -7,7 +7,7 @@
   const NUM = { a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, x: 'X' };
   const toNum = w => w == null ? 1 : /^\d+$/.test(w) ? +w : (NUM[String(w).toLowerCase()] !== undefined ? NUM[String(w).toLowerCase()] : null);
   const KEYWORDS = ['flying', 'first strike', 'double strike', 'deathtouch', 'haste', 'hexproof', 'indestructible', 'lifelink', 'menace',
-    'reach', 'trample', 'vigilance', 'defender', 'flash', 'shroud', 'infect', 'wither', 'prowess', 'ward', 'skulk', 'shadow', 'horsemanship'];
+    'reach', 'trample', 'vigilance', 'defender', 'flash', 'shroud', 'infect', 'wither', 'prowess', 'ward', 'skulk', 'shadow', 'horsemanship', 'fear', 'intimidate'];
 
   // ---------- basic card facts ----------
   function face(c) { return c && c.d && c.d.faces ? (c.d.faces[c.face || 0] || c.d.faces[0]) : null; }
@@ -50,7 +50,7 @@
     return out.join('\n');
   }
   function text(c) {
-    let t = levelText(c, rawText(c)).replace(/\([^)]*\)/g, '');
+    let t = levelText(c, rawText(c)).replace(/\([^)]*\)/g, '').replace(/[ \t]+$/gm, '').replace(/ +\n/g, '\n');
     const n = nameOf(c);
     if (n) {
       const short = n.split(',')[0];
@@ -106,6 +106,7 @@
         else if (/(?:equipped|enchanted) (?:creature|permanent) can't block/i.test(t)) out.kws.add("can't block");
         if (/(?:equipped|enchanted) creature can't be blocked\b/i.test(t)) out.kws.add('unblockable');
       }
+      extraStatics(s, o, c, out, t);
       // v6: anthems and keyword grants read from the card model ("Other Elves you control get +1/+1", "Creatures your opponents control get -1/-1", "Dragons you control have flying").
       const M = root.Oracle ? root.Oracle.model(o) : null;
       if (M) {
@@ -152,7 +153,33 @@
     }
     return out;
   }
-  function addKws(set, str) { for (const p of String(str).toLowerCase().split(/,\s*|\s+and\s+/)) { const k = KEYWORDS.find(x => p.trim().replace(/^and /, '') === x); if (k) set.add(k); } }
+  function addKws(set, str) { for (const p of String(str).toLowerCase().split(/,\s*|\s+and\s+/)) { const w = p.trim().replace(/^and /, '').replace(/\s*(?:—|\{).*$/, ''); const k = KEYWORDS.find(x => w === x); if (k) set.add(k); } }
+  // Statics the card model doesn't place, read from the text (Street Riot, Gravitational Shift, Training Regimen, Saruman,
+  // Cover of Darkness, Lifecraft Engine, Oviya, Radha, Nim Deathmantle, Whispersilk Cloak…).
+  function extraStatics(s, o, c, out, t) {
+    const mine = o.ctrl === c.ctrl, myTurn = s.turn && s.turn.active === o.ctrl;
+    const isAtt = !!(s.combat && s.combat.att && s.combat.att[c.id]);
+    for (const raw of t.split('\n')) {
+      const line = raw.toLowerCase().trim().replace(/\.$/, '').trim();
+      let m;
+      if (o.attachedTo === c.id) {
+        if ((m = line.match(/^(?:equipped|enchanted) creature gets [+-]\d+\/[+-]\d+, has ([a-z ,]+?)(?:,? and is .+)?$/))) addKws(out.kws, m[1]);
+        if ((m = line.match(/^(?:equipped|enchanted) creature can't be blocked and has ([a-z ,]+)$/))) addKws(out.kws, m[1]);
+        if ((m = line.match(/^(?:equipped|enchanted) creature has (ward [{}0-9a-z]+|[a-z ,]+ and ward [{}0-9a-z]+)$/))) addKws(out.kws, m[1]);
+      }
+      if ((m = line.match(/^during your turn, (?:(other )?creatures you control|this) (?:gets? ([+-]\d+)\/([+-]\d+)(?: and (?:has|have) ([a-z ,]+))?|(?:has|have) ([a-z ,]+))$/)) && myTurn) {
+        const self = /, this /.test(line);
+        if (self ? o.id === c.id : mine && !(m[1] && o.id === c.id)) { if (m[2]) { out.p += +m[2]; out.t += +m[3]; } if (m[4]) addKws(out.kws, m[4]); if (m[5]) addKws(out.kws, m[5]); }
+      }
+      if ((m = line.match(/^creatures (with|without) ([a-z]+) get ([+-]\d+)\/([+-]\d+)$/))) { const has = keywordsBase(c).has(m[2]); if ((m[1] === 'with') === has) { out.p += +m[3]; out.t += +m[4]; } }
+      if ((m = line.match(/^creatures you control with ([+\-\d/]+) counters on them have ([a-z ,]+)$/)) && mine && ((c.counters || {})[m[1]] || 0) > 0) addKws(out.kws, m[2]);
+      if ((m = line.match(/^(other )?([a-z]+)s?(?: and ([a-z]+)s?)? you control have ([a-z ,{}0-9]+)$/)) && mine && !(m[1] && o.id === c.id) && !/^creature/.test(m[2]) && (matchesWhat(c, m[2]) || (m[3] && matchesWhat(c, m[3])))) addKws(out.kws, m[4]);
+      if ((m = line.match(/^creatures of the chosen type have ([a-z ,]+)$/)) && o.chosen && new RegExp('\\b' + o.chosen + '\\b', 'i').test(typeLine(c))) addKws(out.kws, m[1]);
+      if ((m = line.match(/^each creature you control of the chosen type(?: other than this(?: [a-z]+)?)? gets ([+-]\d+)\/([+-]\d+)$/)) && mine && o.chosen && o.id !== c.id && new RegExp('\\b' + o.chosen + '\\b', 'i').test(typeLine(c))) { out.p += +m[1]; out.t += +m[2]; }
+      if ((m = line.match(/^each creature that's attacking one of your opponents has ([a-z ,]+)$/)) && isAtt) { const d = s.combat.att[c.id].def; const dp = d && (d.p || (s.cards[d.c] || {}).ctrl); if (dp && dp !== o.ctrl) addKws(out.kws, m[1]); }
+    }
+  }
+  function keywordsBase(c) { const set = new Set(); for (const k of (c.d && c.d.kw) || []) set.add(String(k).toLowerCase()); for (const line of lines(c)) for (const p of line.toLowerCase().replace(/\.$/, '').split(/,\s*|\s+and\s+/)) if (KEYWORDS.includes(p.trim())) set.add(p.trim()); for (const k of (c.grant || [])) set.add(k); return set; }
 
   // Power/toughness with counters, until-end-of-turn changes and static boosts.
   function pt(s, c) {
@@ -163,6 +190,8 @@
       if ((!f || f.p === '' || f.tg === '' || f.p == null) && !c.animPT) return null;
       p = parseInt(f.p, 10); t = parseInt(f.tg, 10);
       if (c.animPT) { p = c.animPT[0]; t = c.animPT[1]; }
+      // Maha: "Creatures your opponents control have base toughness 1."
+      if (s && c.zone === 'battlefield' && Object.values(s.cards).some(o => o.zone === 'battlefield' && o.ctrl !== c.ctrl && !o.faceDown && o.d && /creatures your opponents control have base toughness 1/i.test(rawText(o)))) t = 1;
       // */* creatures (604.3, characteristic-defining): "power and toughness are each equal to the number of Rats you control",
       // "… equal to the number of cards in your hand", "power is equal to …" — counted where the table can.
       if ((isNaN(p) || isNaN(t)) && s && s.cards && !c.animPT) {
@@ -603,6 +632,8 @@
     if (bk.has("can't block")) return `${nm(b)} can’t block.`;
     if (ak.has('unblockable')) return `${nm(a)} can’t be blocked.`;
     { const P = s && s.players && s.players[a.ctrl]; if (P && P.ring && P.ringBearer === a.id && (pt(s, b) || [0])[0] > (pt(s, a) || [0])[0]) return `${nm(a)} is the Ring-bearer — creatures with greater power can’t block it.`; }
+    if (ak.has('fear') && !isType(b, 'artifact') && !sameColor(b, 'black')) return `${nm(a)} has fear — only artifact and/or black creatures can block it (702.36b).`;
+    if (ak.has('intimidate') && !isType(b, 'artifact') && !['white', 'blue', 'black', 'red', 'green'].some(col => sameColor(a, col) && sameColor(b, col))) return `${nm(a)} has intimidate — only artifact creatures and creatures that share a color with it can block it (702.13b).`;
     if (ak.has('flying') && !bk.has('flying') && !bk.has('reach')) return `${nm(a)} has flying — only creatures with flying or reach can block it (702.9b).`;
     if (protectedFrom(a, b, s)) return `${nm(a)} has protection from ${nm(b)}’s qualities, so ${nm(b)} can’t block it (702.16f).`;
     const t = text(a).toLowerCase(), bp = (pt(s, b) || [0, 0])[0], ap = (pt(s, a) || [0, 0])[0];
@@ -638,6 +669,7 @@
     return m ? m[1].trim() : null;
   }
   // "If you control a commander, you may cast this spell without paying its mana cost" (Fierce Guardianship, Deflecting Swat…).
+  function freeFromHand(s, c, by) { return !!s && c.zone === 'hand' && Object.values(s.cards || {}).some(o => o.zone === 'battlefield' && o.ctrl === by && !o.faceDown && o.d && /you may cast spells from your hand without paying their mana costs/i.test(text(o))); }
   function freeWithCommander(s, c, by) { return /if you control a commander, you may cast this(?: spell)? without paying its mana cost/i.test(text(c)) && !!s && Object.values(s.cards || {}).some(o => o.cmdr && o.ctrl === by && o.zone === 'battlefield'); }
   // How many modes may be chosen right now ("If you control a commander as you cast this spell, you may choose both").
   function modePick(s, c, md, by) {
@@ -874,6 +906,6 @@
 
   // Spree: the extra mana for the modes chosen.
   function spreeCost(c, mode) { const md = modesOf(c); if (!md || !mode) return null; if (md.escalate) return parseCost(Array(Math.max(0, [].concat(mode).length - 1)).fill(md.escalate).join('')); if (!md.spree) return null; return parseCost([].concat(mode).map(i => md.spree[i] || '').join('')); }
-  root.Cards = { spreeCost, discardCost, freeWithCommander, levelText, modePick, sacCost, costReduction, KEYWORDS, colorsOf, face, typeLine, isType, nameOf, text, rawText, keywords, has, statics, pt, parseCost, costOf, manaValue, costTotal, manaSource, pay,
+  root.Cards = { freeFromHand, spreeCost, discardCost, freeWithCommander, levelText, modePick, sacCost, costReduction, KEYWORDS, colorsOf, face, typeLine, isType, nameOf, text, rawText, keywords, has, statics, pt, parseCost, costOf, manaValue, costTotal, manaSource, pay,
     setState, notCreatureNow, wardCost, targetReqs, targetsIn, legalTarget, targetChoices, reqLabel, protections, protectedFrom, blockProblem, matchesWhat, helpfulTarget, orderChoices, modesOf, effectsIn, effectsOf, abilities, triggers, instantSpeed, isPermanentCard, toNum, spellText };
 })(typeof window !== 'undefined' ? window : globalThis);

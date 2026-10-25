@@ -712,7 +712,7 @@
   }
   // Cast a card: choose its mode, X and targets if it needs them, then put it on the stack.
   // v6: every way to cast this card from where it is (normal cost, flashback, kicker, evoke, dash, warp, overload…).
-  const ALT_LABEL = { cmdrfree: 'Cast it free (you control a commander)', normal: 'Cast it', flashback: 'Flashback', escape: 'Escape', 'jump-start': 'Jump-start', retrace: 'Retrace', disturb: 'Disturb (back face)', harmonize: 'Harmonize',
+  const ALT_LABEL = { omni: 'Cast it free (Omniscience)', cmdrfree: 'Cast it free (you control a commander)', normal: 'Cast it', flashback: 'Flashback', escape: 'Escape', 'jump-start': 'Jump-start', retrace: 'Retrace', disturb: 'Disturb (back face)', harmonize: 'Harmonize',
     kicker: 'Cast with kicker', multikicker: 'Cast with multikicker', buyback: 'Cast with buyback', bargain: 'Cast with bargain', evoke: 'Evoke', dash: 'Dash', blitz: 'Blitz', overload: 'Overload',
     surge: 'Surge', spectacle: 'Spectacle', prowl: 'Prowl', emerge: 'Emerge', madness: 'Madness', foretell: 'Foretell', plot: 'Plot', warp: 'Warp', bestow: 'Bestow', mutate: 'Mutate', prototype: 'Prototype', cleave: 'Cleave', sneak: 'Sneak' };
   function castOptions(card, zone) {
@@ -720,6 +720,7 @@
     const out = [];
     if (!m) return [{ kind: 'normal', cost: R.face(card) && R.face(card).mc || '' }];
     if (CD.freeWithCommander && CD.freeWithCommander(S(), card, KEY) && (zone === 'hand')) out.push({ kind: 'cmdrfree', cost: '' });
+    if (CD.freeFromHand && zone === 'hand' && CD.freeFromHand(S(), Object.assign({}, card, { zone: 'hand' }), KEY)) out.push({ kind: 'omni', cost: '' });
     for (const k of m.costs) {
       if (k.ability || k.faceDown) continue;
       if (k.kind === 'normal') { if (zone === 'hand' || zone === 'command' || zone === 'public') out.push(k); continue; }

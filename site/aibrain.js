@@ -311,6 +311,7 @@
     if (c.zone === 'command' && c.cmdr) cost.g += 2 * ((this.s.tax || {})[c.id] || 0);
     if (C().costReduction) cost.g = Math.max(0, cost.g - C().costReduction(this.s, c, this.me));
     if (C().freeWithCommander && C().freeWithCommander(this.s, c, this.me)) return C().parseCost('');
+    if (C().freeFromHand && C().freeFromHand(this.s, c, this.me)) return C().parseCost('');
     return cost;
   };
   P.mv = function (c) { return C().costTotal(this.costOf(c), 0); };
@@ -429,6 +430,8 @@
     if (Rr.isType(card, 'land')) return null;
     if (when === 'instant' && !Cd.instantSpeed(card)) return null;
     if ((s.nameLocks || []).some(m => m.owner === this.me && m.name === Rr.cardName(card))) return null;
+    { const st = s.turn.stats || {}, n = (st.spells || {})[this.me] || 0, nNC = (st.spellsNC || {})[this.me] || 0;
+      if ((n || nNC) && Object.values(s.cards).some(o => o.zone === 'battlefield' && !o.faceDown && o.d && (/each player can't cast more than one spell each turn/i.test(Cd.text(o)) && n >= 1 || /each player can't cast more than one noncreature spell each turn/i.test(Cd.text(o)) && nNC >= 1 && !Rr.isType(card, 'creature')))) return null; }
     const rl = roles(card);
     const mode = this.modeFor(card);
     if (mode === undefined) return null;
