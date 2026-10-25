@@ -316,7 +316,7 @@
       const b = C().costOf(c); for (const k of ['g', 'W', 'U', 'B', 'R', 'G', 'C', 'x']) b[k] += altM[k] || 0; b.hy = b.hy.concat(altM.hy); b.ph = b.ph.concat(altM.ph); return b;
     }
     const cost = C().costOf(c);
-    if (c.zone === 'command' && c.cmdr) cost.g += 2 * ((this.s.tax || {})[c.id] || 0);
+    if (c.zone === 'command' && c.cmdr) cost.g += (R().house ? R().house(this.s).cmdrTax : 2) * ((this.s.tax || {})[c.id] || 0);
     if (C().costReduction) cost.g = Math.max(0, cost.g - C().costReduction(this.s, c, this.me));
     if (C().freeWithCommander && C().freeWithCommander(this.s, c, this.me)) return C().parseCost('');
     if (C().freeFromHand && C().freeFromHand(this.s, c, this.me)) return C().parseCost('');
@@ -527,7 +527,7 @@
     const hosts = Cd.targetChoices(s, req, this.me).map(t => s.cards[t.c]).filter(h => h && h.zone === 'battlefield' && !Cd.protectedFrom(h, card, s));
     if (!hosts.length) return null;
     const cost = Cd.parseCost((String(k.cost || '').match(/\{[^}]+\}/g) || []).join(''));
-    if (card.zone === 'command' && card.cmdr) cost.g += 2 * ((s.tax || {})[card.id] || 0);
+    if (card.zone === 'command' && card.cmdr) cost.g += (R().house ? R().house(s).cmdrTax : 2) * ((s.tax || {})[card.id] || 0);
     cost.g = Math.max(0, cost.g - Cd.costReduction(s, card, this.me));
     const srcs = (extra && extra.sources) || this.sources();
     const pay = this.payFor(cost, srcs, 0, card); if (!pay) return null;

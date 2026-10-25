@@ -1016,7 +1016,8 @@ button.small { padding: 3px 9px; font-size: 13px; }
 .bhead > .pbar { flex: 1; min-width: 0; }
 .btabs { display: flex; gap: 3px; flex: none; }
 .btabs .chip { padding: 1px 8px; font-size: 12px; }
-.bsplit { display: grid; grid-template-columns: 7fr 3fr; gap: 8px; min-height: 0; }
+.bsplit { display: grid; grid-template-columns: 1fr; grid-template-rows: auto auto; gap: 8px; min-height: 0; }
+.bsplit > .blogwrap { height: 30vh; min-height: 120px; max-height: 30vh; }   /* log: the top 30% */
 .blogwrap { display: grid; grid-template-rows: 1fr auto; gap: 6px; min-height: 160px; max-height: 420px; }
 .blog { overflow: auto; font-size: 13px; padding: 6px 8px; background: rgba(0,0,0,.22); border: 1px solid var(--line); border-radius: 8px; }
 .blog .le { padding: 2px 0; border-bottom: 1px dashed rgba(255,255,255,.04); }
@@ -1025,6 +1026,19 @@ button.small { padding: 3px 9px; font-size: 13px; }
 .bask .row { gap: 6px; } .bask input { flex: 1; min-width: 0; }
 .bqa { display: grid; gap: 3px; font-size: 12px; margin-bottom: 4px; max-height: 120px; overflow: auto; }
 .board.v-log .blogwrap { max-height: 560px; }
-@media (max-width: 760px) { .bsplit { grid-template-columns: 1fr; } }
+
 .devbanner.slim { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 3px 10px; font-size: 13px; }
 .devbanner.slim select { font-size: 12px; padding: 1px 4px; }
+
+/* Lobby: your name and joining with a code, up front */
+.lname { display: flex; align-items: center; gap: 8px; font-size: 16px; }
+.lname b { font-size: 18px; }
+.ljoin { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 10px; border: 1px solid var(--brass); border-radius: 10px; background: rgba(209,165,75,.08); }
+.ljoin input { flex: 1; min-width: 140px; font-size: 16px; }
+/* House rules window */
+.hrow { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 6px 0; border-bottom: 1px dashed var(--line); }
+.hnum { min-width: 2.5em; text-align: center; font-size: 18px; }
+/* Keep or mulligan, in the hand bar */
+#hand.deciding { box-shadow: inset 0 3px 0 var(--brass); }
+.hbtns .mullq { display: grid; gap: 2px; margin-bottom: 6px; max-width: 220px; }
+.hbtns .mullq b { font-family: var(--display); color: var(--brass); }

@@ -275,7 +275,7 @@
     if (w.kind === 'free') return true;
     const k = w.alt;
     let cost;
-    if (!k || w.kind === 'normal') { cost = CD.costOf(card); if (card.zone === 'command' && card.cmdr) cost.g += 2 * ((S().tax || {})[card.id] || 0); }
+    if (!k || w.kind === 'normal') { cost = CD.costOf(card); if (card.zone === 'command' && card.cmdr) cost.g += (G.houseR ? G.houseR().cmdrTax : 2) * ((S().tax || {})[card.id] || 0); }
     else if (k.additional) { cost = CD.costOf(card); const b = CD.parseCost((String(k.cost || '').match(/\{[^}]+\}/g) || []).join('')); for (const x of ['g', 'W', 'U', 'B', 'R', 'G', 'C']) cost[x] += b[x] || 0; }
     else cost = CD.parseCost((String(k.cost || '').match(/\{[^}]+\}/g) || []).join(''));
     return !!CD.pay(cost, myMana(), 0);
@@ -318,7 +318,7 @@
     const now = new Set(waysNow(c, { top: !!fromLib }).map(w => w.via + ':' + w.kind));
     return ws.map(w => {
       const ok = now.has(w.via + ':' + w.kind);
-      const tax = c.zone === 'command' ? 2 * ((s.tax || {})[c.id] || 0) : 0;
+      const tax = c.zone === 'command' ? (G.houseR ? G.houseR().cmdrTax : 2) * ((s.tax || {})[c.id] || 0) : 0;
       const label = w.act === 'play' ? w.label : w.kind !== 'normal' && w.kind !== 'free' ? `${ALT_LABEL[w.kind] || w.kind} — ${costText(w.alt || w)}` : `${w.label} — ${w.kind === 'free' ? 'free' : (w.cost || 'free')}${tax ? ` + tax {${tax}}` : ''}`;
       const fn = w.act === 'play'
         ? () => (fromLib ? G.fromLibrary([c.id], 'battlefield', { playLand: true, perm: w.via }) : G.act({ type: 'move', ids: [c.id], to: 'battlefield', playLand: true, perm: w.via })).then(r => { if (r && r.ok === false && r.err) G.toast(r.err, 'err'); })
@@ -872,7 +872,7 @@
   async function autoPay(card, x, cost) {
     G.lastFromPool = undefined;
     cost = cost || CD.costOf(card);
-    if (card.zone === 'command' && card.cmdr) cost.g += 2 * ((S().tax || {})[card.id] || 0);
+    if (card.zone === 'command' && card.cmdr) cost.g += (G.houseR ? G.houseR().cmdrTax : 2) * ((S().tax || {})[card.id] || 0);
     if (!CD.costTotal(cost, x)) return true;
     if (S().dev && S().hostPid === KEY) return true;     // developer debugging: no mana needed
     if (!G.LS.get('kt:autopay', true)) {
@@ -918,7 +918,7 @@
     const s = S();
     if (G.isLand(card)) { const T = s.turn, used = ((T.lands || {})[KEY] || 0) >= 1; return T.active === KEY && !used && !R.stackTop(s) && (T.phase <= R.PI('Main 1') || R.PHASES[T.phase] === 'Main 2'); }
     const cost = CD.costOf(card);
-    if (card.zone === 'command' && card.cmdr) cost.g += 2 * ((s.tax || {})[card.id] || 0);   // commander tax (903.8)
+    if (card.zone === 'command' && card.cmdr) cost.g += (G.houseR ? G.houseR().cmdrTax : 2) * ((s.tax || {})[card.id] || 0);   // commander tax (903.8)
     return !!CD.pay(cost, myMana(), 0);
   }
   G.affordable = affordable;
@@ -1426,29 +1426,21 @@
 
     const unread = Math.max(0, s.log.length - (G.logSeen || 0));
     const aiUnread = Math.max(0, (s.aichat || []).length - (G.aiSeen || 0));
+    const started = !!(s.turn && s.turn.active && !s.winner), hostMe = s.hostPid === KEY;
     const tools = h('div', { class: 'tools' },
-      me ? h('button', { class: 'f3', onclick: e => openMenu(e.currentTarget, newGameMenu(), 'Start over') }, 'New game ▾') : null,
-      h('button', { class: 'f3', onclick: () => deckManager() }, 'Decks'),
+      me && hostMe && started ? h('button', { class: 'f3', onclick: e => openMenu(e.currentTarget, newGameMenu(), 'Start over') }, 'New game ▾') : null,
       me && devHost() ? h('button', { class: 'f2', onclick: () => tokenModal() }, 'Tokens') : null,
-      me ? h('button', { class: 'f2', onclick: e => openMenu(e.currentTarget, [2, 4, 6, 8, 10, 12, 20].map(n => ({ label: n === 2 ? 'Flip a coin' : 'Roll a d' + n, fn: () => G.act({ type: 'dice', sides: n }) })).concat([{ label: 'Roll any die…', fn: () => askNumber('How many sides?', 100, n => G.act({ type: 'dice', sides: n }), 1000) }]), 'Dice & coin') }, 'Dice') : null,
+      me ? h('button', { class: 'f2', onclick: e => openMenu(e.currentTarget, [2, 4, 6, 8, 10, 12, 20].map(n => ({ label: n === 2 ? 'Flip a coin' : 'Roll a d' + n, fn: () => G.act({ type: 'dice', sides: n }) }))) }, 'Dice') : null,
       h('button', { class: G.logOpen ? 'on' : '', onclick: () => { G.logOpen = !G.logOpen; G.aiOpen = false; render(); } }, 'Log', unread && !G.logOpen ? h('span', { class: 'badge' }, String(Math.min(unread, 99))) : null),
-null,
-      h('button', { class: 'invite f3', onclick: inviteModal, title: 'Invite players to this table' }, 'Invite'),
+      !started ? h('button', { class: 'invite f3', onclick: inviteModal, title: 'Invite players to this table' }, 'Invite') : null,
       me ? h('button', { class: 'f4' + (G.phoneLinked ? ' on' : ''), onclick: phoneModal, title: 'Use your phone as your hand' }, G.phoneLinked ? 'Phone ✓' : 'Phone') : null,
       h('button', { title: 'More', onclick: e => openMenu(e.currentTarget, moreMenu(), 'Table') }, '⋯')
     );
     if (COARSE || innerWidth < 760) {
       const all = () => [
-        me ? { label: 'New game ▸', sub: newGameMenu() } : null,
-        { label: 'Decks', fn: () => deckManager() },
-        me && devHost() ? { label: 'Tokens', fn: () => tokenModal() } : null,
-        me ? { label: 'Dice & coin ▸', sub: [2, 6, 20].map(n => ({ label: n === 2 ? 'Flip a coin' : 'Roll a d' + n, fn: () => G.act({ type: 'dice', sides: n }) })) } : null,
         { label: `Log${unread ? ' (' + Math.min(unread, 99) + ' new)' : ''}`, fn: () => { G.logOpen = !G.logOpen; G.aiOpen = false; render(); } },
-
-        me && !COARSE ? { label: G.phoneLinked ? 'Phone (linked)…' : 'Use my phone as my hand…', fn: phoneModal } : null,
-        me && devHost() ? { label: 'Monarch ▸', sub: S().seats.map(p => ({ label: nameOf(p), fn: () => G.act({ type: 'table', key: 'monarch', value: p }) })).concat([{ label: 'Nobody', fn: () => G.act({ type: 'table', key: 'monarch', value: null }) }]) } : null,
-        me && devHost() ? { label: 'Initiative ▸', sub: S().seats.map(p => ({ label: nameOf(p), fn: () => G.act({ type: 'table', key: 'initiative', value: p }) })).concat([{ label: 'Nobody', fn: () => G.act({ type: 'table', key: 'initiative', value: null }) }]) } : null,
-        me && devHost() ? { label: 'Day / night ▸', sub: [{ label: 'Day', fn: () => G.act({ type: 'table', key: 'day', value: 'day' }) }, { label: 'Night', fn: () => G.act({ type: 'table', key: 'day', value: 'night' }) }, { label: 'Neither', fn: () => G.act({ type: 'table', key: 'day', value: null }) }] } : null,
+        !started ? { label: 'Invite players…', fn: inviteModal } : null,
+        me && devHost() ? { label: 'Tokens', fn: () => tokenModal() } : null,
         { sep: true }, ...moreMenu()
       ];
       return h('div', { id: 'top', class: 'compact' }, dot, turnBox,
@@ -1473,14 +1465,14 @@ null,
   function passTurn() {
     const s = S(), notes = [];
     if (s.turn.active === KEY) {
-      if (G.P.hand.length > 7) notes.push(`Discard down to 7 — you have ${G.P.hand.length} cards in hand.`);
+      if (G.P.hand.length > G.houseR().maxHand) notes.push(`Discard down to ${G.houseR().maxHand} — you have ${G.P.hand.length} cards in hand.`);
     }
     const go = () => G.act({ type: 'advance', goal: 'end' });
     if (!notes.length) return go();
     openModal('Before you pass', b => {
       b.append(h('ul', { class: 'remind' }, notes.map(n => h('li', null, n))));
       b.append(h('div', { class: 'row wrap' },
-        G.P.hand.length > 7 ? h('button', { onclick: () => { closeModal(); hidePreview(); } }, 'Let me discard first') : null,
+        G.P.hand.length > G.houseR().maxHand ? h('button', { onclick: () => { closeModal(); hidePreview(); } }, 'Let me discard first') : null,
         h('button', { class: 'primary', onclick: () => { closeModal(); go(); } }, 'End turn')));
     }, { cls: 'small' });
   }
@@ -1515,30 +1507,20 @@ null,
   function moreMenu() {
     const me = G.me();
     const s = S();
-    const fit = G.topFit || 0;
+    const started = !!(s.turn && s.turn.active && !s.winner);
+    const host = s.hostPid === KEY;
     return [
-      { label: 'Invite players…', fn: inviteModal },
-      me && s.hostPid === KEY ? { label: s.dev ? '✓ Developer debugging (turn off)' : 'Developer debugging…', fn: () => s.dev ? G.act({ type: 'dev', on: false }) : choose('Developer debugging', 'For repairing a game the table got wrong: you can move and use every player’s cards, step the turn back and forth, resolve or remove anything on the stack, and change life totals. Everyone sees a red banner while it’s on. It turns itself off when a new game starts.', [{ label: 'Turn it on', primary: true, fn: () => G.act({ type: 'dev', on: true }) }, { label: 'Cancel', fn: () => {} }]) } : null,
-      me && fit >= 3 ? { label: 'New game ▸', sub: newGameMenu() } : null,
-      fit >= 3 ? { label: 'Decks…', fn: () => deckManager() } : null,
-      me && fit >= 2 ? { label: 'Tokens…', fn: () => tokenModal() } : null,
-      me && fit >= 2 ? { label: 'Dice & coin ▸', sub: [2, 6, 20].map(n => ({ label: n === 2 ? 'Flip a coin' : 'Roll a d' + n, fn: () => G.act({ type: 'dice', sides: n }) })) } : null,
-      me && fit >= 4 ? { label: G.phoneLinked ? 'Phone (linked)…' : 'Use my phone as my hand…', fn: phoneModal } : null,
-      me && s.seats.length < R.MAX_SEATS ? { label: 'Add an AI player…', fn: addAIModal } : null,
-      me && !COARSE ? { label: 'Monarch ▸', sub: s.seats.map(p => ({ label: nameOf(p), fn: () => G.act({ type: 'table', key: 'monarch', value: p }) })).concat([{ label: 'Nobody', fn: () => G.act({ type: 'table', key: 'monarch', value: null }) }]) } : null,
-      me && !COARSE ? { label: 'Initiative ▸', sub: s.seats.map(p => ({ label: nameOf(p), fn: () => G.act({ type: 'table', key: 'initiative', value: p }) })).concat([{ label: 'Nobody', fn: () => G.act({ type: 'table', key: 'initiative', value: null }) }]) } : null,
-      me && !COARSE ? { label: 'Day / night ▸', sub: [{ label: 'Day', fn: () => G.act({ type: 'table', key: 'day', value: 'day' }) }, { label: 'Night', fn: () => G.act({ type: 'table', key: 'day', value: 'night' }) }, { label: 'Neither', fn: () => G.act({ type: 'table', key: 'day', value: null }) }] } : null,
-      me ? { label: 'Change my name…', fn: nameModal } : { label: 'Take a seat', fn: nameModal },
-      me ? { label: 'Untap everything I control', fn: untapAll } : null,
-      me ? { label: (G.LS.get('kt:autopass', false) ? '✓ ' : '') + 'Auto-pass when I can’t respond', fn: () => { G.LS.set('kt:autopass', !G.LS.get('kt:autopass', false)); G.toast(G.LS.get('kt:autopass', false) ? 'You’ll pass automatically when you have nothing to respond with.' : 'You’ll be asked every time.'); render(); } } : null,
-      me ? { label: (G.LS.get('kt:autopay', true) ? '✓ ' : '') + 'Tap my lands for me when I cast', fn: () => { G.LS.set('kt:autopay', !G.LS.get('kt:autopay', true)); G.toast(G.LS.get('kt:autopay', true) ? 'Casting taps your lands automatically.' : 'You’ll tap your own mana.'); render(); } } : null,
+      // Setup (players, decks, names, AI, house rules, other tables) is all in the lobby before the game.
+      !started && me ? { label: 'Change my name…', fn: nameModal } : !me ? { label: 'Take a seat', fn: nameModal } : null,
+      me && host ? { label: 'New game ▸', sub: newGameMenu() } : null,
+      me ? { label: 'Dice & coin ▸', sub: [2, 6, 20].map(n => ({ label: n === 2 ? 'Flip a coin' : 'Roll a d' + n, fn: () => G.act({ type: 'dice', sides: n }) })) } : null,
+      me && !COARSE ? { label: G.phoneLinked ? 'Phone (linked)…' : 'Use my phone as my hand…', fn: phoneModal } : null,
+      me ? { label: (G.LS.get('kt:autopass', false) ? '✓ ' : '') + 'Auto-pass when I can’t respond', fn: () => { G.LS.set('kt:autopass', !G.LS.get('kt:autopass', false)); G.toast(G.LS.get('kt:autopass', false) ? 'You’ll pass automatically when you can’t respond.' : 'You’ll be asked each time.'); render(); } } : null,
+      me ? { label: (G.LS.get('kt:autopay', true) ? '✓ ' : '') + 'Tap my lands for me when I cast', fn: () => { G.LS.set('kt:autopay', !G.LS.get('kt:autopay', true)); render(); } } : null,
       { sep: true },
-      me && s.turn.active && !me.lost ? { label: 'Concede this game…', fn: () => choose('Concede', 'You’ll be out of this game (you can keep watching).', [{ label: 'Concede', primary: true, fn: () => G.act({ type: 'lose', why: 'concede' }) }, { label: 'Cancel', fn: () => {} }]) } : null,
-      me ? { label: 'Leave my seat…', fn: () => choose('Leave seat', 'Your cards leave the table.', [{ label: 'Leave', primary: true, fn: () => G.act({ type: 'leave' }) }, { label: 'Cancel', fn: () => {} }]) } : null,
-      ...s.seats.filter(p => p !== KEY && (canRemove(p) || !s.players[p].online)).map(p => ({ label: `Remove ${nameOf(p)}${s.players[p].ai ? ' (AI)' : ''}${s.players[p].online ? '' : ' (offline)'}…`, fn: () => removePlayer(p) })),
-      ...s.seats.filter(p => s.players[p].ai && aiOf(p)).map(p => ({ label: `${nameOf(p)} (AI) settings…`, fn: () => manageAIModal(p) })),
-      { sep: true },
-      { label: 'Open a different table…', fn: tableModal }
+      me && started && !me.lost ? { label: 'Concede this game…', fn: () => choose('Concede', 'You’ll be out of this game (you can keep watching).', [{ label: 'Concede', primary: true, fn: () => G.act({ type: 'lose', why: 'concede' }) }, { label: 'Cancel', fn: () => {} }]) } : null,
+      me && !started ? { label: 'Leave my seat…', fn: () => choose('Leave seat', 'Your cards leave the table.', [{ label: 'Leave', primary: true, fn: () => G.act({ type: 'leave' }) }, { label: 'Cancel', fn: () => {} }]) } : null,
+      me && host ? { label: s.dev ? '✓ Developer debugging (turn off)' : 'Developer debugging…', fn: () => s.dev ? G.act({ type: 'dev', on: false }) : choose('Developer debugging', 'For repairing a game the table got wrong, and for testing: you can move and use everyone’s cards, edit the rulebook, rewind and export logs. Everyone sees that it’s on.', [{ label: 'Turn on', primary: true, fn: () => G.act({ type: 'dev', on: true }) }, { label: 'Cancel', fn: () => {} }]) } : null
     ];
   }
 
@@ -1586,8 +1568,9 @@ null,
     const s = S();
     const tabs = [];
     if (G.seated()) tabs.push(['me', 'My board']);
+    tabs.push(['turn', 'Current turn']);
     for (const p of s.seats) if (p !== KEY) tabs.push([p, nameOf(p)]);
-    tabs.push(['all', 'All players'], ['turn', 'Current turn']);
+    tabs.push(['all', 'All players']);
     if (!tabs.some(t => t[0] === G.tab) || (G.tab === 'me' && !G.seated())) G.tab = G.seated() ? 'me' : 'all';
     return h('nav', { id: 'tabs', role: 'tablist' }, tabs.map(([id, label]) => {
       const p = s.players[id];
@@ -1696,7 +1679,7 @@ null,
     const setV = v => { G.bview[pid] = v; G.LS.set('kt:bview', G.bview); render(); };
     const tabs = h('div', { class: 'btabs', role: 'tablist' }, [['board', 'Board'], ['log', 'Log'], ['split', 'Split']].map(([v, l]) => h('button', { class: 'chip' + (view === v ? ' set' : ''), role: 'tab', 'aria-selected': view === v, onclick: e => { e.stopPropagation(); setV(v); } }, l)));
     const field = () => h('div', { class: 'field' }, cmdCol(pid), rowsEl(pid, compact), pileCol(pid));
-    const body = view === 'log' ? boardLog(pid) : view === 'split' ? h('div', { class: 'bsplit' }, field(), boardLog(pid)) : field();
+    const body = view === 'log' ? boardLog(pid) : view === 'split' ? h('div', { class: 'bsplit' }, boardLog(pid), field()) : field();
     return h('section', { class: 'board' + (compact ? ' compact' : '') + (s.turn.active === pid ? ' active' : '') + (L.mat ? ' hasmat' : '') + (s.players[pid].lost ? ' lost' : '') + (view !== 'board' ? ' v-' + view : ''), style: boardStyle(pid) },
       h('div', { class: 'bhead' }, playerBar(pid, compact), tabs), revealedStrip(pid), body);
   }
@@ -1756,10 +1739,23 @@ null,
     const P = G.P, me = G.me();
     if (!me && S().kicked && S().kicked[KEY]) return h('div', { id: 'hand', class: 'spect' }, h('span', null, 'The host removed you from this table. You can keep watching; you can sit down again when a new game starts.'));
     if (!me) return h('div', { id: 'hand', class: 'spect' }, h('span', null, 'You’re watching. '), h('button', { class: 'primary', onclick: nameModal }, 'Take a seat'));
-    const bar = h('div', { id: 'hand', class: COARSE ? 'drawer' + (G.drawerOpen ? ' open' : '') : '' });
+    // Keep or mulligan: asked in the hand bar itself (opened by itself on phones), next to where Library will be.
+    const deciding = P.phase === 'deciding' || P.phase === 'bottom';
+    if (deciding && COARSE && !G.drawerOpen && G._mullOpened !== P.mull + ':' + P.phase) { G.drawerOpen = true; G._mullOpened = P.mull + ':' + P.phase; }
+    const bar = h('div', { id: 'hand', class: (COARSE ? 'drawer' + (G.drawerOpen ? ' open' : '') : '') + (deciding ? ' deciding' : '') });
     if (COARSE) bar.append(h('button', { class: 'handle', onclick: () => { G.drawerOpen = !G.drawerOpen; render(); } }, `Hand (${P.hand.length}) ${G.drawerOpen ? '▾' : '▴'}`));
     const btns = h('div', { class: 'hbtns' });
-    if (!P.deckId && !P.library.length && !P.hand.length) {
+    const free = !(S().house && S().house.freeMull === false);
+    if (P.phase === 'deciding') {
+      const nBottom = Math.max(0, P.mull - (free ? 1 : 0));
+      btns.append(h('div', { class: 'mullq' }, h('b', null, P.mull ? `Mulligan ${P.mull}: keep this hand?` : 'Keep this opening hand?'),
+        h('span', { class: 'muted small' }, P.mull === 0 ? (free ? 'Your first mulligan is free.' : 'Mulligans aren’t free at this table.') : `If you keep, you put ${plural(nBottom, 'card')} on the bottom.`)),
+        h('button', { class: 'primary', onclick: G.keep }, 'Keep'), h('button', { onclick: G.mulligan }, 'Mulligan'));
+    } else if (P.phase === 'bottom') {
+      const sel = G.bottomSel = G.bottomSel || new Set(), n = P.bottomN;
+      btns.append(h('div', { class: 'mullq' }, h('b', null, `Choose ${plural(n, 'card')} for the bottom`), h('span', { class: 'muted small' }, 'Click them in your hand.')),
+        h('button', { class: 'primary', disabled: sel.size !== n, onclick: () => { const ids = [...sel]; G.bottomSel = null; G.bottomChosen(ids); } }, `Put ${sel.size}/${n} on the bottom`));
+    } else if (!P.deckId && !P.library.length && !P.hand.length) {
       btns.append(h('button', { class: 'primary', onclick: deckManager }, 'Pick a deck'));
     } else {
       if (!P.hand.length && P.phase !== 'kept') btns.append(h('button', { class: 'primary', onclick: G.openingHand }, 'Draw opening hand'));
@@ -1780,6 +1776,8 @@ null,
     } else {
       for (const c of P.hand) {
         const pc = handCard(c);
+        if (P.phase === 'bottom') { const sel = G.bottomSel = G.bottomSel || new Set(); strip.append(cardEl(pc, { noMenu: true, noGlow: true, cls: sel.has(c.id) ? 'sel' : '', badge: sel.has(c.id) ? 'Bottom' : null, onClick: () => { if (sel.has(c.id)) sel.delete(c.id); else if (sel.size < P.bottomN) sel.add(c.id); render(); } })); continue; }
+        if (P.phase === 'deciding') { strip.append(cardEl(pc, { noGlow: true })); continue; }
         const el = cardEl(pc, { menu: () => handMenu(c), cls: (G.isRevealed(c.id) ? 'rev ' : '') + (affordable(pc) ? 'can' : 'cant'), swipeUp: () => G.isLand(c) ? G.playLand(c.id) : castFlow(c, 'hand') });
         if (G.isRevealed(c.id)) el.append(h('div', { class: 'tag tok' }, 'Revealed'));
         strip.append(el);
@@ -1793,6 +1791,7 @@ null,
 
   // Mulligan step (always asked).
   function mulliganPanel() {
+    return null;   // keep / mulligan now lives in the hand bar
     const P = G.P;
     if (P.phase === 'deciding') {
       return h('div', { class: 'mull' }, h('div', { class: 'mcard' },
@@ -1875,8 +1874,17 @@ null,
       b.append(h('div', { class: 'row' }, h('b', null, 'Name'), nm));
       b.append(h('h4', null, 'Difficulty'), h('div', { class: 'skills' }, SKILLS.map(([k, l, d]) => h('button', { class: 'skill' + (skill === k ? ' on' : ''), onclick: () => { skill = k; refreshModal(); } }, h('b', null, l), h('span', null, d)))));
       b.append(h('h4', null, 'Deck'), h('p', { class: 'muted small' }, 'The AI plays the ready-made decks, including the test decks — pick one below.'));
-      if (decks.length) b.append(h('div', { class: 'aidecks' }, decks.map(d => h('button', { class: 'dk' + (d.id === deckId ? ' on' : ''), onclick: () => { deckId = d.id; refreshModal(); } }, h('img', { src: d.sleeve || BACK, alt: '' }), h('span', null, h('b', null, d.name), h('small', null, `${d.cards.reduce((a, c) => a + c.qty, 0)} cards`))))));
-      b.append(h('details', { class: 'predetails', open: !decks.length || undefined }, h('summary', null, 'All ready-made and test decks'), preconPicker(d => { deckId = d.id; refreshModal(); }, msg => { busy = msg; refreshModal(); })));
+      // Every deck the AI can play, ready to click (ready-made decks come in from Moxfield on the first click).
+      const all = (window.KT_PRECONS || []).filter(pc => (window.KT_AI_PROFILES || {})[pc.id]).slice().sort((a, c) => (a.test ? 9 : a.bracket) - (c.test ? 9 : c.bracket));
+      b.append(h('div', { class: 'aidecks' }, all.map(pc => {
+        const d = G.decks().find(x => x.src === pc.id);
+        return h('button', { class: 'dk' + (d && d.id === deckId ? ' on' : ''), title: pc.blurb, onclick: async e => {
+          if (d) { deckId = d.id; refreshModal(); return; }
+          const btn = e.currentTarget; btn.disabled = true; busy = `Getting ${pc.name}…`; refreshModal();
+          try { const nd = await importPrecon(pc, m => { busy = m; refreshModal(); }); deckId = nd.id; busy = ''; } catch (err) { busy = err.message || 'Couldn’t get that deck.'; }
+          refreshModal();
+        } }, h('img', { src: (d && d.sleeve) || BACK, alt: '' }), h('span', null, h('b', null, pc.name), h('small', null, pips(pc.ci), ' ', bracketBadge(pc))));
+      })));
       if (busy) b.append(h('p', { class: 'muted small immsg' }, busy));
       b.append(h('div', { class: 'row wrap' },
         h('button', { class: 'primary', disabled: !deckId || full || !name.trim(), onclick: () => { const d = G.decks().find(x => x.id === deckId); if (!d) return; closeModal(); G.addAI(name.trim().slice(0, 20), d, skill); render(); } }, full ? 'The table is full' : 'Add AI player'),
@@ -1891,7 +1899,7 @@ null,
     if (!s || G.MODE !== 'table' || (s.turn && s.turn.active && !s.winner)) return null;
     if (s.winner) return null;   // the end-of-game bar offers rematch / new game
     const host = s.hostPid === KEY, me = G.me();
-    const H = Object.assign({ life: R.START_LIFE || 40, cmdrDmg: true, freeMull: true }, s.house || {});
+    const H = R.house(s);
     const ready = p => (s.players[p] && s.players[p].libCount > 0);
     const allReady = s.seats.length > 0 && s.seats.every(ready);
     const url = G.inviteURL ? G.inviteURL() : location.href;
@@ -1904,15 +1912,16 @@ null,
         p === KEY ? h('button', { class: 'small', onclick: deckManager }, P0.deckName ? 'Change deck' : 'Pick a deck') : null,
         mineAI ? h('button', { class: 'small', title: 'Difficulty, deck or remove', onclick: () => manageAIModal(p) }, '⚙') : null);
     });
-    const hr = (label, ctl) => h('label', { class: 'hrule' }, h('span', null, label), ctl);
+    const opened = [H.castGraveyard && 'graveyard', H.playLandsGraveyard && 'graveyard lands', H.castExile && 'exile', H.castLibraryTop && 'library top'].filter(Boolean);
     const house = h('div', { class: 'lhouse' }, h('h4', null, 'House rules'),
-      hr('Starting life', host ? h('select', { onchange: e => G.act({ type: 'house', life: +e.target.value }) }, [40, 30, 25, 20].map(v => h('option', { value: v, selected: H.life === v }, String(v)))) : h('b', null, String(H.life))),
-      hr('Commander damage (21)', host ? h('input', { type: 'checkbox', checked: H.cmdrDmg, onchange: e => G.act({ type: 'house', cmdrDmg: e.target.checked }) }) : h('b', null, H.cmdrDmg ? 'on' : 'off')),
-      hr('Free first mulligan', host ? h('input', { type: 'checkbox', checked: H.freeMull, onchange: e => G.act({ type: 'house', freeMull: e.target.checked }) }) : h('b', null, H.freeMull ? 'on' : 'off')));
-    const code = h('input', { type: 'text', placeholder: 'Game code', class: 'lcode-in', maxlength: '40' });
+      h('p', { class: 'small' }, `${H.life} life · ${H.maxCmdrs} commander${H.maxCmdrs > 1 ? 's' : ''} max · ${H.deckSize ? H.deckSize + '-card decks' : 'any deck size'} · ${H.landsPerTurn} land${H.landsPerTurn === 1 ? '' : 's'} a turn · commander damage ${H.cmdrDmg ? H.cmdrDmgAt : 'off'} · ${H.freeMull ? 'free first mulligan' : 'no free mulligan'}${opened.length ? ' · may play from ' + opened.join(', ') : ''}`),
+      h('button', { class: host ? '' : 'ghost', onclick: houseModal }, host ? 'Change house rules…' : 'See house rules'));
+    const code = h('input', { type: 'text', placeholder: 'Code, e.g. kt-ab12cd', class: 'lcode-in', maxlength: '40' });
     code.addEventListener('keydown', e => { if (e.key === 'Enter') G.openTable(code.value); });
     return h('div', { class: 'lobbywrap' }, h('div', { class: 'lobby', role: 'dialog', 'aria-label': 'Game lobby' },
       h('header', null, h('h2', null, 'New game'), h('span', { class: 'lcode', title: 'This game’s code — it’s saved in your browser, so you can come back' }, 'Code ', h('b', null, G.TABLE))),
+      me ? h('div', { class: 'lname' }, h('span', null, 'Your name: '), h('b', null, me.name), h('button', { class: 'small', onclick: nameModal }, 'Change name')) : h('div', { class: 'lname' }, h('button', { class: 'primary', onclick: nameModal }, 'Take a seat')),
+      h('div', { class: 'ljoin' }, h('b', null, 'Have an invite code?'), code, h('button', { class: 'primary small', onclick: () => G.openTable(code.value) }, 'Join that game'), h('button', { class: 'ghost small', onclick: () => G.newTable() }, 'New table')),
       h('div', { class: 'lgrid' },
         h('div', { class: 'lcol' },
           h('h4', null, `Players (${s.seats.length}/${R.MAX_SEATS})`),
@@ -1921,14 +1930,46 @@ null,
             me && s.seats.length < R.MAX_SEATS ? h('button', { onclick: addAIModal }, '+ Add AI player') : null,
             h('button', { onclick: inviteModal }, 'Invite…'),
             h('button', { class: 'ghost small', onclick: () => copyText(url, 'Invite link copied') }, 'Copy link'))),
-        h('div', { class: 'lcol' }, house,
-          h('details', { class: 'lother' }, h('summary', null, 'Another table'),
-            h('div', { class: 'row' }, code, h('button', { class: 'small', onclick: () => G.openTable(code.value) }, 'Join')),
-            h('button', { class: 'ghost small', onclick: () => G.newTable() }, 'Start a new table')))),
+        h('div', { class: 'lcol' }, house)),
       h('footer', null,
         host ? h('button', { class: 'primary big', disabled: !allReady, title: allReady ? 'Randomizes the turn order and deals opening hands' : 'Everyone needs a deck first', onclick: () => G.act({ type: 'start' }) }, 'Start game')
           : h('span', { class: 'muted' }, `Waiting for ${nameOf(s.hostPid) || 'the host'} to start the game…`),
         !allReady && s.seats.length ? h('span', { class: 'muted small' }, ' Everyone needs a deck.') : null)));
+  }
+
+  // House rules: every default of the game the host can change before it starts (Rules.HOUSE_DEFAULTS).
+  function houseModal() {
+    openModal('House rules', b => {
+      const s = S(), H = R.house(s), host = s.hostPid === KEY && !(s.turn && s.turn.active && !s.winner);
+      const set = (k, v) => G.act({ type: 'house', set: { [k]: v } });
+      const numRow = (k, label, help, step) => { const lim = R.HOUSE_LIMITS[k] || [0, 999];
+        return h('div', { class: 'hrow' }, h('div', null, h('b', null, label), help ? h('div', { class: 'muted small' }, help) : null),
+          host ? h('div', { class: 'row' }, h('button', { class: 'small', onclick: () => set(k, Math.max(lim[0], H[k] - (step || 1))) }, '−'), h('b', { class: 'hnum' }, String(H[k])), h('button', { class: 'small', onclick: () => set(k, Math.min(lim[1], H[k] + (step || 1))) }, '+')) : h('b', null, String(H[k]))); };
+      const boolRow = (k, label, help) => h('label', { class: 'hrow' }, h('div', null, h('b', null, label), help ? h('div', { class: 'muted small' }, help) : null),
+        h('input', { type: 'checkbox', checked: !!H[k], disabled: !host, onchange: e => set(k, e.target.checked) }));
+      if (!host) b.append(h('p', { class: 'muted' }, s.turn && s.turn.active ? 'The game has started — these are the rules it’s played with.' : 'Only the host can change these.'));
+      b.append(h('h4', null, 'Players and decks'),
+        numRow('life', 'Starting life', 'Commander is 40.', 5),
+        numRow('maxCmdrs', 'Commanders per player', 'Partners and backgrounds need 2.'),
+        numRow('deckSize', 'Cards in each deck', '0 means any size. Commander is 100, counting the commanders.', 10),
+        numRow('openingHand', 'Opening hand size'),
+        boolRow('freeMull', 'Free first mulligan', 'Multiplayer Commander gives one (103.5c).'),
+        boolRow('firstDraws', 'First player draws on turn 1', 'Normally the first player skips that draw in a two-player game.'));
+      b.append(h('h4', null, 'Each turn'),
+        numRow('landsPerTurn', 'Lands per turn', 'Cards like Exploration still add more.'),
+        numRow('maxHand', 'Maximum hand size', 'Discard down to this at the end of your turn.'),
+        numRow('cmdrTax', 'Commander tax', 'Extra mana for each time a commander was cast from the command zone.'));
+      b.append(h('h4', null, 'Winning'),
+        boolRow('cmdrDmg', 'Commander damage', 'A player who takes this much combat damage from one commander loses.'),
+        H.cmdrDmg ? numRow('cmdrDmgAt', 'Commander damage to lose') : null,
+        numRow('poisonAt', 'Poison counters to lose'));
+      b.append(h('h4', null, 'Playing from other zones'), h('p', { class: 'muted small' }, 'By the normal rules you can’t; these open a zone to every player, as if each had a card that lets them.'),
+        boolRow('castGraveyard', 'Cast spells from your graveyard'),
+        boolRow('playLandsGraveyard', 'Play lands from your graveyard'),
+        boolRow('castExile', 'Cast and play your own cards from exile'),
+        boolRow('castLibraryTop', 'Play the top card of your library', 'You also get to look at it any time.'));
+      if (host) b.append(h('div', { class: 'row' }, h('button', { class: 'ghost small', onclick: () => G.act({ type: 'house', set: { reset: true } }) }, 'Back to the standard rules')));
+    }, { live: true, cls: 'wide' });
   }
 
   // ---- Developer: the AI's plan, saved responses, scenarios and change log (dev mode only; it shows the AI's hand) ----
@@ -2626,12 +2667,9 @@ null,
       const all = G.decks();
       const deck = all.find(d => d.id === editing) || null;
       const list = h('div', { class: 'decklist' },
-        h('button', { class: 'primary', onclick: () => { const d = { id: G.R.rid(8), name: 'New deck', cards: [], sleeve: null }; saveDeck(d); editing = d.id; refreshModal(); } }, '+ New deck'),
-        h('label', { class: 'import' }, 'Import from ManaBox (.txt or .csv)',
-          h('input', { type: 'file', accept: '.csv,.txt,text/csv,text/plain', id: 'importfile', onchange: e => importFile(e.target.files[0]) })),
-        deckImporter(imp, d => { editing = d.id; importMsg = `Imported ${d.name}.`; refreshModal(); }, msg => { importMsg = msg; refreshModal(); }),
         importMsg ? h('p', { class: 'muted small immsg' }, importMsg) : null,
-        // Your decks first, then every ready-made deck (they're always here; a click brings one in from Moxfield).
+        // Your decks first, then every ready-made deck (they're always here; a click brings one in from Moxfield);
+        // making or importing a deck is at the bottom.
         all.filter(d => !preconOf(d)).map(d => deckBtn(d)),
         h('div', { class: 'prehead' }, 'Ready-made decks'),
         (window.KT_PRECONS || []).slice().sort((a, b2) => (a.test ? 9 : a.bracket) - (b2.test ? 9 : b2.bracket)).map(p => {
@@ -2642,7 +2680,12 @@ null,
             try { const nd = await importPrecon(p, msg => { importMsg = msg; refreshModal(); }); editing = nd.id; refreshModal(); } catch (err) { importMsg = err.message || 'Couldn’t add that deck.'; refreshModal(); }
             btn.disabled = false;
           } }, h('img', { src: BACK, alt: '' }), h('span', null, h('b', null, p.name), h('small', null, pips(p.ci), ' ', bracketBadge(p), ' ', p.blurb)));
-        }));
+        }),
+        h('div', { class: 'prehead' }, 'Make or import a deck'),
+        h('button', { onclick: () => { const d = { id: G.R.rid(8), name: 'New deck', cards: [], sleeve: null }; saveDeck(d); editing = d.id; refreshModal(); } }, '+ New deck'),
+        h('label', { class: 'import' }, 'Import from ManaBox (.txt or .csv)',
+          h('input', { type: 'file', accept: '.csv,.txt,text/csv,text/plain', id: 'importfile', onchange: e => importFile(e.target.files[0]) })),
+        deckImporter(imp, d => { editing = d.id; importMsg = `Imported ${d.name}.`; refreshModal(); }, msg => { importMsg = msg; refreshModal(); }));
       const ed = h('div', { class: 'deckedit' });
       if (!deck) ed.append(h('div', { class: 'empty big' }, 'Make a new deck or import one from ManaBox. In ManaBox, open your deck, choose Export, and pick CSV.'));
       else {
@@ -2702,9 +2745,6 @@ null,
         ed.append(
           pre ? h('div', { class: 'rohead' }, bracketBadge(pre), h('span', { class: 'muted small' }, ' Ready-made decks can’t be changed or deleted. '), h('button', { onclick: copyDeck }, 'Make an editable copy')) : null,
           h('div', { class: 'row' }, name, h('button', { class: 'primary', disabled: !G.me() || !total, onclick: () => play(deck) }, G.P.deckId === deck.id ? 'Restart with this deck' : 'Play this deck')),
-          h('p', { class: 'muted' }, `${total} cards · ${lands} lands · ${cmdN ? plural(cmdN, 'commander') : 'no commander picked — tap ☆ next to a card'}`),
-          h('div', { class: 'acwrap' }, search, ac),
-          commanderPanel(deck, saveDeck),
           h('div', { class: 'looks' },
             h('div', { class: 'sleeve' }, h('img', { src: deck.sleeve || BACK, alt: 'Sleeve' }),
               h('div', null, h('b', null, 'Sleeve'), h('p', { class: 'muted small' }, 'On your library and face-down cards.'),
@@ -2724,6 +2764,9 @@ null,
                 onclick: () => { deck.palette = k; saveDeck(deck); G.pushLook(deck); refreshModal(); }
               }, h('span', { class: 'pdot' })))),
               h('span', { class: 'muted small' }, (PALETTES[deck.palette] || PALETTES.felt).name))),
+          h('p', { class: 'muted' }, `${total} cards · ${lands} lands · ${cmdN ? plural(cmdN, 'commander') : 'no commander picked — tap ☆ next to a card'}`),
+          h('div', { class: 'acwrap' }, search, ac),
+          commanderPanel(deck, saveDeck),
           h('div', { class: 'dcards', 'data-scroll': 'deck' }, sections),
           pre ? null : h('div', { class: 'row' }, h('button', { class: 'ghost danger', onclick: () => choose('Delete deck', `Delete “${deck.name}” from this device?`, [{ label: 'Delete', primary: true, fn: () => { G.saveDecks(G.decks().filter(d => d.id !== deck.id)); editing = null; deckManager(); } }, { label: 'Cancel', fn: deckManager }]) }, 'Delete deck'))
         );

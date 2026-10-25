@@ -129,7 +129,7 @@
       for (let i = 0; i < abs.length; i++) {
         const ab = abs[i];
         if (!/^copy target (?:activated or )?triggered ability you control/i.test(ab.text)) continue;
-        if (ab.tap && c.tapped) continue;
+        if (ab.tap && (c.tapped || (B.isCre(c) && R().sick(s, c) && !B.kw(c).has('haste')))) continue;
         const pay = C().pay(ab.mana, B.sources().filter(x => !(ab.tap && x.id === c.id)), 0); if (!pay) continue;
         if (pay.length) await this.io.tapPay(pay);
         const res = await this.act({ type: 'activate', id: c.id, i, tg: [[{ c: top.id }]] });
@@ -211,7 +211,7 @@
         const hand = io.hand();
         // (Stop if discarding keeps drawing cards — a discard trigger that draws must not empty my library.)
         const dk = 'discards:' + s.turn.n; this.discards = this.discards || {}; this.discards[dk] = (this.discards[dk] || 0);
-        if (hand.length > 7 && this.discards[dk]++ < 3) { const worst = B.worstCards(hand.map(c => Object.assign({ zone: 'hand', counters: {}, face: 0 }, c)), hand.length - 7); await io.discard(worst.map(c => c.id), 'hand size'); B.note('did', `discarded ${worst.map(c => c.d.n).join(', ')} (hand size)`); return true; }
+        if (hand.length > (R().house ? R().house(this.io.s()).maxHand : 7) && this.discards[dk]++ < 3) { const worst = B.worstCards(hand.map(c => Object.assign({ zone: 'hand', counters: {}, face: 0 }, c)), hand.length - (R().house ? R().house(this.io.s()).maxHand : 7)); await io.discard(worst.map(c => c.id), 'hand size'); B.note('did', `discarded ${worst.map(c => c.d.n).join(', ')} (hand size)`); return true; }
         // Leftover mana: activated abilities that draw, make tokens or grow my creatures (not the mana kept for an answer).
         { const r = await this.manaSink(plan); if (r) { B.note(r.ok === false ? 'refused' : 'did', r.text || r.err); return true; } }
         const unused = B.manaNow();

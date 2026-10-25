@@ -170,6 +170,9 @@
     // Energy paid by amount: "you may pay an amount of {E} equal to that permanent's mana value" / "pay one or more {E}".
     if (/^(?:then )?(?:you may )?pay an amount of \{e\} equal to (?:that permanent's|that card's|its) mana value$/.test(s)) return [wrap({ op: 'payEnergy', mvOf: { k: 't', i: 0 } })];
     if (/^(?:then )?(?:you may )?pay one or more \{e\}$/.test(s)) return [wrap({ op: 'payEnergy', all: true })];
+    if ((m = s.match(/^(its controller|that player) may draw (a|one|two|three) cards?$/))) return [wrap({ op: 'draw', who: who(m[1]), n: amt(m[2]) || 1, optional: true })];
+    // Myriad (702.116): a token copy attacking each other opponent.
+    if (/^for each opponent other than defending player, (?:you may )?create a token that's a copy of this that's tapped and attacking that player or a planeswalker they control$/.test(s)) return [wrap({ op: 'myriad' })];
     if (/^(?:then )?note your life total$/.test(s)) return [wrap({ op: 'noteLife' })];
     if ((m = s.match(/^shuffle up to (\w+) target cards from graveyards into their owners' libraries$/))) return [wrap({ op: 'move', what: { k: 't', i: st.ti++, upTo: true, n: amt(m[1]) || 3, what: 'card from a graveyard' }, to: 'library', pos: 'shuffle' })];
     if ((m = s.match(/^put (up to \w+ target cards|target card) from (?:graveyards|a graveyard) on the bottom of (?:their|its) owners?'? librar(?:y|ies)(?: in any order)?$/))) { const n = /up to (\w+)/.exec(m[1]); return [wrap({ op: 'move', what: { k: 't', i: st.ti++, upTo: !!n, n: n ? amt(n[1]) || 1 : 1, what: 'card from a graveyard' }, to: 'library', pos: 'bottom' })]; }
@@ -394,8 +397,8 @@
     let understood = true;
     for (let sent of sentences) {
       const dg = sent.match(/^__dig:([a-z -]+):(mut|1):(either|battlefield|hand):([01]):(bottom|exile)__\.?$/);
-      if (/^as an additional cost to cast this spell, discard (?:a|one) card\.?$/.test(sent)) continue;
-      if (/^as an additional cost to cast this spell, (?:pay x life|sacrifice (?:a|an) [a-z ]+?(?: or discard a card)?)\.?$/.test(sent)) continue;   // paid as it's cast (601.2f)
+      if (/^as an additional cost to cast this(?: spell)?, discard (?:a|one) card\.?$/.test(sent)) continue;
+      if (/^as an additional cost to cast this(?: spell)?, (?:pay x life|sacrifice (?:a|an) [a-z ]+?(?: or discard a card)?|discard a card or sacrifice (?:a|an) [a-z ]+?)\.?$/.test(sent)) continue;   // paid as it's cast (601.2f)
       if (/^if you control a commander, you may cast this(?: spell)? without paying its mana cost\.?$/.test(sent)) continue;
       if (/^if that spell would be put into (?:your|a) graveyard, exile it instead\.?$/.test(sent)) continue;   // the free spell is exiled afterwards (not tracked)   // an alternative cost
       if (/^(?:rebound|split second|epic|fuse|escalate (?:\{[^}]+\})+|transmute (?:\{[^}]+\})+|suspend \d+—(?:\{[^}]+\})+)\.?$/.test(sent)) continue;   // keywords handled elsewhere (or by the players)   // handled as it resolves (702.88)
@@ -438,7 +441,7 @@
       // Reflexive triggers (603.12): "When you do, ..." is a new ability whose targets are chosen then.
       const rf = sent.replace(/\.$/, '').match(/^when you do, (.+)$/);
       if (rf) { const inner = parse(rf[1] + '.', opts); ops.push({ op: 'reflexive', text: rf[1], ops: inner.ops }); if (!inner.understood) understood = false; continue; }
-      const ti = sent.replace(/\.$/, '').match(/^((?:draw a card|you gain \d+ life|create [^,]+?|scry \d+)) if (you control .+|you have .+|it's your turn|you're the monarch|an opponent .+|your life total is .+)$/);
+      const ti = sent.replace(/\.$/, '').replace(/^then /, '').match(/^((?:draw a card|you gain \d+ life|(?:you )?create [^,]+?|scry \d+|(?:its controller|that player) may draw a card)) if (you control .+|you have .+|it's your turn|you're the monarch|an opponent .+|your life total is .+|that player .+|its power is .+)$/);
       if (ti) { const inner = parse(ti[1] + '.', opts, st); ops.push({ op: 'if', cond: ti[2], ops: inner.ops }); if (!inner.understood) understood = false; continue; }
       const cm = sent.replace(/\.$/, '').replace(/^then (?=if )/, '').match(/^if (?!you do\b|they do\b|a player does\b|the player does\b|that player does\b)([^,]+), (.+?)( instead)?$/);
       if (cm) {

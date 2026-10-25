@@ -311,8 +311,9 @@
   function alertChecks(s, pid) {
     const p = s.players[pid]; if (!p) return;
     const was = p.alerts || {};
-    const now = { dead: p.life <= 0, poison: p.poison >= 10 };
-    for (const [k, v] of Object.entries(p.cmdDmg || {})) if (v >= 21) now['cmd:' + k] = true;
+    const HR = house(s);
+    const now = { dead: p.life <= 0, poison: p.poison >= HR.poisonAt };
+    if (HR.cmdrDmg) for (const [k, v] of Object.entries(p.cmdDmg || {})) if (v >= HR.cmdrDmgAt) now['cmd:' + k] = true;
     if (now.dead && !was.dead) log(s, pid, 'is at ' + p.life + ' life', 'alert');
     if (now.poison && !was.poison) log(s, pid, 'has ' + p.poison + ' poison counters', 'alert');
     for (const k of Object.keys(now)) if (k.startsWith('cmd:') && !was[k]) {
@@ -323,6 +324,11 @@
   }
 
   // ======================= apply an action =======================
+  // House rules (set in the lobby): every default the host may change. Rules.house(s) gives them merged with the defaults.
+  const HOUSE_DEFAULTS = { life: START_LIFE, cmdrDmg: true, cmdrDmgAt: 21, poisonAt: 10, freeMull: true, openingHand: 7, maxHand: 7, landsPerTurn: 1,
+    maxCmdrs: 2, deckSize: 100, cmdrTax: 2, firstDraws: false, castGraveyard: false, castExile: false, castLibraryTop: false, playLandsGraveyard: false };
+  const HOUSE_LIMITS = { life: [1, 999], cmdrDmgAt: [1, 99], poisonAt: [1, 99], openingHand: [0, 15], maxHand: [0, 99], landsPerTurn: [0, 10], maxCmdrs: [1, 4], deckSize: [0, 250], cmdrTax: [0, 10] };
+  function house(s) { return Object.assign({}, HOUSE_DEFAULTS, (s && s.house) || {}); }
   // Dev-mode rewind: the host keeps the last 20 public states of each game (in memory only).
   const HIST = new Map(), NO_HIST = new Set(['counts', 'log', 'reveal', 'inboxAck', 'todoAck', 'aiAsk', 'aiSay', 'dev', 'devRewind', 'deck', 'player', 'join', 'chat', 'ping']);
   function remember(s, a) {
@@ -468,7 +474,7 @@
           const list = (a.cards || []).slice(0, 120);
           const names = [];
           const cmdrsNow = Object.values(s.cards).filter(c => c.owner === pid && c.cmdr).length;
-          if (cmdrsNow + list.filter(c => c && c.cmdr).length > 2) return { ok: false, err: 'You can have at most 2 commanders.' };
+          if (cmdrsNow + list.filter(c => c && c.cmdr).length > house(s).maxCmdrs) return { ok: false, err: `You can have at most ${house(s).maxCmdrs} commander${house(s).maxCmdrs > 1 ? 's' : ''} (house rules).` };
           // Playing a land (305.2): once per turn, on your own turn, in a main phase, with nothing on the stack.
           if (a.land && to === 'battlefield' && s.turn.active) {
             const err = landCheck(s, pid) || (root.Rulebook && a.from === 'library' && list[0] ? root.Rulebook.castBlock(s, pid, Object.assign({ owner: pid, zone: 'library' }, list[0], { d: cleanD(list[0].d) }), Object.assign({}, a, { fromZone: 'library', top: true })) : null);
@@ -790,6 +796,7 @@
           need();
           if (!s.seats.length) return { ok: false, err: 'Nobody is seated.' };
           if (s.turn && s.turn.active && !s.winner) return { ok: false, err: 'The game has already started. Use New game to start over.' };
+          { const HR = house(s); if (HR.deckSize) { const off = s.seats.filter(p => s.players[p] && !s.players[p].ai && (s.players[p].libCount || 0) > 0 && (s.players[p].libCount || 0) + Object.values(s.cards).filter(c => c.owner === p && c.cmdr).length + (s.players[p].handCount || 0) !== HR.deckSize); if (off.length) return { ok: false, err: `House rules: decks must have ${HR.deckSize} cards — ${off.map(p => nameOf(s, p)).join(', ')} ${off.length > 1 ? 'have' : 'has'} a different count.` }; } }
           // Random seating order and starting player (103.1 / 103.2).
           const order = s.seats.slice();
           for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
@@ -846,12 +853,16 @@
         case 'house': {
           if (pid !== s.hostPid) return { ok: false, err: 'Only the host sets the house rules.' };
           if (s.turn && s.turn.active && !s.winner) return { ok: false, err: 'House rules are set before the game starts.' };
-          const H = s.house = Object.assign({ life: START_LIFE, cmdrDmg: true, freeMull: true }, s.house || {});
-          if (a.life !== undefined) { const v = num(a.life, 1, 999); if (v) H.life = v; }
-          if (a.cmdrDmg !== undefined) H.cmdrDmg = !!a.cmdrDmg;
-          if (a.freeMull !== undefined) H.freeMull = !!a.freeMull;
-          for (const p of s.seats) if (s.players[p] && !s.turn.active) s.players[p].life = H.life;
-          return done(`set the house rules: ${H.life} life, commander damage ${H.cmdrDmg ? 'on' : 'off'}, free first mulligan ${H.freeMull ? 'on' : 'off'}`);
+          const H = s.house = house(s);
+          const set = Object.assign({}, a.set || {}, ...['life', 'cmdrDmg', 'freeMull'].filter(k => a[k] !== undefined).map(k => ({ [k]: a[k] })));
+          if (set.reset) { s.house = Object.assign({}, HOUSE_DEFAULTS); }
+          else for (const [k, v] of Object.entries(set)) {
+            if (!(k in HOUSE_DEFAULTS)) continue;
+            if (typeof HOUSE_DEFAULTS[k] === 'boolean') H[k] = !!v;
+            else { const lim = HOUSE_LIMITS[k] || [0, 999]; const n = num(v, lim[0], lim[1]); if (n !== null) H[k] = n; }
+          }
+          for (const p of s.seats) if (s.players[p] && !(s.turn && s.turn.active)) s.players[p].life = s.house.life;
+          return done('changed the house rules');
         }
         // Dev mode (host only): step the public table back to before an earlier action (hidden cards stay where they are).
         case 'devRewind': {
@@ -1390,8 +1401,8 @@
       if (P.lifeLock && P.life !== P.lifeLock.v) P.life = P.lifeLock.v;   // Teferi's Protection
       let why = null;
       if (P.life <= 0) why = `has ${P.life} life (704.5a)`;
-      else if (P.poison >= 10) why = `has ${P.poison} poison counters (704.5c)`;
-      else { const cd = !(s.house && s.house.cmdrDmg === false) && Object.entries(P.cmdDmg || {}).find(([, v]) => v >= 21); if (cd) why = `took ${cd[1]} combat damage from ${s.cards[cd[0]] ? cardName(s.cards[cd[0]]) : 'one commander'} (903.10a)`; }
+      else if (P.poison >= house(s).poisonAt) why = `has ${P.poison} poison counters (704.5c)`;
+      else { const cd = house(s).cmdrDmg && Object.entries(P.cmdDmg || {}).find(([, v]) => v >= house(s).cmdrDmgAt); if (cd) why = `took ${cd[1]} combat damage from ${s.cards[cd[0]] ? cardName(s.cards[cd[0]]) : 'one commander'} (903.10a)`; }
       if (why) losing.push([pid, why]);
     }
     if (!losing.length) return;
@@ -1453,7 +1464,7 @@
       else return 'You can play a land only in one of your main phases.';
     }
     // 305.2: one land per turn, plus "you may play an additional land" effects (Aesi, Azusa, Exploration, Explore…).
-    if ((T.lands && T.lands[pid] || 0) >= 1 + extraLands(s, pid)) return extraLands(s, pid) ? `You've played all ${1 + extraLands(s, pid)} lands you may play this turn.` : 'You can only play one land per turn. If you need a second land, use the Move to option.';
+    if ((T.lands && T.lands[pid] || 0) >= house(s).landsPerTurn + extraLands(s, pid)) return extraLands(s, pid) ? `You've played all ${1 + extraLands(s, pid)} lands you may play this turn.` : 'You can only play one land per turn. If you need a second land, use the Move to option.';
     return null;
   }
   function extraLands(s, pid) {
@@ -2027,7 +2038,7 @@
   const _int = { moveOne, makeToken, tokenD, todo, log, cardName, nameOf, stackCards, stackTop, startPrio, nextHolder: (s, n) => nextHolder(s, n), PHASES, PI: n => PHASES.indexOf(n),
     gainLife: (s, p, n) => gainLife(s, p, n), regenerated: (s, c, n) => regenerated(s, c, n), isType, typeLine, alive: (s, p) => alive(s, p), live: (s, p) => live(s, p), addPool, unitsOf, passTurn, sba, alertChecks, rotate, face, rowFor, listNames,
     clearMods, cleanTargets, wardFor, targetText, sick, combatDamage: (s, n) => combatDamage(s, n), shielded: (s, c, n, w) => shielded(s, c, n, w), cmdrHuman: (s, p) => cmdrHuman(s, p) };
-  root.Rules = { _int, PHASES, ROWS, PUBLIC_ZONES, KEYWORD_COUNTERS, SUGGESTED_COUNTERS, MAX_SEATS, START_LIFE,
+  root.Rules = { _int, house, HOUSE_DEFAULTS, HOUSE_LIMITS, PHASES, ROWS, PUBLIC_ZONES, KEYWORD_COUNTERS, SUGGESTED_COUNTERS, MAX_SEATS, START_LIFE,
     newState, apply, canAct, zoneCards, cardName, typeLine, isType, face, rowFor, ptOf, rid, listNames, nameOf,
     stackCards, stackTop, sick, alive, shielded: (s, c, notes, what) => shielded(s, c, notes, what), fixUp: (s) => { const key = () => JSON.stringify([s.prio && [s.prio.holder, s.prio.top, s.prio.passed.length], s.combat && s.combat.done, stackCards(s).length, (s.ask || []).length, (s.tq || []).length, s.turn && [s.turn.phase, s.turn.n]]); const before = key(); const notes = []; if (root.Engine && s.turn && s.turn.active) { root.Engine.begin(s); try { root.Engine.timeouts(s, notes); } catch (e) {} } fixUp(s, notes); if (root.Engine && s.turn && s.turn.active) { try { root.Engine.after(s, notes); } catch (e) { if (typeof console !== 'undefined') console.error(e); } } for (const n of notes) log(s, null, n, 'auto'); return notes.length > 0 || key() !== before; }, landCheck: (s, pid) => landCheck(JSON.parse(JSON.stringify(s)), pid), extraLands: (s, pid) => extraLands(s, pid), PI };
 })(typeof window !== 'undefined' ? window : globalThis);

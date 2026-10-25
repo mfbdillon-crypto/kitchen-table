@@ -614,7 +614,18 @@
       if (en) { if ((P.energy || 0) < en) return false; const rest = String(cost).replace(/\{e\}/gi, ''); if (rest && !payMana(s, by, rest, notes)) return false; P.energy -= en; return true; }
       return payMana(s, by, String(cost), notes);
     };
-    const condOk = cond => { const em = String(cond).match(/^(?:that|the) (?:creature|enchantment|artifact|card|permanent|spell|land) is an? ([a-z ]+)$/); if (em && ctx.c && s.cards[ctx.c]) return C.matchesWhat(Object.assign({}, s.cards[ctx.c]), em[1]); const sm = String(cond).match(/^(?:at least )?(\w+)(?: or more)? mana was spent to cast (?:that spell|it)$/); if (sm) return (ctx.mv || 0) >= (({ two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8 })[sm[1]] || +sm[1] || 0); const xm = String(cond).match(/^x is (\d+) or (more|greater|less|fewer)$/); if (xm) { const v = st.lastX != null ? st.lastX : (ctx.mv || X || 0); return /less|fewer/.test(xm[2]) ? v <= +xm[1] : v >= +xm[1]; } const r = O().conditionHolds(s, Object.assign({}, src, { ctrl: by }), cond); if (r === null) { st.manual.push(`Check: if ${cond}`); return false; } return r; };
+    // Conditions about "that player" (the one the event is about) or the event's creature.
+    const evCond = cond => {
+      const c0 = String(cond), p = ctx.p, live = (s.seats || []).filter(q => s.players[q] && !s.players[q].lost);
+      const most = f => p && live.filter(q => q !== p).every(q => f(p) > f(q));
+      if (/^that player has more cards in hand than each other player$/.test(c0)) return most(q => s.players[q].handCount || 0);
+      if (/^that player controls more lands than each other player$/.test(c0)) return most(q => Object.values(s.cards).filter(c => c.zone === 'battlefield' && c.ctrl === q && R.isType(c, 'land')).length);
+      if (/^that player has more life than each other player$/.test(c0)) return most(q => s.players[q].life || 0);
+      if (/^its power is greater than each other creature's power$/.test(c0)) { const c = s.cards[ctx.c]; if (!c) return false; const pw = (C.pt(s, c) || [0])[0]; return Object.values(s.cards).every(o => o.id === c.id || o.zone !== 'battlefield' || !(o.faceDown || R.isType(o, 'creature')) || (C.pt(s, o) || [0])[0] < pw); }
+      return undefined;
+    };
+    const condOk = cond => { const ec = evCond(cond); if (ec !== undefined) return ec; return condOk0(cond); };
+    const condOk0 = cond => { const em = String(cond).match(/^(?:that|the) (?:creature|enchantment|artifact|card|permanent|spell|land) is an? ([a-z ]+)$/); if (em && ctx.c && s.cards[ctx.c]) return C.matchesWhat(Object.assign({}, s.cards[ctx.c]), em[1]); const sm = String(cond).match(/^(?:at least )?(\w+)(?: or more)? mana was spent to cast (?:that spell|it)$/); if (sm) return (ctx.mv || 0) >= (({ two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8 })[sm[1]] || +sm[1] || 0); const xm = String(cond).match(/^x is (\d+) or (more|greater|less|fewer)$/); if (xm) { const v = st.lastX != null ? st.lastX : (ctx.mv || X || 0); return /less|fewer/.test(xm[2]) ? v <= +xm[1] : v >= +xm[1]; } const r = O().conditionHolds(s, Object.assign({}, src, { ctrl: by }), cond); if (r === null) { st.manual.push(`Check: if ${cond}`); return false; } return r; };
     const runList = (list, off) => {
       for (let k = 0; k < list.length; k++) {
         const o = shiftOp(list[k], off || 0);
@@ -977,6 +988,17 @@
           notes.push(`${nameOf(s, by)} copied ${cardName(c)}${c.ab ? '’s ability' : ''} (${srcName})`);
         } break;
         case 'manaNote': break;
+        case 'myriad': {
+          const src = s.cards[srcId]; const K = s.combat; if (!src || !src.d || !K || !K.att) break;
+          const def = (K.att[srcId] && K.att[srcId].def) || {}, defP = def.p || (s.cards[def.c] && s.cards[def.c].ctrl);
+          for (const opp of (s.seats || []).filter(q => q !== by && q !== defP && s.players[q] && !s.players[q].lost)) {
+            const before = new Set(Object.keys(s.cards));
+            R.makeToken(s, by, JSON.parse(JSON.stringify(src.d)), 1, true, notes);
+            for (const id of Object.keys(s.cards).filter(x => !before.has(x))) { K.att[id] = { def: { p: opp }, blk: [] }; s.delayed = (s.delayed || []).concat([{ step: 'endCombat', id, to: 'exile', by, src: srcName + ' (myriad)', n: s.turn.n }]); }
+            notes.push(`${srcName}: a token copy attacks ${nameOf(s, opp)} (myriad)`);
+          }
+          break;
+        }
         case 'payEnergy': {
           const P = s.players[by]; if (!P) break;
           let n;

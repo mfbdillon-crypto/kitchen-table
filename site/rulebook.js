@@ -164,7 +164,7 @@
   const lines = c => String(C().text(c) || '').toLowerCase().replace(/\([^)]*\)/g, '').split(/\n|\.\s+(?=[a-z])/).map(x => x.trim().replace(/\.$/, '')).filter(Boolean);
   let cache = { sig: null, list: null };
   function signature(s) {
-    let sig = (s.turn && (s.turn.n + ':' + s.turn.active)) + '|' + (s.ruleFx || []).length + '|' + (s.devPerms || []).length + '|' + (s.devOff || []).join() + '|';
+    let sig = (s.turn && (s.turn.n + ':' + s.turn.active)) + '|' + (s.ruleFx || []).length + '|' + (s.devPerms || []).length + '|' + (s.devOff || []).join() + '|' + JSON.stringify(s.house || {}) + '|';
     for (const c of Object.values(s.cards)) if (c.zone === 'battlefield' && !c.faceDown) sig += c.id + c.ctrl + ((c.gained || []).length) + (c.face || 0) + ',';
     return sig;
   }
@@ -190,6 +190,14 @@
       }
     }
     for (const fx of s.ruleFx || []) list.push(...readLine(fx.line, fx.by, fx.src, fx.name, s, { temp: fx.until }));
+    // House rules can open zones for everyone (lobby): "players may cast spells from their graveyards", etc.
+    const H = R() && R().house ? R().house(s) : {};
+    const live = (s.seats || []).filter(p => s.players[p] && !s.players[p].lost);
+    const hr = (id, e) => list.push(Object.assign({ id, kind: 'can', who: live, whoWord: 'each', src: null, srcName: 'house rules', srcCtrl: null, text: 'house rule', what: 'card' }, e));
+    if (H.castGraveyard) hr('house.gy', { act: ['cast'], zones: ['graveyard'], text: 'players may cast spells from their graveyards' });
+    if (H.playLandsGraveyard) hr('house.gyLand', { act: ['play'], zones: ['graveyard'], what: 'land', text: 'players may play lands from their graveyards' });
+    if (H.castExile) hr('house.ex', { act: ['cast', 'play'], zones: ['exile'], text: 'players may cast and play their own cards from exile' });
+    if (H.castLibraryTop) hr('house.top', { act: ['cast', 'play'], zones: ['library'], top: true, text: 'players may play the top card of their library' });
     (s.devPerms || []).forEach((d, i) => list.push(...readLine(d.line, d.pid, 'dev' + i, 'dev mode', s, { dev: i })));
     const off = new Set(s.devOff || []);
     const out = off.size ? list.filter(e => !off.has(keyOf(e))) : list;

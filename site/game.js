@@ -198,12 +198,14 @@
   };
 
   // ---------------- opening hand + mulligans ----------------
+  const houseR = () => (G.S && R.house ? R.house(G.S) : { openingHand: 7, maxHand: 7, cmdrTax: 2, firstDraws: false });
+  G.houseR = houseR;
   function dealSeven() {
-    const L = P.library;
-    const hand = L.splice(0, 7);
+    const L = P.library, N = houseR().openingHand;
+    const hand = L.splice(0, N);
     let moved = false;
     while (hand.filter(isLand).length < 3 && L.length) hand.push(L.shift());
-    while (hand.length > 7) {
+    while (hand.length > N) {
       const nl = hand.filter(c => !isLand(c));
       if (!nl.length) break;
       const x = nl[rnd(nl.length)];
@@ -662,7 +664,7 @@
     P.autoDrew = k;
     if (P.skipDraw) { P.skipDraw = false; savePriv(true); log('skipped their draw this turn'); return; }
     // 103.8a: in a two-player game the starting player skips their first draw.
-    if (G.S.seats.length === 2 && T.n === 1 && T.first === KEY) { savePriv(true); log('skipped their first draw (two-player game)'); return; }
+    if (G.S.seats.length === 2 && T.n === 1 && T.first === KEY && !houseR().firstDraws) { savePriv(true); log('skipped their first draw (two-player game)'); return; }
     G.draw(1, 'drew a card for the turn');
   }
 
@@ -678,7 +680,7 @@
     const say = t => { G.toast(t, 'info'); phoneBanner(t); };
     if (step === 'Upkeep' && s.table.initiative === KEY) say('You have the initiative: venture into the Undercity.');
     if (step === 'End step' && s.table.monarch === KEY) say('You’re the monarch: draw a card.');
-    if (step === 'Cleanup' && P.hand.length > 7) say(`Discard down to 7 cards — you have ${P.hand.length} (rule 514.1).`);
+    if (step === 'Cleanup' && P.hand.length > houseR().maxHand) say(`Discard down to ${houseR().maxHand} cards — you have ${P.hand.length} (rule 514.1).`);
   }
 
   let lastLogT = null;
