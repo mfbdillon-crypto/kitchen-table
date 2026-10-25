@@ -444,10 +444,12 @@
     const cost = this.costOf(card);
     { const sp = Cd.spreeCost && mode ? Cd.spreeCost(card, mode) : null; if (sp) for (const k of ['g', 'W', 'U', 'B', 'R', 'G', 'C']) cost[k] += sp[k] || 0; }
     const srcs = extra.sources || this.sources();
-    // Additional sacrifice cost: the least useful permanent of that kind (never the commander or a key card).
+    // Additional sacrifice cost: the least useful permanent of that kind (never the commander or a key card). A land
+    // sacrificed for ramp (Harrow, Crop Rotation) is one already tapped for this spell's mana.
     let sacCost;
     const sc = Cd.sacCost && Cd.sacCost(card);
-    if (sc) {
+    const sacLandRamp = sc === 'land' && (rl.has('ramp') || /search your library for .*land/i.test(Cd.text(card)));
+    if (sc && !sacLandRamp) {
       const fod = this.bf(this.me).filter(c => Cd.matchesWhat(c, sc) && !c.cmdr && !this.isKey(c) && !(R().isType(c, 'land') && this.bf(this.me).filter(x => R().isType(x, 'land')).length <= 4));
       const f = this.worstPermanents(fod, 1)[0];
       if (!f || (!f.token && this.value(f) > 6 && !this.profile.arch.includes('aristocrats'))) return null;
@@ -463,6 +465,12 @@
     }
     let pay = this.payFor(cost, srcs, x, card);
     if (!pay) return null;
+    if (sacLandRamp) {
+      const lands = this.bf(this.me).filter(c => R().isType(c, 'land') && !this.isKey(c));
+      const f = lands.find(c => pay.includes(c.id)) || lands.find(c => c.tapped) || lands.filter(c => /basic/i.test(R().typeLine(c)))[0];
+      if (!f) return null;
+      sacCost = [f.id];
+    }
     let t;
     if (extra.counterTarget) {
       const reqs = Cd.targetReqs(card, mode);

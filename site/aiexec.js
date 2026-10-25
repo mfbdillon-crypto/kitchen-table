@@ -174,6 +174,8 @@
         // (Stop if discarding keeps drawing cards — a discard trigger that draws must not empty my library.)
         const dk = 'discards:' + s.turn.n; this.discards = this.discards || {}; this.discards[dk] = (this.discards[dk] || 0);
         if (hand.length > 7 && this.discards[dk]++ < 3) { const worst = B.worstCards(hand.map(c => Object.assign({ zone: 'hand', counters: {}, face: 0 }, c)), hand.length - 7); await io.discard(worst.map(c => c.id), 'hand size'); B.note('did', `discarded ${worst.map(c => c.d.n).join(', ')} (hand size)`); return true; }
+        // Leftover mana: activated abilities that draw, make tokens or grow my creatures (not the mana kept for an answer).
+        { const r = await this.manaSink(plan); if (r) { B.note(r.ok === false ? 'refused' : 'did', r.text || r.err); return true; } }
         const unused = B.manaNow();
         if (plan.hold) { const hc = io.hand().find(c => c.id === plan.hold.id); B.holding = { id: plan.hold.id, name: plan.hold.name, turn: T.n, counter: !!(hc && roles(Object.assign({ zone: 'hand', counters: {}, face: 0 }, hc)).has('counter')), fired: false }; }
         const tpx = (B.turnPlans[T.n] = B.turnPlans[T.n] || { planned: [], did: [], failed: [] }); tpx.unused = unused; tpx.held = plan.hold ? plan.hold.name : null;
@@ -303,6 +305,45 @@
       }
     }
     return null;
+  };
+  E.manaSink = async function (plan) {
+    const B = this.B, s = this.io.s(), me = this.io.me(), key = s.gameId + ':' + s.turn.n;
+    this.sinkUses = this.sinkUses || {}; if ((this.sinkUses[key] || 0) >= 4) return null;
+    const hc = plan.hold ? this.io.hand().find(c => c.id === plan.hold.id) : null;
+    const reserve = hc ? B.mv(Object.assign({ zone: 'hand', counters: {}, face: 0 }, hc)) : 0;
+    if (B.manaNow() - reserve < 1) return null;
+    const VAL = { draw: 3, token: 2.5, counters: 1.5, scry: 0.6, surveil: 0.6, life: 0.3, proliferate: 2, energy: 0.5 };
+    let best = null;
+    for (const c of B.bf(me)) {
+      if (c.faceDown) continue;
+      const abs = C().abilities(c);
+      for (let i = 0; i < abs.length; i++) {
+        const ab = abs[i];
+        if (ab.manaAb || ab.equip || ab.crew || ab.loyalty !== undefined || ab.sac || ab.sacOther || ab.life > 0 || /discard|exile|return .* to (?:its|their) owner's hand/i.test(ab.cost || '')) continue;
+        if (ab.tap && (c.tapped || (B.isCre(c) && R().sick(s, c) && !B.kw(c).has('haste')))) continue;
+        if (/^level \d/i.test(ab.text || '')) continue;
+        { const lim = (ab.text || '').toLowerCase().match(/activate (?:this ability )?only ([^.]+)/g) || []; let bad = false;
+          for (const l of lim) { const cm = l.match(/only if (.+)$/); if (cm) { if (!root.Oracle || root.Oracle.conditionHolds(s, c, cm[1]) !== true) bad = true; } else if (!/as a sorcery|once each turn|during your turn/.test(l)) bad = true; }
+          if (bad) continue; }
+        if (!ab.mana || C().costTotal(ab.mana, 0) < 1) continue;
+        if (this.tried.has(key + ':sink:' + c.id + ':' + i)) continue;
+        const r = root.Effects ? root.Effects.parse(ab.text) : null; if (!r || !r.understood || !r.ops.length) continue;
+        let v = 0; for (const o of r.ops) { if (o.op === 'counters' && /-1\/-1/.test(o.kind || '')) { v -= 2; continue; } v += VAL[o.op] ? VAL[o.op] * (typeof o.n === 'number' ? o.n : 1) : (['dmg', 'destroy', 'tap', 'untap', 'grant', 'pump'].includes(o.op) ? 0 : -0.5); }
+        const cost = C().costTotal(ab.mana, 0);
+        if (v < 1 || cost > B.manaNow() - reserve) continue;
+        const pay = C().pay(ab.mana, B.sources().filter(x => !(ab.tap && x.id === c.id)), 0); if (!pay) continue;
+        const reqs = C().targetsIn(ab.text); let tg = [];
+        if (reqs.length) { const t = B.chooseTargets({ d: { faces: [{ n: R().cardName(c), t: 'Instant', o: ab.text }] }, counters: {} }, null, C().effectsIn(ab.text), { reqs, noWard: true }); if (!t) continue; tg = t.tg; }
+        const score = v / Math.max(1, cost);
+        if (!best || score > best.score) best = { c, i, ab, pay, tg, score };
+      }
+    }
+    if (!best) return null;
+    this.tried.add(key + ':sink:' + best.c.id + ':' + best.i);
+    this.sinkUses[key] = (this.sinkUses[key] || 0) + 1;
+    if (best.pay.length) await this.io.tapPay(best.pay);
+    const r = await this.act({ type: 'activate', id: best.c.id, i: best.i, tg: best.tg });
+    return Object.assign(r, { text: `used leftover mana: ${R().cardName(best.c)} — ${best.ab.text}` });
   };
   // Triggered abilities the table doesn't put on the stack by itself (cards.js triggers the v6 engine doesn't handle).
   E.unhandledTriggers = async function () {

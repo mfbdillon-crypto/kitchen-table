@@ -666,6 +666,8 @@
     let m;
     if ((m = own.match(/this spell costs \{(\d+)\} less to cast for each ([a-z -]+?) (on the battlefield|you control|your opponents control)/))) n += +m[1] * count(m[2], /you control/.test(m[3]) ? 'you' : /opponents/.test(m[3]) ? 'opp' : 'any');
     if ((m = own.match(/affinity for ([a-z]+)/))) n += count(m[1].replace(/s$/, ''), 'you');
+    // Karador: "…for each creature card in your graveyard".
+    if ((m = own.match(/this spell costs \{(\d+)\} less to cast for each ([a-z ]+?) cards? in your graveyard/))) n += +m[1] * Object.values(s.cards).filter(o => o.zone === 'graveyard' && o.owner === by && matchesWhat(o, m[2])).length;
     if ((m = own.match(/this spell costs \{x\} less to cast, where x is (the greatest power among creatures you control|the total power of creatures you control|the greatest number of ([a-z]+) an opponent controls)/))) {
       const mine = bf.filter(o => o.ctrl === by && isType(o, 'creature'));
       if (/greatest power/.test(m[1])) n += Math.max(0, ...mine.map(pow));
