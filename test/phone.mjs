@@ -9,7 +9,7 @@ async function ctxp(name, o) { const ctx = await browser.newContext(o || { viewp
 const A = await ctxp('computer');
 await A.page.goto('http://localhost:8090/?t=phonetest'); await A.page.fill('#welcomename', 'Marissa'); await A.page.click('text=Join the table');
 await A.page.waitForFunction(() => KT.me && KT.me(), null, { timeout: 20000 });
-await A.page.click('#top >> text=Decks'); await A.page.setInputFiles('#importfile', 'test/deck.csv'); await A.page.waitForSelector('text=Imported'); await A.page.click('text=Play this deck'); await wait(800);
+await A.page.click('.lobby >> text=Pick a deck'); await A.page.setInputFiles('#importfile', 'test/deck.csv'); await A.page.waitForSelector('text=Imported'); await A.page.click('text=Play this deck'); await wait(800);
 await A.page.click('#hand >> text=Draw opening hand'); await wait(300);
 await A.page.click('#top button:has-text("Phone")'); await wait(500); console.log('MODAL:', (await A.page.evaluate(() => (document.querySelector('.modal') || {}).outerHTML || 'none')).slice(0, 600)); await A.page.waitForSelector('.qr svg', { timeout: 5000 });
 const shot = await A.page.locator('.qr').screenshot();

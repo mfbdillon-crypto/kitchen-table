@@ -2960,13 +2960,24 @@
   function welcome() {
     const name = G.myName();
     const inp = h('input', { type: 'text', id: 'welcomename', maxlength: '20', placeholder: 'Your name', value: name });
-    const go = () => { const n = inp.value.trim(); if (!n) { inp.focus(); return; } G.setMyName(n); G.wantSeat = true; G.start(n); render(); };
-    inp.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
+    // The game code: the one in the link (or this browser's last game). A friend's code can be typed here to join them.
+    const code = h('input', { type: 'text', id: 'welcomecode', maxlength: '40', placeholder: 'Game code', value: G.TABLE, autocapitalize: 'off', autocomplete: 'off', spellcheck: false });
+    const go = () => {
+      const n = inp.value.trim(); if (!n) { inp.focus(); return; }
+      G.setMyName(n);
+      const c = code.value.trim().toLowerCase().replace(/[^\w-]/g, '-').slice(0, 40);
+      if (c && c !== G.TABLE) { try { sessionStorage.setItem('kt:autojoin', '1'); } catch (e) {} G.openTable(c); return; }   // another game's code: go there and sit down
+      G.wantSeat = true; G.start(n); render();
+    };
+    for (const el of [inp, code]) el.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
     setTimeout(() => inp.focus(), 50);
     return h('div', { class: 'welcome' }, h('div', { class: 'wcard' },
       h('h1', null, 'Kitchen Table'),
-      h('p', null, 'Play Magic with your friends. Everyone opens this same link.'),
-      h('div', { class: 'row' }, inp, h('button', { class: 'primary', onclick: go }, 'Join the table')),
+      h('p', null, 'Play Magic with your friends. To join a friend, open their invite link or type their game code.'),
+      h('label', { class: 'wlabel' }, 'Your name'), inp,
+      h('label', { class: 'wlabel' }, 'Game code'), code,
+      h('p', { class: 'muted small' }, 'Leave this code to start a new game here, or type your friend’s code (it starts with “kt-”).'),
+      h('button', { class: 'primary big', onclick: go }, 'Join the table'),
       h('p', { class: 'muted small' }, 'Card pictures and data come from Scryfall.')));
   }
 
@@ -3002,7 +3013,12 @@
       h('div', { class: 'wbtns' },
         h('button', { class: 'primary', onclick: () => G.newTabPlayer() }, 'Join as a different player'),
         G.replaced === 'host' ? null : h('button', { onclick: () => location.reload() }, 'Play here instead'))))); return; }
-    if (!G.table) { root.replaceChildren(welcome()); return; }
+    if (!G.table) {
+      // Came here by typing a friend's code on the welcome screen: sit down straight away.
+      let auto = false; try { auto = sessionStorage.getItem('kt:autojoin') === '1'; if (auto) sessionStorage.removeItem('kt:autojoin'); } catch (e) {}
+      if (auto && G.myName()) { G.wantSeat = true; G.start(G.myName()); }
+      else { root.replaceChildren(welcome()); return; }
+    }
     if (!S()) { root.replaceChildren(h('div', { class: 'welcome' }, h('div', { class: 'wcard' }, h('h1', null, 'Kitchen Table'), h('p', null, G.statusMsg || 'Connecting to the table…')))); return; }
     if (G.wantSeat && !G.me() && (G.status === 'host' || G.status === 'connected') && !G.seatBusy) {
       if (S().seats.length < R.MAX_SEATS) {
