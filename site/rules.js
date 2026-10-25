@@ -127,9 +127,15 @@
     }
   }
 
+  // ======================= the movement checkpoint =======================
+  // Every card that changes zones passes through here (400.7): replacement effects (616) decide where it really goes,
+  // then triggers see the move, then the card lands. Tokens linger a moment in their new zone before they cease to
+  // exist (111.7); commanders may go to the command zone instead (903.9).
   function moveOne(s, c, to, pos, opts, notes) {
     opts = opts || {};
+    notes = notes || [];
     const from = c.zone;
+    if (from === 'ghost') return;   // 111.8: a token that left the battlefield can't move again
     // 702.34a and friends: a spell cast with flashback (jump-start, escape, harmonize) is exiled instead of going anywhere else.
     if (from === 'stack' && to !== 'battlefield' && to !== 'stack' && ['flashback', 'jump-start', 'harmonize'].includes(c.alt)) to = 'exile';
     // Rebound (702.88): cast from hand, it's exiled as it resolves; its owner may cast it free at their next upkeep.
@@ -137,6 +143,15 @@
     if (from === 'stack' && to !== 'battlefield' && c.alt === 'escape' && !isType(c, 'creature') && !isType(c, 'artifact') && !isType(c, 'enchantment') && !isType(c, 'planeswalker')) to = 'exile';
     // Unearth (702.84a): "if it would leave the battlefield, exile it instead of putting it anywhere else".
     if (from === 'battlefield' && to !== 'battlefield' && to !== 'exile' && c.unearthed) to = 'exile';
+    // Replacement effects from permanents and the card's own counters (Rest in Peace, Leyline of the Void, finality…).
+    if (root.Rulebook && from !== to) { const r = root.Rulebook.replaceMove(s, c, from, to); if (r.why && r.to !== to) { notes.push(`${cardName(c)} went to ${ZONE_WORDS[r.to] || r.to} instead of ${ZONE_WORDS[to] || to} (${r.why})`); to = r.to; } }
+    // 903.9b: a commander that would go to a hand or library may go to the command zone instead. The AI always sends
+    // it home; a person is asked (it waits in the command zone meanwhile).
+    let cmdrAsk = null;
+    if (c.cmdr && (to === 'hand' || to === 'library') && from !== 'command' && !opts.cmdrOk && !c.token) {
+      if (!cmdrHuman(s, c.owner)) { notes.push(`${cardName(c)} went to the command zone instead of ${c.owner === c.ctrl ? 'its owner’s ' : ''}${to} (903.9b)`); to = 'command'; }
+      else { cmdrAsk = { zone: to, pos: pos || 'top' }; to = 'command'; }
+    }
     if (root.Engine && from !== to) root.Engine.emit({ type: 'zone', from, to, card: root.Engine.snap(c), sac: !!opts.sac, fromPriv: opts.fromPriv || null });
     // A merged (mutated) permanent that leaves takes every card in it along (702.140e / 721.? — each card goes to the same zone).
     if (from === 'battlefield' && to !== 'battlefield' && c.mut) {
@@ -146,8 +161,14 @@
     }
     if (from === 'battlefield' && to !== 'battlefield') leaveBattlefield(s, c, notes);
 
-    // 111.7 / 111.8: a token that leaves the battlefield ceases to exist.
+    // 111.7 / 111.8: a token that leaves the battlefield goes to its new zone for a moment (so "dies" and "leaves"
+    // abilities see it), then ceases to exist the next time state-based actions are checked.
     if (c.token && from === 'battlefield' && to !== 'battlefield') {
+      if (to === 'graveyard' || to === 'exile' || to === 'command') {
+        c.zone = 'ghost'; c.ghostZone = to; c.ghostAt = Date.now(); c.ctrl = c.owner; c.tapped = false; c.attachedTo = null; c.seq = ++s.seq;
+        notes.push(`${cardName(c)} token went to ${ZONE_WORDS[to]} and ceases to exist (111.7)`);
+        return;
+      }
       delete s.cards[c.id];
       notes.push(`${cardName(c)} token left the battlefield and ceased to exist`);
       return;
@@ -182,6 +203,7 @@
     if (to === 'stack' && opts.by && from !== 'stack') c.ctrl = opts.by; // whoever casts it controls the spell (110.2)
     if (to === 'battlefield' && from !== 'battlefield') {
       c.wasCast = from === 'stack';
+      if (from === 'stack' && c.suspendCast) { c.counters = c.counters || {}; c.counters.haste = 1; c.suspendCast = false; }   // 702.62a: a creature cast this way has haste
       if (opts.by) c.ctrl = opts.by; // whoever puts it onto the battlefield controls it (110.2a)
       c.tapped = !!opts.tapped || entersTapped(c, s);
       c.faceDown = keepDown;
@@ -196,6 +218,21 @@
       const min = Math.min(0, ...zoneCards(s, to, c.owner, 'owner').map(x => x.seq));
       c.seq = min - 1;
     } else c.seq = ++s.seq;
+    // 903.9a: a commander put into a graveyard or exile may go to the command zone (a state-based choice).
+    if (c.cmdr && (to === 'graveyard' || to === 'exile') && from !== 'command' && !opts.cmdrOk) {
+      if (!cmdrHuman(s, c.owner)) { moveOne(s, c, 'command', 'top', { cmdrOk: true }, notes); notes.push(`${cardName(c)} returned to the command zone (903.9a)`); }
+      else cmdrAsk = { zone: to, done: true };
+    }
+    if (cmdrAsk) s.ask = (s.ask || []).filter(a => !(a.kind === 'cmdrZone' && a.card === c.id)).concat([{ id: 'a' + (++s.seq), kind: 'cmdrZone', pid: c.owner, card: c.id, name: cardName(c), zone: cmdrAsk.zone, pos: cmdrAsk.pos, inZone: !!cmdrAsk.done, since: Date.now() }]);
+  }
+  // A person (not an AI seat, and at the table) makes their own commander choices.
+  function cmdrHuman(s, pid) { const P = s.players[pid]; return !!(P && !P.ai && live(s, pid)); }
+  // Shield counters (122.1c): "If it would be dealt damage or destroyed, instead remove a shield counter from it."
+  function shielded(s, c, notes, what) {
+    if (!c || !c.counters || !(c.counters.shield > 0)) return false;
+    c.counters.shield--; if (!c.counters.shield) delete c.counters.shield;
+    if (notes) notes.push(`${cardName(c)} lost a shield counter instead of ${what === 'damage' ? 'being dealt damage' : 'being destroyed'} (122.1c)`);
+    return true;
   }
 
   // Gaining life, with replacement effects (616): "you gain that much life plus 1 instead" (Angel of Vitality),
@@ -436,6 +473,17 @@
             s.cards[c.id] = c;
             c.zone = 'limbo';
             if (typeof a.via === 'string' && /^[a-z]{2,12}$/.test(a.via) && to === 'battlefield') c.via = a.via;
+            // Suspend (702.62a): exiled from the hand with N time counters, its suspend cost paid.
+            if (to === 'exile' && a.suspend && a.from === 'hand' && root.Cards) {
+              const sm = String(root.Cards.rawText(c)).match(/suspend (\d+)\s*[—-]\s*((?:\{[^}]+\})*)/i);
+              if (!sm) return { ok: false, err: `${cardName(c)} doesn’t have suspend.` };
+              if (!root.Cards.instantSpeed(c) && (s.turn.active !== pid || stackCards(s).length || !/^Main/.test(PHASES[s.turn.phase]))) return { ok: false, err: 'You can suspend it only when you could cast it (702.62a).' };
+              spendPool(s, pid, root.Cards.parseCost(sm[2]), 0, a.fromPool);
+              moveOne(s, c, 'exile', 'top', { by: pid }, notes);
+              c.counters = { time: +sm[1] }; c.suspended = { by: pid, turn: s.turn.n };
+              names.push(cardName(c));
+              return done(`suspended ${cardName(c)} with ${sm[1]} time counters (702.62)`);
+            }
             if (to === 'exile' && a.mayPlay && /^(eot|next)$/.test(a.mayPlay.until)) c.mayPlay = { by: pid, until: a.mayPlay.until, from: num(a.mayPlay.from, 0, 99999) || s.turn.n };   // "put onto the battlefield with this ability" (Kodama)
             moveOne(s, c, to, a.pos, { by: pid, tapped: a.tapped, faceDown: c.faceDown, row: a.row, backFace: c.face === 1 }, notes);
             names.push(cardName(c));
@@ -1209,11 +1257,14 @@
       for (const c of Object.values(s.cards)) {
         if (c.zone !== 'battlefield') continue;
         const k = c.counters || {};
+        // 704.5q: +1/+1 and -1/-1 counters on the same permanent cancel out.
+        if (k['+1/+1'] > 0 && k['-1/-1'] > 0) { const m = Math.min(k['+1/+1'], k['-1/-1']); k['+1/+1'] -= m; k['-1/-1'] -= m; if (!k['+1/+1']) delete k['+1/+1']; if (!k['-1/-1']) delete k['-1/-1']; }
         // 704.5f: a creature with toughness 0 or less goes to its owner's graveyard.
         if (isType(c, 'creature') || c.faceDown) {
           // 704.5g / 704.5h: lethal damage, or any damage from a source with deathtouch, destroys it (unless it's indestructible).
           const ptl = root.Cards ? root.Cards.pt(s, c) : ptOf(c);
           if (ptl && ((c.dmg > 0 && c.dmg >= ptl[1] && ptl[1] > 0) || c.dtd) && !(root.Cards && root.Cards.has(c, 'indestructible', s))) {
+            if (shielded(s, c, notes, 'destroy')) { c.dmg = 0; c.dtd = false; changed = true; continue; }
             if (regenerated(s, c, notes)) { changed = true; continue; }
             const nm = cardName(c); moveOne(s, c, 'graveyard', 'top', null, notes);
             notes.push(`${nm} was destroyed (${c.dtd ? 'deathtouch damage' : 'lethal damage'})`); changed = true; continue;
@@ -1470,6 +1521,8 @@
   }
   // Players who left or went offline can't hold up the stack or combat.
   function fixUp(s, notes) {
+    // 111.7: tokens that left the battlefield have shown in their new zone for a moment; now they cease to exist.
+    for (const c of Object.values(s.cards)) if (c.zone === 'ghost' && Date.now() - (c.ghostAt || 0) > 1500) { delete s.cards[c.id]; notes.push(`${cardName(c)} token ceased to exist`); }
     // Players who lost in a game that goes on: after a short undo window their cards leave the game (800.4a).
     for (const pid of s.seats) { const L = s.players[pid] && s.players[pid].lost; if (L && L.pending && Date.now() - L.t > 45000) removeLoser(s, pid, notes); }
     if (!s.prio && stackTop(s)) startPrio(s, null, notes);
@@ -1619,6 +1672,7 @@
       if (C.protectedFrom(c, s.cards[src.ab ? src.ab.src : src.id] || src, s)) { notes.push(`${cardName(c)}’s protection prevented ${n} damage`); return; }
       if (isType(c, 'planeswalker') && !isType(c, 'creature')) { c.counters.loyalty = Math.max(0, (c.counters.loyalty || 0) - n); return; }
       if (isType(c, 'battle') && !isType(c, 'creature')) { c.counters.defense = Math.max(0, (c.counters.defense || 0) - n); return; }
+      if (shielded(s, c, notes, 'damage')) return;
       c.dmg = (c.dmg || 0) + n;
     };
     for (const e of effects) {
@@ -1800,6 +1854,7 @@
           summary.push(`${cardName(e.src)} dealt ${e.n} ${k.has('infect') ? 'poison ' : ''}damage to ${nameOf(s, e.p)}`);
         } else {
           const t = s.cards[e.c]; if (!t) continue;
+          if (!(isType(t, 'planeswalker') && !isType(t, 'creature')) && shielded(s, t, summary, 'damage')) continue;
           if (isType(t, 'planeswalker') && !isType(t, 'creature')) { t.counters.loyalty = Math.max(0, (t.counters.loyalty || 0) - e.n); summary.push(`${cardName(e.src)} dealt ${e.n} damage to ${cardName(t)}`); }
           else if (isType(t, 'battle') && !isType(t, 'creature')) { t.counters.defense = Math.max(0, (t.counters.defense || 0) - e.n); }
           else if (k.has('infect') || k.has('wither')) { t.counters['-1/-1'] = (t.counters['-1/-1'] || 0) + e.n; if (k.has('deathtouch')) t.dtd = true; summary.push(`${cardName(e.src)} put ${e.n} −1/−1 counter${e.n > 1 ? 's' : ''} on ${cardName(t)}`); }
@@ -1899,10 +1954,10 @@
 
   const _int = { moveOne, makeToken, tokenD, todo, log, cardName, nameOf, stackCards, stackTop, startPrio, nextHolder: (s, n) => nextHolder(s, n), PHASES, PI: n => PHASES.indexOf(n),
     gainLife: (s, p, n) => gainLife(s, p, n), regenerated: (s, c, n) => regenerated(s, c, n), isType, typeLine, alive: (s, p) => alive(s, p), live: (s, p) => live(s, p), addPool, unitsOf, passTurn, sba, alertChecks, rotate, face, rowFor, listNames,
-    clearMods, cleanTargets, wardFor, targetText, sick, combatDamage: (s, n) => combatDamage(s, n) };
+    clearMods, cleanTargets, wardFor, targetText, sick, combatDamage: (s, n) => combatDamage(s, n), shielded: (s, c, n, w) => shielded(s, c, n, w), cmdrHuman: (s, p) => cmdrHuman(s, p) };
   root.Rules = { _int, PHASES, ROWS, PUBLIC_ZONES, KEYWORD_COUNTERS, SUGGESTED_COUNTERS, MAX_SEATS, START_LIFE,
     newState, apply, canAct, zoneCards, cardName, typeLine, isType, face, rowFor, ptOf, rid, listNames, nameOf,
-    stackCards, stackTop, sick, alive, fixUp: (s) => { const key = () => JSON.stringify([s.prio && [s.prio.holder, s.prio.top, s.prio.passed.length], s.combat && s.combat.done, stackCards(s).length, (s.ask || []).length, (s.tq || []).length, s.turn && [s.turn.phase, s.turn.n]]); const before = key(); const notes = []; if (root.Engine && s.turn && s.turn.active) { root.Engine.begin(s); try { root.Engine.timeouts(s, notes); } catch (e) {} } fixUp(s, notes); if (root.Engine && s.turn && s.turn.active) { try { root.Engine.after(s, notes); } catch (e) { if (typeof console !== 'undefined') console.error(e); } } for (const n of notes) log(s, null, n, 'auto'); return notes.length > 0 || key() !== before; }, landCheck: (s, pid) => landCheck(JSON.parse(JSON.stringify(s)), pid), extraLands: (s, pid) => extraLands(s, pid), PI };
+    stackCards, stackTop, sick, alive, shielded: (s, c, notes, what) => shielded(s, c, notes, what), fixUp: (s) => { const key = () => JSON.stringify([s.prio && [s.prio.holder, s.prio.top, s.prio.passed.length], s.combat && s.combat.done, stackCards(s).length, (s.ask || []).length, (s.tq || []).length, s.turn && [s.turn.phase, s.turn.n]]); const before = key(); const notes = []; if (root.Engine && s.turn && s.turn.active) { root.Engine.begin(s); try { root.Engine.timeouts(s, notes); } catch (e) {} } fixUp(s, notes); if (root.Engine && s.turn && s.turn.active) { try { root.Engine.after(s, notes); } catch (e) { if (typeof console !== 'undefined') console.error(e); } } for (const n of notes) log(s, null, n, 'auto'); return notes.length > 0 || key() !== before; }, landCheck: (s, pid) => landCheck(JSON.parse(JSON.stringify(s)), pid), extraLands: (s, pid) => extraLands(s, pid), PI };
 })(typeof window !== 'undefined' ? window : globalThis);
 // Node (tests, simulations): the rulebook comes along with the rules.
 if (typeof module !== 'undefined' && typeof require === 'function' && !globalThis.Rulebook) { try { require('./rulebook.js'); } catch (e) { /* the page loads it with a script tag */ } }

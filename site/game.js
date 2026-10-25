@@ -277,7 +277,7 @@
     });
     savePriv();
     const land = cards.every(isLand);
-    const r = await act({ type: 'enter', zone, from, cards: send, tapped: !!opts.tapped, pos: opts.pos, row: opts.row, land: !!opts.playLand, tg: opts.tg, mode: opts.mode, x: opts.x, wardPaid: !!opts.wardPaid, fromPool: opts.fromPool, cast: !!opts.cast, alt: opts.alt, via: opts.via, perm: opts.perm, top: opts.top, sacCost: opts.sacCost, mayPlay: opts.mayPlay, msg: msgFor(zone, Object.assign({ land }, opts), from) });
+    const r = await act({ type: 'enter', zone, from, cards: send, tapped: !!opts.tapped, pos: opts.pos, row: opts.row, land: !!opts.playLand, tg: opts.tg, mode: opts.mode, x: opts.x, wardPaid: !!opts.wardPaid, fromPool: opts.fromPool, cast: !!opts.cast, alt: opts.alt, via: opts.via, perm: opts.perm, top: opts.top, suspend: opts.suspend || undefined, sacCost: opts.sacCost, mayPlay: opts.mayPlay, msg: msgFor(zone, Object.assign({ land }, opts), from) });
     if (r.ok) lastAct = { zone, ids, t: Date.now() };
     if (!r.ok) {
       // Only put the cards back if the table really refused. If we just never heard back, look at the board:
@@ -550,7 +550,9 @@
   };
 
   const cmdrAsked = new Set();
+  // The table asks about commanders itself now (903.9, the 'cmdrZone' question); this only covers a table without the engine.
   function commanderCheck() {
+    if (window.Engine) return;
     for (const c of Object.values(G.S.cards)) {
       if (c.owner !== KEY || !c.cmdr || (c.zone !== 'graveyard' && c.zone !== 'exile')) continue;
       const k = c.id + ':' + c.seq;

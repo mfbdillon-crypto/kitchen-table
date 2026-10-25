@@ -107,6 +107,40 @@
     { id: 'no.draw2', kind: 'cant', who: 'each', re: /each player can't draw more than one card each turn/, out: () => [{ act: ['draw'], perTurn: 1 }] },
     { id: 'no.gyEnter', kind: 'cant', who: 'each', re: /creature cards in graveyards and libraries can't enter the battlefield/, out: () => [{ act: ['enter'], zones: ['graveyard', 'library'], what: 'creature' }] }
   ];
+  // Replacement effects on card movement (616): "if a card would be put into a graveyard from anywhere, exile it instead".
+  // to: the zone being replaced; becomes: the new zone; owner/ctrl: whose cards ('any'|'opp'|'you'); creature/die: limits.
+  const REPLACE = [
+    { id: 'rep.gyExile', re: /if a card (?:or token )?would be put into a graveyard from anywhere, exile it instead/, to: 'graveyard', becomes: 'exile', owner: 'any' },
+    { id: 'rep.oppGyExile', re: /if a card (?:or token )?would be put into an opponent's graveyard from anywhere, exile it instead/, to: 'graveyard', becomes: 'exile', owner: 'opp' },
+    { id: 'rep.yourGyExile', re: /if a card would be put into your graveyard from anywhere, exile it instead/, to: 'graveyard', becomes: 'exile', owner: 'you' },
+    { id: 'rep.oppDieExile', re: /if a (nontoken )?creature an opponent controls would die, exile (?:it|that card) instead/, to: 'graveyard', becomes: 'exile', die: true, ctrl: 'opp', creature: true },
+    { id: 'rep.dieExile', re: /^if (?:a|another) (nontoken )?creature would die, exile it instead/, to: 'graveyard', becomes: 'exile', die: true, ctrl: 'any', creature: true },
+    { id: 'rep.oppCreGyExile', re: /if a creature card would be put into an opponent's graveyard from anywhere, exile it instead/, to: 'graveyard', becomes: 'exile', owner: 'opp', creature: true }
+  ];
+  // Where a card really goes when it would move from → to: replacement effects from the battlefield and the card itself.
+  // Returns { to, why } (why is null when nothing replaced it).
+  function replaceMove(s, c, from, to) {
+    // The card's own counters and marks (finality counter, "if it would die this turn, exile it instead").
+    if (from === 'battlefield' && to === 'graveyard') {
+      if (((c.counters || {}).finality || 0) > 0) return { to: 'exile', why: 'finality counter (122.1h)' };
+      if (c.dieExile && s.turn && c.dieExile === s.turn.n) return { to: 'exile', why: 'it would die this turn, so it’s exiled instead' };
+    }
+    if (to !== 'graveyard') return { to, why: null };
+    for (const o of Object.values(s.cards)) {
+      if (o.zone !== 'battlefield' || o.faceDown || !o.d) continue;
+      for (const l of lines(o)) for (const r of REPLACE) {
+        if (!r.re.test(l)) continue;
+        if (r.die && from !== 'battlefield') continue;
+        if (r.creature && !(R().isType(c, 'creature') || c.faceDown)) continue;
+        if (r.re.exec(l)[1] && c.token) continue;   // "nontoken"
+        if (r.owner === 'opp' && c.owner === o.ctrl) continue;
+        if (r.owner === 'you' && c.owner !== o.ctrl) continue;
+        if (r.ctrl === 'opp' && c.ctrl === o.ctrl) continue;
+        return { to: r.becomes, why: R().cardName(o), src: o.id, rid: r.id };
+      }
+    }
+    return { to, why: null };
+  }
   // Temporary rules from a resolving spell or ability: the same patterns, kept in s.ruleFx with an expiry.
   const TEMP = /^(until your next turn|until end of turn|this turn|for the rest of the game),? (.+)$/;
   function tempRule(text) {
@@ -326,5 +360,5 @@
     s.ruleFx = (s.ruleFx || []).filter(f => !(when === 'eot' && f.until === 'eot') && !(when === 'turn' && f.until === 'next' && f.by === pid));
   }
 
-  root.Rulebook = { DEFAULTS, PATTERNS, sheet, ways, castBlock, use, flash, topView, cant, why, tempRule, expire, blocker, all, readLine, keyOf, unread };
+  root.Rulebook = { DEFAULTS, PATTERNS, REPLACE, replaceMove, sheet, ways, castBlock, use, flash, topView, cant, why, tempRule, expire, blocker, all, readLine, keyOf, unread };
 })(typeof window !== 'undefined' ? window : globalThis);

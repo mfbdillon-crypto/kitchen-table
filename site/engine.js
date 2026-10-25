@@ -64,6 +64,12 @@
         const k = STEP_KEY[R.PHASES[i]]; if (!k) continue;
         evs.push({ type: 'step', step: k, player: T.active });
         if (k === 'main1') loreUp(s, T.active, evs, notes);
+        // Suspend (702.62): at the beginning of its owner's upkeep, remove a time counter; when the last is removed, they may cast it free.
+        if (k === 'upkeep') for (const c of Object.values(s.cards)) if (c.zone === 'exile' && c.suspended && c.owner === T.active && c.suspended.turn < T.n) {
+          c.counters = c.counters || {}; const t = c.counters.time || 0;
+          if (t > 0) { c.counters.time = t - 1; if (!c.counters.time) delete c.counters.time; notes.push(`${cardName(c)}: a time counter was removed (${t - 1} left)`); }
+          if (!(c.counters.time > 0)) { R.todo(s, T.active, { k: 'freeCast', from: 'exile', ids: [c.id], filter: 'card', src: cardName(c) + ' (suspend)' }); c.suspendCast = true; c.suspended = null; notes.push(`${cardName(c)}: the last time counter was removed — ${nameOf(s, T.active)} may cast it without paying its mana cost`); }
+        }
         if (k === 'upkeep') for (const c of Object.values(s.cards)) if (c.zone === 'exile' && c.rebound && c.rebound.by === T.active && c.rebound.after < T.n) { R.todo(s, T.active, { k: 'freeCast', from: 'exile', ids: [c.id], filter: 'card', src: cardName(c) + ' (rebound)' }); c.rebound = null; notes.push(`${nameOf(s, T.active)} may cast ${cardName(c)} again for free (rebound)`); }
         if (k === 'upkeep' && s.delayedDraws && s.delayedDraws.length) {
           const due = s.delayedDraws.filter(x => x.after < T.n);
@@ -569,6 +575,7 @@
         if (C.protectedFrom(c, from, s)) { notes.push(`${cardName(c)}’s protection prevented ${n} damage`); return; }
         if (R.isType(c, 'planeswalker') && !R.isType(c, 'creature')) c.counters.loyalty = Math.max(0, (c.counters.loyalty || 0) - n);
         else if (R.isType(c, 'battle') && !R.isType(c, 'creature')) c.counters.defense = Math.max(0, (c.counters.defense || 0) - n);
+        else if (R.shielded(s, c, notes, 'damage')) return;
         else if (kws.has('infect') || kws.has('wither')) c.counters['-1/-1'] = (c.counters['-1/-1'] || 0) + n;
         else c.dmg = (c.dmg || 0) + n;
         if (kws.has('deathtouch')) c.dtd = true;
@@ -822,7 +829,7 @@
           break;
         }
         case 'regen': for (const c of cards(o.what)) { if (c.zone !== 'battlefield') continue; c.regen = (c.regen || 0) + 1; badge(c, { label: 'regeneration shield', until: 'eot', regen: true }); notes.push(`${cardName(c)} has a regeneration shield until end of turn (${srcName})`); } break;
-        case 'destroy': st.last = 0; for (const c of cards(o.what)) { if (C.has(c, 'indestructible', s)) { notes.push(`${cardName(c)} is indestructible`); continue; } if (!/can't be regenerated/i.test(String(item.ab ? item.ab.text : (item.d && C.text(item)) || '')) && R.regenerated(s, c, notes)) continue; const nm = cardName(c); R.moveOne(s, c, 'graveyard', 'top', null, notes); st.last++; notes.push(`${srcName} destroyed ${nm}`); } break;
+        case 'destroy': st.last = 0; for (const c of cards(o.what)) { if (C.has(c, 'indestructible', s)) { notes.push(`${cardName(c)} is indestructible`); continue; } if (R.shielded(s, c, notes, 'destroy')) continue; if (!/can't be regenerated/i.test(String(item.ab ? item.ab.text : (item.d && C.text(item)) || '')) && R.regenerated(s, c, notes)) continue; const nm = cardName(c); R.moveOne(s, c, 'graveyard', 'top', null, notes); st.last++; notes.push(`${srcName} destroyed ${nm}`); } break;
         case 'flicker': for (const c of cards(o.what)) { const owner = c.owner, nm = cardName(c); R.moveOne(s, c, 'exile', 'top', null, notes); const again = s.cards[c.id]; if (again) R.moveOne(s, again, 'battlefield', 'top', { by: o.control === 'you' ? by : owner }, notes); notes.push(`${srcName} exiled ${nm} and returned it to the battlefield`); } break;
         case 'move': {
           const cs = cards(o.what);
@@ -959,6 +966,8 @@
         }
         // A rule that lasts a while ("until your next turn, your opponents can't cast spells from anywhere other than their hands").
         case 'ruleFx': { s.ruleFx = (s.ruleFx || []).concat([{ by, src: srcId, name: srcName, line: String(o.line).slice(0, 300), until: o.until, turn: s.turn.n }]).slice(-40); notes.push(`${srcName}: ${o.until === 'next' ? 'until ' + nameOf(s, by) + '’s next turn' : o.until === 'game' ? 'for the rest of the game' : 'this turn'}, ${o.line}`); break; }
+        // "If that creature would die this turn, exile it instead" (Brutal Expulsion, Scorching Dragonfire).
+        case 'dieExile': for (const c of cards(o.what)) { c.dieExile = s.turn.n; } break;
         case 'noteLife': { const h = s.cards[srcId]; if (h) { h.noted = (s.players[by] || {}).life || 0; notes.push(`${srcName} noted ${nameOf(s, by)}’s life total: ${h.noted}`); } break; }
         case 'handToTop': R.todo(s, by, { k: 'handToTop', n: val(o.n), src: srcName }); break;
         case 'look': R.todo(s, by, { k: 'look', n: val(o.n), reveal: !!o.reveal, text: o.text, src: srcName }); break;
@@ -1064,6 +1073,15 @@
       else notes.push(`${cardName(c)} entered as itself (no copy)`);
       return { ok: true };
     }
+    // 903.9: the owner chooses whether their commander goes to the command zone.
+    if (ask.kind === 'cmdrZone') {
+      const c = s.cards[ask.card]; if (!c) return { ok: true };
+      const home = a.command !== false;
+      if (ask.inZone) { if (home && c.zone === ask.zone) { I().moveOne(s, c, 'command', 'top', { cmdrOk: true }, notes); notes.push(`${nameOf(s, pid)} put ${cardName(c)} into the command zone (903.9a)`); } else notes.push(`${nameOf(s, pid)} left ${cardName(c)} in ${ask.zone === 'exile' ? 'exile' : 'the graveyard'}`); }
+      else if (!home && c.zone === 'command') { I().moveOne(s, c, ask.zone, ask.pos || 'top', { cmdrOk: true }, notes); notes.push(`${nameOf(s, pid)} put ${cardName(c)} into their ${ask.zone}`); }
+      else notes.push(`${nameOf(s, pid)} put ${cardName(c)} into the command zone instead of their ${ask.zone} (903.9b)`);
+      return { ok: true };
+    }
     if (ask.kind === 'payLife') {
       payLifeOrSac(s, pid, ask.life, ask.ids, (Array.isArray(a.ids) ? a.ids : []).filter(id => ask.ids.includes(id)), ask.name, notes);
       return { ok: true };
@@ -1129,6 +1147,7 @@
       if (ask.kind === 'assign') { const K = s.combat; if (K && !K.done) { K.assign = K.assign || {}; K.assign[ask.att] = 'auto'; I().combatDamage(s, notes); } continue; }
       if (ask.kind === 'payUntap') { continue; }
       if (ask.kind === 'payLife') { s.ask.push(ask); answer(s, ask.pid, { id: ask.id, ids: [] }, notes); continue; }
+      if (ask.kind === 'cmdrZone') { s.ask.push(ask); answer(s, ask.pid, { id: ask.id, command: true }, notes); continue; }
       if (ask.kind === 'pay') { s.ask.push(ask); answer(s, ask.pid, { id: ask.id, yes: false }, notes); continue; }
       if (ask.kind === 'mutate') { s.ask.push(ask); answer(s, ask.pid, { id: ask.id, top: true }, notes); continue; }
       if (ask.kind === 'choose' || ask.kind === 'enterOpt' || ask.kind === 'copy') { s.ask.push(ask); answer(s, ask.pid, { id: ask.id, value: '', yes: false }, notes); continue; }

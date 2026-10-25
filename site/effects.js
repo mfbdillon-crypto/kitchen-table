@@ -393,6 +393,7 @@
       if (tt) { ops.push({ op: 'search', n: 1, filter: tt[1], dest: 'top' }); continue; }
       const fn = sent.match(/^__finale:([a-z ]+)__\.?$/);
       if (fn) { ops.push({ op: 'search', n: 1, filter: fn[1], mvMax: { v: 'X' }, dest: 'battlefield' }); continue; }
+      if (/^if (?:that|the|this) (?:creature|permanent|creature or planeswalker) would die this turn, exile it instead\.?$/.test(sent)) { ops.push({ op: 'dieExile', what: st.lastObj && st.lastObj.k === 't' ? st.lastObj : { k: 't', i: Math.max(0, st.ti - 1) } }); continue; }
       const tx = sent.match(/^__tapx:([a-z]+)__\.?$/);
       if (tx) { ops.push({ op: 'tapX', what: tx[1], then: [{ op: 'pump', what: { k: 'self' }, p: '+x', t: '+0', kws: '', eot: true, xv: { v: 'lastX' } }, { op: 'dmg', src: 'self', n: { v: 'lastX' }, to: { k: 'defender' } }] }); continue; }
       if (/^__rashmi__\.?$/.test(sent)) { ops.push({ op: 'rashmi' }); continue; }

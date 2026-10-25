@@ -347,7 +347,7 @@
       shown.forEach(([kind, n], i) => {
         const bar = h('div', { class: 'bar ' + (i % 2 ? 'gray' : 'black'), title: `${n} ${kind} counter${n > 1 ? 's' : ''}` },
           h('span', { class: 'bn' }, String(n)), h('span', { class: 'bk' }, shortCounter(kind)), h('span', { class: 'ba' }, tinyCounter(kind)));
-        if (mine && !opt.noButtons) {
+        if (mine && !opt.noButtons && devHost()) {
           bar.append(h('span', { class: 'arrows' },
             h('button', { class: 'up', title: 'Add one', onclick: e => { e.stopPropagation(); G.counter(c.id, kind, 1); } }, '▲'),
             h('button', { class: 'dn', title: 'Remove one', onclick: e => { e.stopPropagation(); G.counter(c.id, kind, -1); } }, '▼')));
@@ -642,6 +642,7 @@
       land ? { label: landUsed ? 'Play land (already played one this turn)' : 'Play land', fn: () => G.playLand(c.id), disabled: !!(T.active && T.active !== KEY) }
         : { label: S().prio && S().prio.holder === KEY && R.stackTop(S()) ? 'Cast in response' : 'Cast', fn: () => castFlow(c, 'hand') },
       two && land ? { label: `Play the back face (${c.d.faces[1].n})`, fn: () => G.fromHand([c.id], 'battlefield', { backFace: true, playLand: true }) } : null,
+      (() => { const sm = !land && String(CD.rawText(handCard(c))).match(/suspend (\d+)\s*[—-]\s*((?:\{[^}]+\})*)/i); return sm ? { label: `Suspend ${sm[1]} — ${sm[2] || 'free'}`, fn: async () => { if (sm[2] && !(await autoPay(handCard(c), 0, CD.parseCost(sm[2])))) return; await G.fromHand([c.id], 'exile', { suspend: true, fromPool: G.lastFromPool }); } } : null; })(),
       !land && /\b(morph|megamorph|disguise)\b/i.test(CD.rawText(handCard(c))) ? { label: 'Cast face down (morph, disguise…)', fn: () => G.fromHand([c.id], 'stack', { faceDown: true }) } : null,
       devHost() ? { label: G.isRevealed(c.id) ? 'Dev: stop revealing' : 'Dev: reveal to everyone', fn: () => G.toggleReveal(c.id) } : null,
       devHost() ? { sep: true } : null,
@@ -1133,6 +1134,10 @@
       return h('div', { class: 'prio mine', role: 'alert' }, h('span', { class: 'pring' }), h('div', { class: 'ptext' }, h('b', null, `${pu.name}: `), `pay ${pu.cost} for each creature to untap it.`,
         h('div', { class: 'row wrap' }, pu.ids.filter(id => S().cards[id]).map(id => h('button', { class: 'chip' + (sel.includes(id) ? ' on' : ''), onclick: () => { const i = sel.indexOf(id); if (i >= 0) sel.splice(i, 1); else sel.push(id); render(); } }, R.cardName(S().cards[id]))))),
         h('button', { class: 'primary', onclick: () => answer(pu, { ids: sel.slice() }) }, sel.length ? `Pay for ${sel.length}` : 'Untap none')); }
+    const cz = myAsks().find(x => x.kind === 'cmdrZone');
+    if (cz) return h('div', { class: 'prio mine', role: 'alert' }, h('span', { class: 'pring' }), h('div', { class: 'ptext' }, h('b', null, `${cz.name}: `),
+      cz.inZone ? `your commander went to ${cz.zone === 'exile' ? 'exile' : 'your graveyard'}. Move it to the command zone? (903.9)` : `your commander would go to your ${cz.zone}. Put it in the command zone instead? (903.9)`),
+      h('button', { class: 'primary', onclick: () => answer(cz, { command: true }) }, 'Command zone'), h('button', { onclick: () => answer(cz, { command: false }) }, cz.inZone ? (cz.zone === 'exile' ? 'Leave it in exile' : 'Leave it in the graveyard') : `Into my ${cz.zone}`));
     const pl = myAsks().find(x => x.kind === 'payLife');
     if (pl) { G._pl = G._pl || {}; const sel = G._pl[pl.id] = G._pl[pl.id] || [];
       return h('div', { class: 'prio mine', role: 'alert' }, h('span', { class: 'pring' }), h('div', { class: 'ptext' }, h('b', null, `${pl.name}: `), `pay ${pl.life} life for each creature you keep; the rest are sacrificed.`,
@@ -1610,7 +1615,8 @@
 
   function pile(pid, zone, label) {
     const s = S();
-    const cards = R.zoneCards(s, zone, pid, 'owner');
+    // Tokens that just left the battlefield show on top for a moment before they cease to exist (111.7).
+    const cards = R.zoneCards(s, zone, pid, 'owner').concat(Object.values(s.cards).filter(c => c.zone === 'ghost' && c.ghostZone === zone && c.owner === pid).map(c => Object.assign({}, c, { zone }))).sort((a, b) => a.seq - b.seq);
     const top = cards[cards.length - 1];
     const el = h('button', { class: 'pile' + (cards.some(x => usableNow(x)) ? ' usable' : ''), onclick: () => zoneModal(pid, zone), title: `${label} — ${plural(cards.length, 'card')}. Click to look through it.` },
       h('div', { class: 'pimg' }, top ? h('img', { src: (top.faceDown || !top.d) ? sleeveOf(pid) : (R.face(top).img || BACK), alt: '' }) : h('div', { class: 'none' })),

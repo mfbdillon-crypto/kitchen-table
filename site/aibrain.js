@@ -1539,6 +1539,7 @@
         return { yes: true, why: 'free to enter untapped' };
       }
       case 'legend': { const list = ask.ids.map(id => s.cards[id]).filter(Boolean).sort((a, b) => this.value(b) - this.value(a) + (a.tapped - b.tapped)); return { keep: (list[0] || {}).id || ask.ids[ask.ids.length - 1], why: 'keep the better one' }; }
+      case 'cmdrZone': return { command: true, why: 'my commander is worth more in the command zone' };
       case 'payLife': {
         let life = this.life(me); const ids = [];
         for (const c of ask.ids.map(id => s.cards[id]).filter(Boolean).sort((a, b) => this.value(b) - this.value(a))) if (life - ask.life >= 10 && this.value(c) >= ask.life / 2) { ids.push(c.id); life -= ask.life; }
