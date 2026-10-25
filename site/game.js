@@ -28,7 +28,16 @@
 
   // ---------------- randomness ----------------
   function rnd(n) { const a = new Uint32Array(1); crypto.getRandomValues(a); return a[0] % n; }
-  function shuffle(arr) { for (let i = arr.length - 1; i > 0; i--) { const j = rnd(i + 1); [arr[i], arr[j]] = [arr[j], arr[i]]; } return arr; }
+  function shuffle(arr) { if (P && arr === P.library) P.known = []; for (let i = arr.length - 1; i > 0; i--) { const j = rnd(i + 1); [arr[i], arr[j]] = [arr[j], arr[i]]; } return arr; }
+  // ---------------- what I know about my library (401.2: its order is fixed; a shuffle makes it unknown again) ----------------
+  // P.known: ids of library cards whose place I've seen (scry, surveil, "put on top", mulligan bottoms…).
+  function know(cards) { P.known = [...new Set((P.known || []).concat(cards.map(c => c.id || c)))]; }
+  G.knownLibrary = function () {
+    const known = new Set(P.known || []), L = P.library;
+    const top = []; for (const c of L) { if (!known.has(c.id)) break; top.push(c); }
+    const bottom = []; for (let i = L.length - 1; i >= top.length; i--) { if (!known.has(L[i].id)) break; bottom.unshift(L[i]); }
+    return { top, bottom };
+  };
   G.rnd = rnd;
 
   // ---------------- private state ----------------
@@ -75,7 +84,8 @@
     if (G.dead) return;
     // Drop reveals that are no longer true (card left the hand, or top of library changed).
     const before = JSON.stringify(P.revealed);
-    P.revealed = P.revealed.filter(r => r.from === 'hand' ? P.hand.some(c => c.id === r.id) : (P.library[0] && P.library[0].id === r.id));
+    // (Cards revealed from the top N for a moment, r.n, stay while they're still among the top cards.)
+    P.revealed = P.revealed.filter(r => r.from === 'hand' ? P.hand.some(c => c.id === r.id) : r.many ? P.library.slice(0, 20).some(c => c.id === r.id) : (P.library[0] && P.library[0].id === r.id));
     if (JSON.stringify(P.revealed) !== before) sendReveal();
     LS.set(PKEY, P);
     scheduleCounts();
@@ -212,7 +222,7 @@
 
   G.bottomChosen = function (ids) {
     const cards = take(P.hand, ids);
-    P.library.push(...cards);
+    P.library.push(...cards); know(cards);
     P.phase = 'kept'; P.bottomN = 0;
     savePriv();
     log(`kept ${P.hand.length} cards and put ${plural(cards.length, 'card')} on the bottom of their library`);
@@ -225,6 +235,7 @@
     n = Math.max(1, n | 0);
     const got = P.library.splice(0, n);
     P.hand.push(...got);
+    { const seen = got.filter(c => (P.revealed || []).some(r => r.top && r.id === c.id)); if (seen.length) { P.revealed = P.revealed.filter(r => !seen.some(c => c.id === r.id)); knowInHand(seen); } }
     if (P.phase === 'none') P.phase = 'kept';
     savePriv();
     if (got.length) act({ type: 'log', text: why || `drew ${plural(got.length, 'card')}`, drew: got.length });
@@ -350,9 +361,9 @@
 
   G.handToLibrary = function (ids, pos) {
     const cards = take(P.hand, ids);
-    if (pos === 'bottom') P.library.push(...cards);
+    if (pos === 'bottom') { P.library.push(...cards); know(cards); }
     else if (pos === 'shuffle') { P.library.push(...cards); shuffle(P.library); }
-    else P.library.unshift(...cards.reverse());
+    else { P.library.unshift(...cards.reverse()); know(cards); }
     savePriv();
     const n = plural(cards.length, 'card');
     log(pos === 'bottom' ? `put ${n} from their hand on the bottom of their library`
@@ -373,14 +384,37 @@
   };
 
   // ---------------- reveal (make public) ----------------
+  // Cards in my hand the other players have seen (returned from a public zone, revealed by a tutor, drawn while
+  // revealed on top): they stay known to the table until they leave my hand.
+  function knowInHand(cards) { P.knownHand = [...new Set((P.knownHand || []).concat(cards.map(c => c.id || c)))]; sendReveal(); }
+  G.knowInHand = knowInHand;
   function sendReveal() {
     const list = P.revealed.map(r => {
       const c = (r.from === 'hand' ? P.hand : P.library).find(x => x.id === r.id);
       return c ? { id: c.id, d: c.d, from: r.from } : null;
     }).filter(Boolean);
+    P.knownHand = (P.knownHand || []).filter(id => P.hand.some(c => c.id === id));
+    for (const id of P.knownHand) if (!list.some(x => x.id === id)) { const c = P.hand.find(x => x.id === id); list.push({ id: c.id, d: c.d, from: 'hand', known: true }); }
     act({ type: 'reveal', cards: list, quiet: true });
   }
   G.isRevealed = id => P.revealed.some(r => r.id === id);
+  // Reveal library cards to the table for a moment ("reveal the top four cards…"), then stop.
+  G.revealLib = function (ids, on) {
+    P.revealed = (P.revealed || []).filter(r => !(r.from === 'library' && !r.top && ids.includes(r.id)));
+    if (on) for (const id of ids) P.revealed.push({ id, from: 'library', many: true });
+    sendReveal(); savePriv();
+    if (on) log(`revealed ${P.library.filter(c => ids.includes(c.id)).map(c => c.d.n).join(', ')} from the top of their library`);
+  };
+  // "Play with the top card of your library revealed": keep the current top card revealed to the table.
+  G.syncTopReveal = function () {
+    if (!G.S || !window.Rulebook || !G.S.turn || !G.S.turn.active || !P.library) return;
+    const want = Rulebook.topView(G.S, KEY).all && P.library[0] ? P.library[0].id : null;
+    const cur = (P.revealed || []).filter(r => r.top);
+    if (cur.length === (want ? 1 : 0) && (!want || cur[0].id === want)) return;
+    P.revealed = (P.revealed || []).filter(r => !r.top);
+    if (want) { P.revealed.push({ id: want, from: 'library', top: true }); know([want]); }
+    sendReveal(); savePriv();
+  };
   G.toggleReveal = function (id) {
     const c = P.hand.find(x => x.id === id); if (!c) return;
     if (G.isRevealed(id)) { P.revealed = P.revealed.filter(r => r.id !== id); log(`stopped revealing ${c.d.n}`); }
@@ -425,7 +459,7 @@
   };
 
   // decisions: [{id, dest}] in order. dest: top | bottom | graveyard | hand | exile | battlefield
-  G.applyLook = async function (mode, x, decisions) {
+  G.applyLook = async function (mode, x, decisions, lo) {
     const top = P.library.splice(0, x);
     const byId = new Map(top.map(c => [c.id, c]));
     const tops = [], bottoms = [], others = [];
@@ -435,6 +469,7 @@
     }
     for (const c of byId.values()) tops.push(c); // anything not decided stays on top
     P.library.unshift(...tops); P.library.push(...bottoms);
+    know(tops.concat(bottoms));
     const toHand = others.filter(o => o[1] === 'hand').map(o => o[0]);
     P.hand.push(...toHand);
     // public destinations
@@ -449,7 +484,7 @@
     await log(`${word} ${mode === 'look' ? 'the top ' + plural(x, 'card') + ' of their library' : x}${parts.length ? ': ' + parts.join(', ') : ''}`);
     for (const dest of ['graveyard', 'exile', 'battlefield']) {
       const ids = pub.filter(o => o[1] === dest).map(o => o[0].id);
-      if (ids.length) await G.fromLibrary(ids, dest, { msg: dest === 'graveyard' ? 'put {cards} into their graveyard' : dest === 'exile' ? 'exiled {cards} from their library' : 'put {cards} onto the battlefield from their library' });
+      if (ids.length) await G.fromLibrary(ids, dest, { tapped: dest === 'battlefield' && !!(lo && lo.tapped), msg: dest === 'graveyard' ? 'put {cards} into their graveyard' : dest === 'exile' ? 'exiled {cards} from their library' : 'put {cards} onto the battlefield from their library' });
     }
     savePriv();
   };
@@ -500,6 +535,7 @@
     const box = (G.S.inbox || {})[KEY] || [];
     const ack = [];
     let shuffled = false, changed = false;
+    const toHandKnown = [];
     for (const it of box) {
       const c = it.card;
       if (inboxBusy.has(c.id)) continue;
@@ -509,13 +545,14 @@
       delete P.hidden[c.id];
       if (!card.d) continue;
       changed = true;
-      if (it.to === 'hand') P.hand.push(card);
-      else if (it.pos === 'bottom') P.library.push(card);
-      else if (it.pos === 'n2' || it.pos === 'n3') P.library.splice(Math.min(P.library.length, it.pos === 'n2' ? 1 : 2), 0, card);
+      if (it.to === 'hand') { P.hand.push(card); toHandKnown.push(card); }
+      else if (it.pos === 'bottom') { P.library.push(card); know([card]); }
+      else if (it.pos === 'n2' || it.pos === 'n3') { P.library.splice(Math.min(P.library.length, it.pos === 'n2' ? 1 : 2), 0, card); know([card]); }
       else if (it.pos === 'shuffle') { P.library.push(card); shuffled = true; }
-      else P.library.unshift(card);
+      else { P.library.unshift(card); know([card]); }
     }
     if (shuffled) shuffle(P.library);
+    if (toHandKnown.length) knowInHand(toHandKnown);   // it came from a public zone: everyone saw it
     if (changed) savePriv(true);
     if (ack.length) act({ type: 'inboxAck', ids: ack }).then(() => ack.forEach(id => inboxBusy.delete(id)));
   }
@@ -540,7 +577,7 @@
     const toBf = t.split ? chosen.slice(0, 1) : t.dest === 'battlefield' ? chosen : [];
     const toGy = t.splitGy ? chosen.slice(1) : t.dest === 'graveyard' ? chosen : [];
     const toHand = t.split ? chosen.slice(1) : t.splitGy ? chosen.slice(0, 1) : t.dest === 'hand' ? chosen : [];
-    if (toHand.length) { const cards = take(P.library, toHand); P.hand.push(...cards); }
+    if (toHand.length) { const cards = take(P.library, toHand); P.hand.push(...cards); if (t.reveal || (t.filter && t.filter !== 'card')) knowInHand(cards); }
     if (toGy.length) await G.fromLibrary(toGy, 'graveyard', { msg: `put {cards} into their graveyard (${t.src})` });
     const toTop = t.dest === 'top' ? take(P.library, chosen) : [];
     shuffle(P.library); P.library.unshift(...toTop); savePriv();

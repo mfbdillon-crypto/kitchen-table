@@ -988,3 +988,4 @@ button.small { padding: 3px 9px; font-size: 13px; }
 .card.usable { box-shadow: 0 0 0 2px rgba(70, 225, 110, .95), 0 0 14px 3px rgba(70, 225, 110, .75); }
 .card.usable.tap { box-shadow: 0 0 0 2px rgba(70, 225, 110, .95), 0 0 14px 3px rgba(70, 225, 110, .75); }
 .pile.usable .pimg { box-shadow: 0 0 0 2px rgba(70, 225, 110, .95), 0 0 14px 3px rgba(70, 225, 110, .75); border-radius: 6px; }
+.strip.pick .card.dim { opacity: .45; cursor: default; }

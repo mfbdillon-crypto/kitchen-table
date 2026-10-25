@@ -1306,11 +1306,24 @@
     return Object.assign({ owner: KEY, ctrl: KEY, counters: {}, zone: 'library' }, G.P.library[0]);
   }
   G.myTopCard = myTopCard;
+  // Every card of my library whose place I know: the top cards in order, and the bottom ones (scry, surveil,
+  // Brainstorm, mulligan bottoms…). A shuffle forgets them.
+  function knownModal() {
+    const kn = G.knownLibrary();
+    openModal('Known cards in your library', b => {
+      const strip = (list, from) => h('div', { class: 'strip zoneview' }, list.map((c, i) => cardEl(Object.assign({ owner: KEY, counters: {}, zone: 'library' }, c), { noMenu: true, noGlow: true, badge: from === 'top' ? (i ? `${i + 1}${['', 'nd', 'rd'][i] || 'th'} from top` : 'Top') : (i === list.length - 1 ? 'Bottom' : `${list.length - i}${['', 'st', 'nd', 'rd'][list.length - i] || 'th'} from bottom`) })));
+      b.append(h('h4', null, `On top (${kn.top.length})`), kn.top.length ? strip(kn.top, 'top') : h('p', { class: 'muted' }, 'You don’t know the top card.'));
+      b.append(h('h4', null, `On the bottom (${kn.bottom.length})`), kn.bottom.length ? strip(kn.bottom, 'bottom') : h('p', { class: 'muted' }, 'You don’t know the bottom card.'));
+      b.append(h('p', { class: 'muted small' }, 'Your library’s order is set; shuffling it makes these unknown again.'));
+    }, { cls: 'wide' });
+  }
   function libraryMenu() {
     const L = G.P.library.length;
     const until = kind => Object.entries(G.UNTIL).map(([k, u]) => ({ label: u.label.replace(/^an? /, '').replace(/^./, m => m.toUpperCase()), fn: () => kind(k) }));
     const top = myTopCard();
     const head = [{ note: `${plural(L, 'card')} in your library` }];
+    const kn = G.knownLibrary ? G.knownLibrary() : { top: [], bottom: [] };
+    head.push({ label: `Cards I know about (${kn.top.length + kn.bottom.length})`, fn: knownModal, disabled: !(kn.top.length + kn.bottom.length) });
     if (top) { head.push({ note: `Top card: ${top.d.n}` }); head.push(...wayItems(top, true)); }
     if (!devHost()) return head;
     return head.concat([
@@ -1593,7 +1606,7 @@
     const p = S().players[pid];
     if (!p.revealed || !p.revealed.length) return null;
     return h('div', { class: 'revealed' }, h('span', { class: 'lbl' }, 'Revealed'),
-      h('div', { class: 'strip', 'data-scroll': 'rev-' + pid }, p.revealed.map(r => cardEl({ id: 'rev-' + r.id, d: r.d, face: 0, owner: pid, zone: 'revealed', counters: {} }, { noMenu: true, badge: r.from === 'library' ? 'Top of library' : null }))));
+      h('div', { class: 'strip', 'data-scroll': 'rev-' + pid }, p.revealed.map(r => cardEl({ id: 'rev-' + r.id, d: r.d, face: 0, owner: pid, zone: 'revealed', counters: {} }, { noMenu: true, noGlow: true, badge: r.from === 'library' ? 'Top of library' : r.known ? 'Known in hand' : null }))));
   }
 
   function rowsEl(pid, compact) {
@@ -2040,11 +2053,7 @@
       }, { live: true, sticky: true, noEsc: true });
       return;
     }
-    if (t.k === 'look') {
-      G.toast(`${t.src}: ${String(t.text || '').replace(/^./, m => m.toUpperCase())}`, 'info');
-      lookModal('look', t.n || 1, () => { ack(); setTimeout(pumpAsks, 50); });
-      return;
-    }
+    if (t.k === 'look') { lookPickModal(t, () => { ack(); setTimeout(pumpAsks, 50); }); return; }
     // "You may put a land card from your hand onto the battlefield" / "Return a creature card from your graveyard to your hand".
     if (t.k === 'fromHand' || t.k === 'fromGy') {
       const n = t.n || 1, sel = []; let done = false;
@@ -2214,6 +2223,41 @@
     }, { live: true, cls: 'wide' });
   }
 
+  // "Look at (reveal) the top N … put one of them into your hand and the rest on the bottom": a bar of the cards; pick
+  // what the card lets you take, the rest go where it says. Revealed cards are shown to the table while you choose.
+  function lookPickModal(t, onDone) {
+    const n = Math.min(t.n || 1, G.P.library.length);
+    if (!n) { onDone(); return; }
+    const plan = window.Effects && Effects.lookPlan ? Effects.lookPlan(t.text) : { pick: 0, rest: 'top', keepTop: true };
+    const reveal = !!(t.reveal || plan.reveal);
+    const top = G.P.library.slice(0, n);
+    if (reveal && G.revealLib) G.revealLib(top.map(c => c.id), true);
+    const sel = [];
+    let applied = false;
+    const fits = c => !plan.filter || CD.matchesWhat(Object.assign({ zone: 'library', counters: {}, face: 0, owner: KEY }, c), plan.filter);
+    const max = plan.keepTop ? n : Math.min(plan.pick, n);
+    const apply = async () => {
+      if (applied) return; applied = true; closeModal(true);
+      let decisions;
+      if (plan.keepTop) { const order = sel.concat(top.map(c => c.id).filter(id => !sel.includes(id))); decisions = order.map(id => ({ id, dest: 'top' })); }
+      else {
+        const rest = top.filter(c => !sel.includes(c.id));
+        if (plan.random) rest.sort(() => Math.random() - 0.5);
+        decisions = sel.map(id => ({ id, dest: plan.dest })).concat(rest.map(c => ({ id: c.id, dest: plan.rest })));
+      }
+      if (reveal && G.revealLib) G.revealLib(top.map(c => c.id), false);
+      await G.applyLook('look', n, decisions, { tapped: !!plan.tapped });
+      if (reveal && !plan.keepTop && plan.dest === 'hand' && sel.length && G.knowInHand) G.knowInHand(sel);
+      onDone();
+    };
+    openModal(`${t.src}: ${reveal ? 'reveal' : 'look at'} the top ${plural(n, 'card')}`, b => {
+      b.append(h('p', { class: 'muted' }, String(t.text || '').replace(/^./, m => m.toUpperCase())));
+      b.append(h('p', null, plan.keepTop ? 'Click them in the order you want them on top (first click = top card).' : max >= 99 ? `Choose any number${plan.filter ? ' of ' + plan.filter + ' cards' : ''} — they go ${plan.dest === 'battlefield' ? 'onto the battlefield' : 'into your hand'}.` : max ? `Choose ${plan.upTo ? 'up to ' : ''}${max}${plan.filter ? ' ' + plan.filter + ' card' + (max > 1 ? 's' : '') : ''} — ${plan.dest === 'battlefield' ? 'onto the battlefield' : 'into your hand'}.` : 'Nothing to take.',
+        plan.keepTop ? null : h('span', { class: 'muted' }, ` The rest go ${plan.rest === 'graveyard' ? 'into your graveyard' : plan.rest === 'top' ? 'back on top' : 'on the bottom' + (plan.random ? ' in a random order' : '')}.`)));
+      b.append(h('div', { class: 'strip pick' }, top.map(c => { const k = sel.indexOf(c.id), ok = plan.keepTop || fits(c); return cardEl(Object.assign({ zone: 'library', owner: KEY, counters: {} }, c), { noMenu: true, noGlow: true, cls: (k >= 0 ? 'sel' : '') + (ok ? '' : ' dim'), badge: k >= 0 ? (plan.keepTop ? '#' + (k + 1) : '✓') : null, onClick: () => { if (!ok) return; if (k >= 0) sel.splice(k, 1); else if (sel.length < max) sel.push(c.id); refreshModal(); } }); })));
+      b.append(h('div', { class: 'row' }, h('button', { class: 'primary', onclick: apply, disabled: !plan.keepTop && !plan.upTo && sel.length < Math.min(max, top.filter(fits).length) && max < 99 }, plan.keepTop ? 'Put them back' : sel.length ? `Take ${sel.length}` : 'Take nothing')));
+    }, { live: true, cls: 'wide', sticky: true, noEsc: true });
+  }
   function lookModal(mode, x, onDone) {
     const top = G.P.library.slice(0, x);
     const order = top.map(c => ({ id: c.id, dest: 'top' }));
@@ -2800,6 +2844,7 @@
   function render() {
     if (G.MODE === 'hand') return KTPhone.render();
     try { trackPerms(); } catch (e) { /* dev-only bookkeeping */ }
+    try { if (G.syncTopReveal && G.seated && G.seated()) G.syncTopReveal(); } catch (e) { /* the top card stays as it was */ }
     if (G.replaced) { root.replaceChildren(h('div', { class: 'welcome' }, h('div', { class: 'wcard' }, h('h1', null, 'Kitchen Table'),
       h('p', null, G.replaced === 'host' ? 'You’re already at this table in another tab or window of this browser.' : 'This table is open in another tab or window on this device, so this one stopped.'),
       h('p', null, 'Want a second player on this computer? Join as a different player in this tab.'),

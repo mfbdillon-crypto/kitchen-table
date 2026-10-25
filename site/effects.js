@@ -453,5 +453,19 @@
     return { ops, understood, targets: st.ti };
   }
 
-  root.Effects = { parse, clause, variable, tokenSpec, who, obj };
+  // What a "look at the top N" lets you do, from its text: { keepTop, pick, filter, dest, rest, reveal }.
+  // Shared by the table's window and the AI so both read the card the same way.
+  function lookPlan(text) {
+    const t = String(text || '').toLowerCase();
+    if (/put them back in any order|put them back on top|put the rest back on top/.test(t) && !/into your hand|onto the battlefield/.test(t)) return { keepTop: true, pick: 0, rest: 'top', reveal: /reveal/.test(t) };
+    const anyN = /any number of [a-z ]*cards? (?:from among them|of them)/.test(t);
+    const nm = t.match(/put (?:up to )?(one|two|three|four|\d+) of (?:them|those cards) into your hand/);
+    const pick = anyN ? 99 : nm ? (amt(nm[1]) || 1) : /into your hand|onto the battlefield/.test(t) ? 1 : 0;
+    const filter = (t.match(/(?:reveal|put) (?:a|an|up to \w+|any number of) ([a-z ]+?) cards? from among/) || [])[1] || null;
+    const dest = /from among them onto the battlefield|of them onto the battlefield/.test(t) ? 'battlefield' : 'hand';
+    const rest = /rest (?:into|in) your graveyard|other(?:s)? into your graveyard/.test(t) || (/graveyard/.test(t) && !/bottom/.test(t)) ? 'graveyard' : /rest back on top|rest on top/.test(t) ? 'top' : 'bottom';
+    return { keepTop: false, pick, filter: filter && filter !== 'card' ? filter : null, dest, rest, random: /random order/.test(t), tapped: /onto the battlefield tapped/.test(t), reveal: /reveal/.test(t), upTo: /up to|may|any number/.test(t) };
+  }
+
+  root.Effects = { parse, clause, variable, tokenSpec, who, obj, lookPlan };
 })(typeof window !== 'undefined' ? window : globalThis);

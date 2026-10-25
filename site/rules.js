@@ -884,7 +884,8 @@
         }
         case 'reveal': {
           need();
-          me.revealed = (a.cards || []).slice(0, 60).map(c => ({ id: String(c.id || '').slice(0, 40), d: cleanD(c.d), face: 0, from: c.from === 'library' ? 'library' : 'hand' })).filter(c => c.d);
+          me.revealed = (a.cards || []).slice(0, 60).map(c => ({ id: String(c.id || '').slice(0, 40), d: cleanD(c.d), face: 0, from: c.from === 'library' ? 'library' : 'hand', known: c.known ? true : undefined })).filter(c => c.d);
+          if (a.quiet) return done('');
           if (!me.revealed.length) return done(a.quiet ? '' : 'hid their revealed cards');
           return done(a.quiet ? '' : `revealed ${listNames(me.revealed.map(c => c.d.n))} from their ${a.from === 'library' ? 'library' : 'hand'}`);
         }

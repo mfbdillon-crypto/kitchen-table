@@ -689,8 +689,15 @@
       else if (cols.has('W') || cols.has('B') || cols.has('R')) r = Math.max(r, 0.35);
       const seenW = Object.values(this.seen[p] || {}).filter(x => x.roles.includes('wipe')).length;
       if (seenW) r = Math.max(r, 0.5 + 0.1 * seenW);
+      // A wipe I've seen go into their hand (revealed, returned from a graveyard…) is very likely coming.
+      if (this.knownHand(p).some(c => roles(c).has('wipe'))) r = Math.max(r, 0.8);
     }
     return clamp(r, 0, 0.9);
+  };
+  // Cards the table knows are in that player's hand (revealed earlier, returned from a public zone).
+  P.knownHand = function (p) {
+    const P0 = this.s.players[p]; if (!P0) return [];
+    return (P0.revealed || []).filter(r => r.from === 'hand' && r.d).map(r => ({ id: 'known-' + r.id, d: r.d, zone: 'hand', counters: {}, face: 0, owner: p, ctrl: p }));
   };
   // Damage I could take on the next opponents' turns (each opponent's untapped-next-turn attackers).
   P.incomingNext = function () {
@@ -867,7 +874,7 @@
     if (prevT && target && prevT !== target && target.score < prevT.score * 1.2 + 0.5) target = prevT;
     const myTurn = s.turn.active === me;
     const plan = { at: Date.now(), turn: s.turn.n, route, routes: routes.slice(0, 4), target, threats: this.threats.map(t => ({ pid: t.pid, name: Rr.nameOf(s, t.pid), score: +t.score.toFixed(1), clockOnMe: +t.clockOnMe.toFixed(1), why: `power ${t.power}, engines ${t.engines}${t.comboNear.length ? ', combo close: ' + t.comboNear.map(k => k.cards.join('+')).join('; ') : ''}${t.interfere ? ', fights my plan ' + t.interfere.toFixed(1) : ''}` })),
-      reads: this.opps().map(p => { const r = this.reads[p]; return { pid: p, name: Rr.nameOf(s, p), cmdr: r.cmdr.join(' + '), arch: r.arch.join(', '), kill: [...r.kill].slice(0, 6), note: r.note }; }),
+      reads: this.opps().map(p => { const r = this.reads[p]; return { pid: p, name: Rr.nameOf(s, p), cmdr: r.cmdr.join(' + '), arch: r.arch.join(', '), kill: [...r.kill].slice(0, 6), note: [r.note, this.knownHand(p).length ? 'known in hand: ' + this.knownHand(p).map(c => c.d.n).join(', ') : ''].filter(Boolean).join(' · ') }; }),
       steps: [], responses: [], scenarios: [], milestones: [] };
     // ---- the turns ahead (milestones) ----
     const curve = this.manaCurve(L.horizon);
