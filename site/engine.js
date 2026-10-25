@@ -534,6 +534,7 @@
         }
         case 'attached': { const c = s.cards[src.attachedTo]; return c ? [c] : []; }
         case 't': return (legal[w.i] || []).map(tcard).filter(Boolean);
+        case 'lastToken': return (st.tokens || []).map(id => s.cards[id]).filter(Boolean);
         case 'each': case 'eachOppAndCreatures': case 'everything': {
           const what = w.k === 'each' ? String(w.what || 'permanent').replace(/s$/, '').replace(/^creature$/, 'creature') : 'creature';
           return Object.values(s.cards).filter(c => c.zone === 'battlefield' && !(w.other && c.id === srcId) &&
@@ -746,6 +747,8 @@
         case 'sacSearch': R.todo(s, by, { k: 'sacSearch', what: o.what, filter: o.filter, tapped: !!o.tapped, src: srcName }); notes.push(`${nameOf(s, by)} sacrifices any number of ${o.what}s and searches for that many (${srcName})`); break;
         case 'nameLock': for (const c of cards(o.what)) { s.nameLocks = (s.nameLocks || []).concat([{ by, owner: c.owner, name: cardName(c) }]); notes.push(`${nameOf(s, c.owner)} can’t cast spells named ${cardName(c)} until ${nameOf(s, by)}’s next turn (${srcName})`); } break;
         case 'costMod': { s.costMods = (s.costMods || []).concat([{ by, n: o.n, filter: o.filter }]); notes.push(`${o.filter ? o.filter[0].toUpperCase() + o.filter.slice(1) + ' spells' : 'Spells'} ${nameOf(s, by)}’s opponents cast cost {${o.n}} more until ${nameOf(s, by)}’s next turn (${srcName})`); break; }
+        case 'setLife': for (const p of players(o.who)) { const P = s.players[p]; if (P) { P.life = o.n; notes.push(`${nameOf(s, p)}'s life total became ${o.n} (${srcName})`); } } break;
+        case 'setPoison': for (const p of players(o.who)) { const P = s.players[p]; if (P && (P.poison || 0) < o.n) { P.poison = o.n; notes.push(`${nameOf(s, p)} now has ${o.n} poison counters (${srcName})`); } } break;
         case 'tempt': {
           const P = s.players[by]; if (!P) break;
           P.ring = Math.min(4, (P.ring || 0) + 1);
@@ -782,6 +785,7 @@
           const XX = o.xv ? val(o.xv) : X; st.lastX = XX;
           let num = v => /x/.test(v) ? Math.sign(parseInt(v.replace(/x/, '1'), 10)) * XX : parseInt(v, 10) * mult;
           let p = num(o.p), t = num(o.t);
+          if (o.either && cs[0] && cs[0].ctrl !== by) { p = -p; t = -t; }
           if (perPoison) { const base = [parseInt(o.p, 10), parseInt(o.t, 10)]; for (const c of cs) { const k = ((s.players[c.ctrl] || {}).poison) || 0; if (!k) continue; c.mod = [(c.mod ? c.mod[0] : 0) + base[0] * k, (c.mod ? c.mod[1] : 0) + base[1] * k]; badge(c, { label: `${base[0] * k}/${base[1] * k}`, until: 'eot' }); } notes.push(`${srcName}: creatures got -1/-1 for each poison counter their controller has`); break; }
           for (const c of cs) { c.mod = [(c.mod ? c.mod[0] : 0) + p, (c.mod ? c.mod[1] : 0) + t]; badge(c, { label: `${p >= 0 ? '+' : ''}${p}/${t >= 0 ? '+' : ''}${t}`, until: 'eot' }); if (o.kws) grantTo(c, o.kws); }
           if (cs.length) notes.push(`${R.listNames(cs.map(cardName))} got ${p >= 0 ? '+' : ''}${p}/${t >= 0 ? '+' : ''}${t}${o.kws ? ' and ' + o.kws : ''} until end of turn (${srcName})`);
