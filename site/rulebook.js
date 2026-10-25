@@ -320,11 +320,30 @@
   }
   // Called by Rules when a card is cast or played from a zone: null if allowed, else the reason. When it's allowed and
   // no permission was named, the one that applies is written into a.perm (so once-a-turn permissions get used up).
+  // Pending grants for a free cast: an unfinished effect of this player's (cascade, discover, suspend, rebound, "cast it
+  // without paying", a step left to finish by hand), a way the card itself has (plot), or the host's dev mode.
+  function freeGrant(s, pid, c, zone) {
+    if (s.dev) return { dev: true };
+    for (const t of (s.todo && s.todo[pid]) || []) {
+      if (t.k === 'cascade') return { todo: t };
+      if (t.k === 'freeCast' && (!t.ids || t.ids.includes(c.id))) return { todo: t };
+    }
+    if ((s.ask || []).some(q => q.kind === 'manual' && q.pid === pid)) return { manual: true };
+    const w = ways(s, pid, c, { zone }).find(x => x.kind === 'free');
+    return w ? { via: w.via, sorcery: !!w.sorcery } : null;
+  }
   function castBlock(s, pid, c, a) {
     a = a || {};
     const zone = a.fromZone || c.zone;
     const act = isLand(c) ? 'play' : 'cast';
-    if (a.alt === 'free' || a.effect) { const b = blocker(s, pid, c, act, zone); return b ? `${b.srcName}: ${b.text}` : null; }   // an effect is casting it (cascade, rebound, "you may cast it without paying") — only restrictions apply
+    if (a.alt === 'free' || a.effect) {   // an effect is casting it (cascade, rebound, "you may cast it without paying") — only restrictions apply
+      const b = blocker(s, pid, c, act, zone); if (b) return `${b.srcName}: ${b.text}`;
+      const g = freeGrant(s, pid, c, zone);
+      if (!g) return `Nothing lets you cast ${R().cardName(c)} without paying its mana cost right now.`;
+      if (g.sorcery) a.sorceryTiming = true;   // plot: free, but only when you could cast a sorcery (702.170d)
+      if (g.via && !a.perm) a.perm = g.via;
+      return null;
+    }
     const blocked = [];
     const w = ways(s, pid, c, { zone, top: a.top, blocked });
     const want = pickFrom(w, a, act);

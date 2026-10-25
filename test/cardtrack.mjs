@@ -15,7 +15,7 @@ for (const name of names) {
   const p = await ctx.newPage(); const errs = []; p.on('pageerror', e => errs.push(e.message)); p.on('console', m => { if (m.text().startsWith('[kt]')) fs.appendFileSync(OUT + 'trace.txt', ((Date.now() - T0) / 1000).toFixed(1) + ' ' + name + ' ' + m.text() + '\n'); });
   await p.goto('http://localhost:8090/?t=' + T); await p.fill('#welcomename', name); await p.click('text=Join the table');
   await p.waitForFunction(n => KT.me && KT.me() && KT.me().name === n, name, { timeout: 30000 });
-  await p.click('#top >> text=Decks'); await p.setInputFiles('#importfile', 'test/deck.csv'); await p.waitForSelector('text=Imported');
+  await p.evaluate(() => KT.openDecks()); await p.setInputFiles('#importfile', 'test/deck.csv'); await p.waitForSelector('text=Imported');
   await p.click('.dline:has-text("Alesha") .star'); await p.click('text=Play this deck'); await wait(1200);
   await p.evaluate(() => { KT.openingHand(); KT.keep(); });
   P.push({ name, br, ctx, p, errs, alive: true, key: await p.evaluate(() => KT.KEY) });

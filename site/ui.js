@@ -2656,6 +2656,7 @@
 
   // ======================= deck manager =======================
   let editing = null;
+  G.openDecks = () => deckManager();  // also used by the browser tests
   function deckManager() {
     const decks = G.decks();
     if (!editing || !decks.some(d => d.id === editing)) editing = (G.P.deckId && decks.some(d => d.id === G.P.deckId)) ? G.P.deckId : (decks[0] && decks[0].id) || null;

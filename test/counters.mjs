@@ -7,7 +7,7 @@ async function seat(name, vp, touch, t) {
   p.on('pageerror', e => errs.push(name + ': ' + e.message));
   await p.goto('http://localhost:8090/?t=' + t); await p.fill('#welcomename', name); await p.click('text=Join the table');
   await p.waitForFunction(() => KT.me && KT.me(), null, { timeout: 20000 });
-  await p.click(touch ? '#top .menubtn' : '#top >> text=Decks'); if (touch) await p.click('.menu >> text=Decks');
+  await p.evaluate(() => KT.openDecks());
   await p.setInputFiles('#importfile', 'test/deck.csv'); await p.waitForSelector('text=Imported');
   await p.click('text=Play this deck', { force: true }); await wait(700);
   await p.evaluate(async () => {

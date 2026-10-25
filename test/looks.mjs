@@ -8,9 +8,9 @@ async function player(name) { const ctx = await browser.newContext({ viewport: {
   await page.goto('http://localhost:8090/?t=looks'); await page.fill('#welcomename', name); await page.click('text=Join the table');
   await page.waitForFunction(n => KT.me && KT.me() && KT.me().name === n, name, { timeout: 20000 }); return { ctx, page }; }
 const A = await player('Marissa'), B = await player('Alex');
-await A.page.click('#top >> text=Decks'); await A.page.setInputFiles('#importfile', 'test/deck.csv'); await A.page.waitForSelector('text=Imported');
+await A.page.evaluate(() => KT.openDecks()); await A.page.setInputFiles('#importfile', 'test/deck.csv'); await A.page.waitForSelector('text=Imported');
 await A.page.click('text=Play this deck'); await wait(800);
-await A.page.click('#top >> text=Decks');
+await A.page.evaluate(() => KT.openDecks());
 await A.page.setInputFiles('#sleevefile', 'test/sleeve.jpg'); await A.page.click('text=Save sleeve'); await wait(300);
 await A.page.setInputFiles('#matfile', 'test/mat.jpg'); await A.page.waitForSelector('text=Adjust your playmat');
 await A.page.screenshot({ path: 'test/crop_mat.png' });
@@ -21,6 +21,8 @@ await A.page.click('.modal .x'); await wait(800);
 console.log('B sees A look:', await B.page.evaluate(() => { const L = KT.table.sleeves[KT.S.seats[0]]; return L && [!!L.sleeve, !!L.mat, L.palette]; }));
 await A.page.evaluate(() => { KT.openingHand(); KT.keep(); }); await wait(300);
 await A.page.evaluate(async () => { const ls = KT.P.hand.filter(KT.isLand).map(c => c.id); await KT.fromHand(ls.slice(0, 2), 'battlefield'); const o = KT.P.hand.filter(c => !KT.isLand(c)).map(c => c.id); await KT.fromHand(o.slice(0, 2), 'battlefield'); });
+await B.page.evaluate(async txt => { const d = await KT.linesToDeck(Scry.parseDeckFile(txt), 'Gruul Test', () => {}); await KT.useDeck(d); }, mock.aiDeck()); await wait(800);
+await A.page.evaluate(() => KT.act({ type: 'house', set: { deckSize: 0 } })); await wait(300);
 await A.page.click('text=Start game'); await wait(800);
 await B.page.click('#tabs >> text=Marissa'); await wait(400); await B.page.mouse.move(5, 890);
 await B.page.screenshot({ path: 'test/B_sees_mat.png' });

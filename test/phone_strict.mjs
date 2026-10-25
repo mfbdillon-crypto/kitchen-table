@@ -13,7 +13,7 @@ A.on('pageerror', e => errs.push('desk: ' + e.message));
 const T = 'strict' + Date.now() % 100000;
 await A.goto('http://localhost:8090/?t=' + T); await A.fill('#welcomename', 'Marissa'); await A.click('text=Join the table');
 await A.waitForFunction(() => KT.me && KT.me(), null, { timeout: 20000 });
-await A.click('#top >> text=Decks'); await A.setInputFiles('#importfile', 'test/deck.csv'); await A.waitForSelector('text=Imported'); await A.click('text=Play this deck'); await wait(800);
+await A.evaluate(() => KT.openDecks()); await A.setInputFiles('#importfile', 'test/deck.csv'); await A.waitForSelector('text=Imported'); await A.click('text=Play this deck'); await wait(800);
 await A.click('#hand >> text=Draw opening hand'); await wait(300);
 await A.click('#top button:has-text("Phone")'); await A.waitForSelector('.qr svg');
 const png = PNG.sync.read(await A.locator('.qr').screenshot()); const url = jsQR(new Uint8ClampedArray(png.data), png.width, png.height).data;

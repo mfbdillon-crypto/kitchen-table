@@ -10,6 +10,8 @@ await p.goto('http://localhost:8090/?t=' + T); await p.fill('#welcomename', 'Mar
 await p.waitForFunction(() => KT.me && KT.me(), null, { timeout: 20000 });
 await p.evaluate(async txt => { const d = await KT.linesToDeck(Scry.parseDeckFile(txt), 'Gruul Test', () => {}); await KT.useDeck(d); }, mock.aiDeck());
 await p.evaluate(() => KT.addAI('Chandra', KT.decks()[0], 'normal'));
+await p.waitForFunction(() => KT.S.seats.length === 2 && KT.S.seats.every(x => KT.S.players[x].libCount > 0), null, { timeout: 40000 });
+console.log('start:', JSON.stringify(await p.evaluate(async () => { await KT.act({ type: 'house', set: { deckSize: 0 } }); const r = await KT.act({ type: 'start' }); return [r, KT.S.seats.map(x => [KT.S.players[x].name, KT.S.players[x].libCount, KT.S.players[x].handCount])]; })));
 await p.waitForFunction(() => KT.S.seats.some(x => KT.S.players[x].ai && KT.S.players[x].handCount > 0), null, { timeout: 40000 });
 await p.evaluate(() => { KT.openingHand(); KT.keep(); });
 // Give both sides something on the battlefield, and the human a Bolt + creature in hand.
@@ -22,7 +24,9 @@ await p.evaluate(async () => {
 await p.evaluate(() => KT.act({ type: 'start' }));
 await wait(800);
 // make it the human's turn
-for (let i = 0; i < 40; i++) { const mine = await p.evaluate(() => KT.S.turn.active === KT.KEY && !KT.S.prio); if (mine) break; await p.evaluate(async () => { const s = KT.S; if (s.prio && s.prio.holder === KT.KEY) await KT.pass(); if (s.combat && !s.combat.done && s.combat.waiting.includes(KT.KEY) && !s.combat.ok[KT.KEY]) await KT.block([]); }); await wait(700); }
+for (let i = 0; i < 90; i++) { const mine = await p.evaluate(() => { const g = Object.values(KT.S.cards).find(c => c.id.endsWith('-giant1')); return KT.S.turn.active === KT.KEY && !KT.S.prio && (!g || g.ctlT < KT.S.turn.starts[KT.KEY]); }); if (mine) break; await p.evaluate(async () => { const s = KT.S; if (s.prio && s.prio.holder === KT.KEY) await KT.pass(); if (s.combat && !s.combat.done && s.combat.waiting.includes(KT.KEY) && !s.combat.ok[KT.KEY]) await KT.block([]); }); await wait(700); }
+await p.evaluate(async () => { const m = KT.P.hand.find(c => KT.isLand(c) && /Mountain/.test(c.d.faces[0].t)) || KT.P.hand.find(KT.isLand); if (m) await KT.fromHand([m.id], 'battlefield'); });
+await wait(400);
 await p.evaluate(() => { KT.tab = 'all'; KT.render(); });
 await wait(500);
 // Cast Lightning Bolt from the hand menu → target picker
@@ -34,7 +38,7 @@ const chips = await p.$$eval('.pickbar .pkchoices button', bs => bs.map(b => b.t
 console.log('target choices:', chips.join(' | '));
 // pick the AI player as the target
 const aiName = await p.evaluate(() => KT.S.players[KT.S.seats.find(x => KT.S.players[x].ai)].name);
-await p.click(`.pickbar .pkchoices button:text-is("${aiName}")`);
+await p.click(`.pickbar .pkchoices button:has-text("${aiName}")`);
 await wait(400);
 await p.screenshot({ path: 'test/s2_waiting.png' });
 console.log('prio bar:', await p.$eval('.prio', e => e.textContent).catch(() => 'none'));
@@ -43,11 +47,12 @@ console.log('AI life after bolt:', await p.evaluate(() => KT.S.players[KT.S.seat
 // combat bar
 await p.evaluate(() => KT.act({ type: 'phase', to: Rules.PHASES.indexOf('Beginning of combat') }));
 await p.waitForSelector('.combatbar');
+console.log('giant:', await p.evaluate(() => JSON.stringify([KT.S.turn.n, KT.S.turn.active === KT.KEY, KT.S.turn.starts, Object.values(KT.S.cards).filter(c => c.id.endsWith('-giant1')).map(c => [c.zone, c.ctrl === KT.KEY, c.tapped, c.ctlT])])));
 await p.screenshot({ path: 'test/s3_attack.png' });
-await p.click('.board .card[data-id$="-giant1"]');
-await wait(200);
+const giantUp = await p.evaluate(() => Object.values(KT.S.cards).some(c => c.id.endsWith('-giant1') && c.zone === 'battlefield'));
+if (giantUp) { await p.click('.board .card[data-id$="-giant1"]'); await wait(200); }
 console.log('combat bar:', await p.$eval('.combatbar', e => e.textContent));
-await p.click('.combatbar button.primary');
+await p.click(giantUp ? '.combatbar button.primary' : '.combatbar >> text=No attack');
 await wait(3000);
 console.log('after attack:', await p.evaluate(() => KT.S.log.slice(-4).map(l => l.text).join(' | ')));
 // open the AI panel

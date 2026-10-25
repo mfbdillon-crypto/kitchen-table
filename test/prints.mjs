@@ -6,7 +6,7 @@ const b = await chromium.launch(); const T = 'pr' + Date.now() % 100000;
 async function seat(name) { const ctx = await b.newContext({ viewport: { width: 1440, height: 900 } }); await mock(ctx); const p = await ctx.newPage(); p.on('pageerror', e => errs.push(name + ': ' + e.message));
   await p.goto('http://localhost:8090/?t=' + T); await p.fill('#welcomename', name); await p.click('text=Join the table'); await p.waitForFunction(n => KT.me && KT.me() && KT.me().name === n, name, { timeout: 20000 }); return p; }
 const M = await seat('Marissa'); const A = await seat('Alex');
-await M.click('#top >> text=Decks'); await M.setInputFiles('#importfile', 'test/deck.csv'); await M.waitForSelector('text=Imported');
+await M.evaluate(() => KT.openDecks()); await M.setInputFiles('#importfile', 'test/deck.csv'); await M.waitForSelector('text=Imported');
 await M.screenshot({ path: 'test/pp_deck_nocmdr.png' });
 await M.click('.dline:has-text("Alesha") .star'); await wait(300);
 await M.screenshot({ path: 'test/pp_deck_cmdr.png' });

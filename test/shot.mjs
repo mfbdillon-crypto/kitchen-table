@@ -9,7 +9,7 @@ for (const [w,hgt,touch,file] of [[1440,900,false,'layout_desktop.png'],[844,390
   await page.evaluate(async () => {
     const lines = Scry.parseDeckFile(await (await fetch('/../test/none')).text().catch(()=>''));
   }).catch(()=>{});
-  await page.click('#top >> text=Decks'); await page.setInputFiles('#importfile', 'test/deck.csv'); await page.waitForSelector('text=Imported');
+  await page.evaluate(() => KT.openDecks()); await page.setInputFiles('#importfile', 'test/deck.csv'); await page.waitForSelector('text=Imported');
   await page.click('.dline:has-text("Alesha") .star', { force: true }); await page.click('text=Play this deck', { force: true }); await wait(800);
   await page.evaluate(async () => { KT.openingHand(); KT.keep(); const ls = KT.P.hand.filter(KT.isLand).map(c => c.id); await KT.fromHand(ls.slice(0, 3), 'battlefield');
     const c = KT.P.library.filter(x => /Creature/.test(x.d.faces[0].t)).slice(0,3).map(x=>x.id); await KT.fromLibrary(c, 'battlefield'); await KT.mill(2);

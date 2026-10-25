@@ -461,6 +461,9 @@
         und = und && a.ops.filter(o => o.op !== 'modes').every(o => o.op !== 'manual') && [].concat(c.mode).every(i => mo.modes[i] && deep(mo.modes[i].ops));
       } else und = und && a.understood !== false;
     }
+    // A later line's "that creature" / "that spell" (Dispatch, Stubborn Denial): a spell has no event, so it means the target named
+    // before it.
+    if (sp.length > 1) { let lastT = null; const fix = x => { if (Array.isArray(x)) return x.forEach(fix); if (!x || typeof x !== 'object') return; for (const [k, v] of Object.entries(x)) { if (v && typeof v === 'object' && v.k === 'ev' && lastT && k !== 'of') x[k] = Object.assign({}, lastT); else if (v && typeof v === 'object' && v.k === 't') lastT = v; else fix(v); } if (x.of && x.of.k === 'ev' && lastT) x.of = Object.assign({}, lastT); }; const cp = JSON.parse(JSON.stringify(ops)); cp.forEach(fix); return { ops: cp, understood: und && cp.every(o => o.op !== 'manual') }; }
     return { ops, understood: und && ops.every(o => o.op !== 'manual') };
   }
   // Spells and activated abilities whose whole text the engine understands also resolve here.
@@ -788,7 +791,14 @@
         case 'sacSearch': R.todo(s, by, { k: 'sacSearch', what: o.what, filter: o.filter, tapped: !!o.tapped, src: srcName }); notes.push(`${nameOf(s, by)} sacrifices any number of ${o.what}s and searches for that many (${srcName})`); break;
         case 'nameLock': for (const c of cards(o.what)) { s.nameLocks = (s.nameLocks || []).concat([{ by, owner: c.owner, name: cardName(c) }]); notes.push(`${nameOf(s, c.owner)} can’t cast spells named ${cardName(c)} until ${nameOf(s, by)}’s next turn (${srcName})`); } break;
         case 'costMod': { s.costMods = (s.costMods || []).concat([{ by, n: o.n, filter: o.filter }]); notes.push(`${o.filter ? o.filter[0].toUpperCase() + o.filter.slice(1) + ' spells' : 'Spells'} ${nameOf(s, by)}’s opponents cast cost {${o.n}} more until ${nameOf(s, by)}’s next turn (${srcName})`); break; }
-        case 'setLife': for (const p of players(o.who)) { const P = s.players[p]; if (P) { P.life = o.n; notes.push(`${nameOf(s, p)}'s life total became ${o.n} (${srcName})`); } } break;
+        case 'exchange': {   // exchange control of two target permanents (741)
+          const cs = cards(o.what).filter(c => c.zone === 'battlefield'); if (cs.length !== 2) { notes.push(`${srcName}: needs two permanents to exchange`); break; }
+          const [a1, b1] = cs; if (a1.ctrl === b1.ctrl) break;
+          const t0 = a1.ctrl; a1.ctrl = b1.ctrl; b1.ctrl = t0; a1.ctlT = b1.ctlT = s.turn.n; a1.seq = ++s.seq; b1.seq = ++s.seq;
+          notes.push(`${srcName}: ${nameOf(s, a1.ctrl)} now controls ${cardName(a1)} and ${nameOf(s, b1.ctrl)} controls ${cardName(b1)}`); break;
+        }
+        case 'setLife': if (o.n && o.n.v === 'lowestLife') { const low = Math.min(...(s.seats || []).filter(p => s.players[p] && !s.players[p].lost).map(p => s.players[p].life)); for (const p of players(o.who)) { const P = s.players[p]; if (P) P.life = low; } notes.push(`Each player's life total became ${low} (${srcName})`); break; }
+          for (const p of players(o.who)) { const P = s.players[p]; if (P) { P.life = o.n; notes.push(`${nameOf(s, p)}'s life total became ${o.n} (${srcName})`); } } break;
         case 'setPoison': for (const p of players(o.who)) { const P = s.players[p]; if (P && (P.poison || 0) < o.n) { P.poison = o.n; notes.push(`${nameOf(s, p)} now has ${o.n} poison counters (${srcName})`); } } break;
         case 'tempt': {
           const P = s.players[by]; if (!P) break;

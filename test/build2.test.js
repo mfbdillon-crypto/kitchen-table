@@ -76,6 +76,19 @@ assert.equal(s.cards.pl.zone, 'exile'); assert.equal(s.cards.pl.exPerm.kind, 'pl
 assert.equal(RB.ways(s, 'A', s.cards.pl).length, 0, 'not this turn');
 s.turn.n++;
 assert(RB.ways(s, 'A', s.cards.pl).some(x => x.via === 'plot'), 'a later turn');
+// Plotted cards are cast free only at sorcery speed (702.170d).
+s.turn.active = 'B';
+assert(!R.apply(s, 'A', { type: 'move', ids: ['pl'], to: 'stack', cast: true, alt: 'free' }).ok, 'not on the opponent turn');
+s.turn.active = 'A';
+{ const r = R.apply(JSON.parse(JSON.stringify(s)), 'A', { type: 'move', ids: ['pl'], to: 'stack', cast: true, alt: 'free' }); assert(r.ok, 'plot on my main phase: ' + r.err); }
+// A free cast needs something that grants it (a pending effect, plot, or dev mode).
+ok('A', { type: 'enter', zone: 'graveyard', cards: [{ id: 'nofree', d: D('No Free', 'Sorcery', 'You gain 1 life.', { cmc: 5, mc: '{5}' }) }] });
+s.players.A.libCount = 10;
+const rf = R.apply(s, 'A', { type: 'move', ids: ['nofree'], to: 'stack', cast: true, alt: 'free' });
+assert(!rf.ok, 'no grant, no free cast');
+s.todo.A = [{ id: 'g1', k: 'freeCast', from: 'graveyard', filter: 'card' }];
+ok('A', { type: 'move', ids: ['nofree'], to: 'stack', cast: true, alt: 'free' });
+s.todo.A = []; clear();
 console.log('plot ok');
 
 // Energy paid by amount.

@@ -6,7 +6,7 @@ const wait = ms => new Promise(r => setTimeout(r, ms)); const errs = [];
 const b = await chromium.launch(); const T = 'wh' + Date.now() % 100000;
 async function desk(name) { const ctx = await b.newContext({ viewport: { width: 1280, height: 800 } }); await mock(ctx); const p = await ctx.newPage(); p.on('pageerror', e => errs.push(name + ': ' + e.message));
   await p.goto('http://localhost:8090/?t=' + T); await p.fill('#welcomename', name); await p.click('text=Join the table'); await p.waitForFunction(n => KT.me && KT.me() && KT.me().name === n, name, { timeout: 20000 });
-  await p.click('#top >> text=Decks'); await p.setInputFiles('#importfile', 'test/deck.csv'); await p.waitForSelector('text=Imported'); await p.click('text=Play this deck'); await wait(700);
+  await p.evaluate(() => KT.openDecks()); await p.setInputFiles('#importfile', 'test/deck.csv'); await p.waitForSelector('text=Imported'); await p.click('text=Play this deck'); await wait(700);
   await p.evaluate(() => { KT.openingHand(); KT.keep(); }); return p; }
 async function phone(name) { const ctx = await b.newContext({ viewport: { width: 844, height: 390 }, hasTouch: true, isMobile: true }); await mock(ctx); const p = await ctx.newPage(); p.on('pageerror', e => errs.push(name + ': ' + e.message)); return p; }
 const qrOf = async (p, sel) => { const png = PNG.sync.read(await p.locator(sel).screenshot()); return jsQR(new Uint8ClampedArray(png.data), png.width, png.height).data; };

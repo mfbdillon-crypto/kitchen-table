@@ -22,7 +22,7 @@ async function join(P) {
   await P.page.waitForFunction(n => window.KT.me && window.KT.me() && window.KT.me().name === n, P.name, { timeout: 15000 });
 }
 async function importDeck(P) {
-  await P.page.click('#top >> text=Decks');
+  await P.page.evaluate(() => KT.openDecks());
   await P.page.setInputFiles('#importfile', 'test/deck.csv');
   await P.page.waitForSelector('.dk', { timeout: 15000 });
   await P.page.waitForSelector('text=Imported', { timeout: 15000 });

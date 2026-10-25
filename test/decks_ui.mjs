@@ -10,7 +10,7 @@ p.on('pageerror', e => errs.push('page: ' + e.message));
 await p.goto('http://localhost:8090/?t=' + T); await p.fill('#welcomename', 'Marissa'); await p.click('text=Join the table');
 await p.waitForFunction(() => KT.me && KT.me(), null, { timeout: 20000 });
 await p.evaluate(async txt => { const d = await KT.linesToDeck(Scry.parseDeckFile(txt), 'Gruul Test', () => {}); KT.saveDecks([d]); }, mock.aiDeck());
-await p.click('#top button:has-text("Decks")').catch(async () => { await p.click('#top button[title=More]'); await p.click('.menu >> text=Decks'); });
+await p.evaluate(() => KT.openDecks());
 await p.waitForSelector('#moxlink');
 await p.fill('#moxlink', 'https://moxfield.com/decks/AbCdEfGh12345');
 const imp = await p.$('.importer .imrow button');

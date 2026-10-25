@@ -6,7 +6,7 @@ const wait = ms => new Promise(r => setTimeout(r, ms)); const errs = [];
 const b = await chromium.launch(); const T = 'tp' + Date.now() % 100000;
 const dctx = await b.newContext({ viewport: { width: 1280, height: 800 } }); await mock(dctx); const M = await dctx.newPage(); M.on('pageerror', e => errs.push('desk: ' + e.message));
 await M.goto('http://localhost:8090/?t=' + T); await M.fill('#welcomename', 'Ben'); await M.click('text=Join the table'); await M.waitForFunction(() => KT.me && KT.me(), null, { timeout: 20000 });
-await M.click('#top >> text=Decks'); await M.setInputFiles('#importfile', 'test/deck.csv'); await M.waitForSelector('text=Imported'); await M.click('text=Play this deck'); await wait(700);
+await M.evaluate(() => KT.openDecks()); await M.setInputFiles('#importfile', 'test/deck.csv'); await M.waitForSelector('text=Imported'); await M.click('text=Play this deck'); await wait(700);
 await M.evaluate(() => { KT.openingHand(); KT.keep(); });
 await M.click('#top button:has-text("Phone")');
 const png = PNG.sync.read(await M.locator('.qr').screenshot()); const url = jsQR(new Uint8ClampedArray(png.data), png.width, png.height).data;

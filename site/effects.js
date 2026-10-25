@@ -87,7 +87,12 @@
     let optional = false, ifDid = false, m;
     if ((m = s.match(/^if you do,? (.+)$/))) { ifDid = true; s = m[1]; }
     if ((m = s.match(/^you may (.+)$/))) { optional = true; s = m[1]; }
+    s = s.replace(/^you put /, 'put ');   // "You put a -1/-1 counter on …" (Persistent Constrictor)
     const wrap = op => op && Object.assign(op, optional ? { optional: true } : {}, ifDid ? { ifDid: true } : {}, op.op !== 'manual' && !op.src ? { src: raw.trim().replace(/\.$/, '').replace(/^./, x => x.toUpperCase()) } : {});
+    if ((m = s.match(/^adapt (\d+)$/))) return [wrap({ op: 'if', cond: 'this has no +1/+1 counters on it', ops: [{ op: 'counters', n: +m[1], kind: '+1/+1', on: { k: 'self' } }] })];   // 702.140
+    if ((m = s.match(/^untap (that land|that creature|that permanent|it)$/))) return [wrap({ op: 'untap', what: { k: 'ev' } })];
+    if ((m = s.match(/^exchange control of two target ([a-z ]+?)s$/))) { const what = { k: 't', n: 2, upTo: false, what: m[1], i: st.ti++ }; return [wrap({ op: 'exchange', what })]; }
+    if (/^each player's life total becomes the lowest life total among all players$/.test(s)) return [wrap({ op: 'setLife', who: { k: 'eachPlayer' }, n: { v: 'lowestLife' } })];
     // Subject + verb.
     let subj = { k: 'you' }, body = s;
     const sm = s.match(/^(you|each opponent|each player|each other player|target player|target opponent|that player|they|its controller|its owner|that creature's controller|enchanted creature's controller|defending player|the defending player|that opponent) (.+)$/);
@@ -259,6 +264,7 @@
     if ((m = s.match(/^return (this|it) from your graveyard to your hand$/))) return [wrap({ op: 'move', what: obj(m[1]), to: 'hand' })];
     if ((m = s.match(/^put (.+?) onto the battlefield( tapped)?(?: under your control)?$/)) && !/from your hand|from among|library/.test(m[1])) { const what = targetOf(m[1], st); if (what) return [wrap({ op: 'move', what, to: 'battlefield', tapped: !!m[2], control: 'you' })]; }
     if ((m = s.match(/^counter (target .+)$/))) return [wrap({ op: 'counterSpell', what: targetOf(m[1], st) })];
+    if (/^counter (?:that spell|it)$/.test(s)) return [wrap({ op: 'counterSpell', what: { k: 'ev' } })];   // "…, counter that spell instead" (Stubborn Denial)
     if ((m = s.match(/^(.+?) fights? (.+)$/))) { const a = targetOf(m[1], st), b = targetOf(m[2], st); if (a && b) return [wrap({ op: 'fight', a, b })]; }
     if (/^transform (this|it)$/.test(s)) return [wrap({ op: 'transform', what: { k: 'self' } })];
     // Library.

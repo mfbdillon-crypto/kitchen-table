@@ -5,7 +5,7 @@ const b = await chromium.launch(); const ctx = await b.newContext({ viewport: { 
 const wait = ms => new Promise(r => setTimeout(r, ms));
 await p.goto('http://localhost:8090/?t=cmd2x' + Date.now()%10000); await p.fill('#welcomename', 'M'); await p.click('text=Join the table');
 await p.waitForFunction(() => KT.me && KT.me(), null, { timeout: 20000 });
-await p.click('#top >> text=Decks'); await p.setInputFiles('#importfile', 'test/deck.csv'); await p.waitForSelector('text=Imported');
+await p.evaluate(() => KT.openDecks()); await p.setInputFiles('#importfile', 'test/deck.csv'); await p.waitForSelector('text=Imported');
 console.log('decks after import', await p.evaluate(() => KT.decks().map(d => d.name + ':' + d.cards.filter(c => c.cmdr).map(c => c.d.n))));
 await p.click('.dline:has-text("Alesha") .star');
 console.log('after star', await p.evaluate(() => KT.decks().map(d => d.cards.filter(c => /Alesha/.test(c.d.n)).map(c => c.qty + (c.cmdr ? 'C' : '')))));

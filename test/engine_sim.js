@@ -61,6 +61,9 @@ function answerAsks() {
   for (const ask of (s.ask || []).slice()) {
     stats.asks[ask.kind] = (stats.asks[ask.kind] || 0) + 1;
     if (ask.kind === 'manual') { stats.manual++; if (process.env.MANUAL) console.log('MANUAL', ask.name, '::', ask.text.join(' | ')); act(ask.pid, { type: 'answer', id: ask.id }); continue; }
+    if (ask.kind === 'cmdrZone') { act(ask.pid, { type: 'answer', id: ask.id, command: rnd() < 0.8 }); continue; }
+    if (ask.kind === 'punisher') { act(ask.pid, { type: 'answer', id: ask.id, yes: rnd() < 0.5 }); continue; }
+    if (ask.kind === 'payLife') { act(ask.pid, { type: 'answer', id: ask.id, ids: [] }); continue; }
     if (ask.kind === 'may') { act(ask.pid, { type: 'answer', id: ask.id, yes: rnd() < 0.8 }); continue; }
     if (ask.kind === 'order') { act(ask.pid, { type: 'answer', id: ask.id, order: shuffle(ask.items.map(x => x.id)) }); continue; }
     if (ask.kind === 'modes') { act(ask.pid, { type: 'answer', id: ask.id, modes: shuffle([...Array(ask.modes.length).keys()]).slice(0, ask.min) }); continue; }

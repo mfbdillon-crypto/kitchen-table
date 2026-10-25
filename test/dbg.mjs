@@ -4,7 +4,7 @@ const require = createRequire(import.meta.url); const mock = require('./mock.js'
 const browser = await chromium.launch(); const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } }); await mock(ctx); const page = await ctx.newPage();
 await page.goto('http://localhost:8090/?t=dbg'); await page.fill('#welcomename', 'M'); await page.click('text=Join the table');
 await page.waitForFunction(() => KT.me && KT.me(), null, { timeout: 20000 });
-await page.click('#top >> text=Decks'); await page.setInputFiles('#importfile', 'test/deck.csv'); await page.waitForSelector('text=Imported'); await page.click('text=Play this deck');
+await page.evaluate(() => KT.openDecks()); await page.setInputFiles('#importfile', 'test/deck.csv'); await page.waitForSelector('text=Imported'); await page.click('text=Play this deck');
 await new Promise(r=>setTimeout(r,800)); await page.evaluate(()=>{KT.openingHand(); KT.keep();}); await new Promise(r=>setTimeout(r,500));
 const vis = () => page.evaluate(() => !document.getElementById('preview').hidden);
 console.log('start', await vis());

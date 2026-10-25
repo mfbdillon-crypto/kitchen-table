@@ -5,7 +5,7 @@ const b = await chromium.launch(); const ctx = await b.newContext({ viewport: { 
 page.on('pageerror', e => console.log('PAGEERROR', e.message));
 await page.goto('http://localhost:8090/?t=pv'); await page.fill('#welcomename', 'M'); await page.click('text=Join the table');
 await page.waitForFunction(() => KT.me && KT.me(), null, { timeout: 20000 });
-await page.click('#top >> text=Decks'); await page.setInputFiles('#importfile', 'test/deck.csv'); await page.waitForSelector('text=Imported'); await page.click('text=Play this deck');
+await page.evaluate(() => KT.openDecks()); await page.setInputFiles('#importfile', 'test/deck.csv'); await page.waitForSelector('text=Imported'); await page.click('text=Play this deck');
 await new Promise(r=>setTimeout(r,800)); await page.evaluate(()=>{KT.openingHand(); KT.keep();}); await new Promise(r=>setTimeout(r,500));
 const st = () => page.evaluate(() => { const p = document.getElementById('preview'); return (p.hidden ? 'hidden' : 'SHOWN') + ' ' + p.style.transform; });
 const card = await page.locator('#hand .card').nth(1).boundingBox();

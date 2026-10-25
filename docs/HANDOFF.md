@@ -7,13 +7,31 @@
 - Still true: joining after Start is refused (the phone can only watch). If the user still can't connect, check that first.
 - Older browser tests (views, decks_ui, ux_fixes, table_strict, ui_stack, counters, looks) time out because of the changed menus; phone.mjs has been fixed, the rest still need updating.
 
+## Since 15:00 (v8.7)
+- **Browser tests:** all repaired and passing (views, decks_ui, ux_fixes, table_strict, ui_stack, counters, looks, v6_ui, cardtrack, cmd2, phone_strict, prints, twophones, wronghand).
+  - `KT.openDecks()` opens the deck window; tests use it instead of the removed Decks button.
+  - Tests that use the 86-card mock deck set the house rule `deckSize: 0` before Start.
+- **Free casts need a grant:** `Rulebook.freeGrant`. A free cast is allowed only for:
+  - a pending cascade or freeCast todo;
+  - a step left to finish by hand;
+  - a 'free' way such as plot;
+  - dev mode.
+- **Plot timing:** plotted cards are cast at sorcery speed (`a.sorceryTiming`).
+- **Pre-game permanents** (ctlT 0) are not summoning sick.
+- **Spell lines:** a later line's "that creature" / "that spell" points at the earlier target (Dispatch, Stubborn Denial). "Counter that spell" works.
+- **New conditions:** hand-size (hellbent) and "has no X counters".
+- **New effects:** adapt, "untap that land", exchange control, lowest life total, "You put …".
+- **Manual clauses:** 99 left (`node tools/manual_cov.js`). They are mostly one-off cards.
+- **engine_sim** now answers the cmdrZone, punisher and payLife asks.
+- **AI levels (54 games each):** hard 28–25 easy, hard 30–21 normal. Hard still wins, but the gap with easy looks smaller than before v8 (34–20). That may be noise; re-run before tuning.
+
 ## Since 11:05
 - v8.5 is live (724f27b): house rules window, lobby name/join rows, deck window order, AI deck picker, mulligan in the hand bar, simpler menus, Split log on top 30%, tab order, myriad/Selvala fixes.
 - The aibrain.js incomingNext multiplayer estimate was changed after v8.5. It's committed but not deployed.
 - The 4-player AI sweep is clean: no errors or stalls. Games last about 40 turns (≈10 rounds), which is normal.
 
 ## Where things stand
-- Live and test sites both run **v8.4 (commit 9bd3d19)**.
+- Live and test sites both run **v8.7** (see version.txt).
   - Live: starlit-conkies-c2facb.netlify.app (siteId 12ee5b76-1741-480c-8f66-9a4f87d4af69)
   - Test: joyful-rabanadas-f66e6c.netlify.app (siteId 5236eb56-b402-43c4-a92f-1aac62cc691d)
 - The engine revision (docs/ENGINE_REVISION_PLAN.md) is built: stages 1–4 plus the follow-up mechanics.
@@ -53,9 +71,8 @@
 9. **Tabs:** order them "My board", then "Current turn", then the others.
 
 ## Known gaps / next work
-- About 110 rarer card clauses are still handled "by hand" — run `node tools/manual_cov.js` to list them.
-- The cast permission check trusts `alt: 'free'` from devices: an effect-driven cast skips the permission check. Tighten this with a pending-grant list.
-- Plotted cards can be cast at instant speed (they should be sorcery-speed).
+- About 99 rarer card clauses are still handled "by hand" — run `node tools/manual_cov.js` to list them.
+- Cascade/discover hits are checked only against a pending grant, not the exact card (the hit is private to the device).
 - Rewind only restores public state.
 - AI levels last measured (before v8): hard 34–20 easy, hard 34–18 normal. Re-measure with `tools/levels.sh hard easy`.
 

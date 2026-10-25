@@ -454,6 +454,10 @@
     if ((m = c.match(/^(?:it|this) has (\w+) or more ([+\-\d/]+|[a-z]+) counters on (?:it|this)$/)) || (m = c.match(/^there are (\w+) or more ([+\-\d/]+|[a-z]+) counters on (?:it|this)$/))) { const n = num(m[1]) || 0; return (((src.counters || {})[m[2]]) || 0) >= n; }
     if ((m = c.match(/^you control exactly (\w+) permanents$/))) return Object.values(s.cards).filter(x => x.zone === 'battlefield' && x.ctrl === me).length === (num(m[1]) || 0);
     if (/^you cast it$/.test(c)) return !!src.wasCast;
+    if ((m = c.match(/^(?:it|this) has no ([+\-\d/]+|[a-z]+) counters on (?:it|this)$/))) return !((src.counters || {})[m[1]] > 0);
+    if (/^you have no cards in hand$/.test(c)) return ((s.players[me] || {}).handCount || 0) === 0;   // hellbent
+    if ((m = c.match(/^you have (\w+) or fewer cards in hand$/))) return ((s.players[me] || {}).handCount || 0) <= (num(m[1]) || 0);
+    if ((m = c.match(/^you have (\w+) or more cards in hand$/))) return ((s.players[me] || {}).handCount || 0) >= (num(m[1]) || 0);
     if ((m = c.match(/^you control an? ([a-z ]+)$/)) && !/ with /.test(m[1])) return Object.values(s.cards).some(x => x.zone === 'battlefield' && x.ctrl === me && C().matchesWhat(x, m[1]));
     if (/^you have the initiative$/.test(c)) return (s.table || {}).initiative === me;
     if ((m = c.match(/^you gained (\w+) or more life this turn$/))) return ((st.gained || {})[me] || 0) >= (num(m[1]) || 0);

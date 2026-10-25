@@ -804,6 +804,7 @@
           order.sort((x, y) => (alive(s, x) ? 0 : 1) - (alive(s, y) ? 0 : 1));
           s.seats = order;
           s.turn = { active: order[0], phase: 1, n: 1, first: order[0], lands: {}, starts: { [order[0]]: 1 }, goal: 'main1', mulls: true };
+          for (const c of Object.values(s.cards)) if (c.zone === 'battlefield') c.ctlT = 0;   // already in play when the game began: not summoning sick
           for (const p of order) if (s.players[p]) { s.players[p].kept = false; s.players[p].life = (s.house && s.house.life) || START_LIFE; }
           return done(`randomized the turn order: ${order.map(x => nameOf(s, x)).join(' → ')}. ${nameOf(s, order[0])} goes first.`);
         }
@@ -1443,7 +1444,7 @@
   // Summoning sickness (302.6): it came under this player's control this turn.
   // A creature can attack or use {T} only if its controller has controlled it since their most recent turn began.
   function sick(s, c) {
-    if (c.ctlT == null || !s.turn || !s.turn.active) return false;
+    if (c.ctlT == null || c.ctlT === 0 || !s.turn || !s.turn.active) return false;   // 0: in play since before the game began
     const start = s.turn.starts && s.turn.starts[c.ctrl];
     return !(start != null && c.ctlT < start);
   }
@@ -1494,8 +1495,8 @@
     // 103.5: nothing is cast or played until every player has kept an opening hand.
     if (a && a.cast && mulligansPending(s)) return 'Wait until every player has kept their opening hand (103.5).';
     // Where it's cast from (601.3): the rulebook knows every permission and restriction (flashback, Muldrotha, Grafdigger's Cage…).
-    if (RB && a && a.cast && !c.faceDown) { const zone = c.zone && c.zone !== 'limbo' ? c.zone : (a.from || 'hand'); const a2 = Object.assign({}, a, { fromZone: zone }); const err = RB.castBlock(s, pid, Object.assign({}, c, { zone, owner: c.owner || pid, ctrl: pid }), a2); if (err) return err; if (a2.perm && !a.perm) a.perm = a2.perm; }
-    if (C && a && a.cast && a.alt !== 'free' && !c.faceDown && !C.instantSpeed(c) && !isType(c, 'land') && !(RB && RB.flash(s, pid, Object.assign({ zone: c.zone && c.zone !== 'limbo' ? c.zone : (a.from || 'hand') }, c)))) {   // cast during an effect (cascade): no timing check (608.2g)
+    if (RB && a && a.cast && !c.faceDown) { const zone = c.zone && c.zone !== 'limbo' ? c.zone : (a.from || 'hand'); const a2 = Object.assign({}, a, { fromZone: zone }); const err = RB.castBlock(s, pid, Object.assign({}, c, { zone, owner: c.owner || pid, ctrl: pid }), a2); if (err) return err; if (a2.perm && !a.perm) a.perm = a2.perm; if (a2.sorceryTiming) a.sorceryTiming = true; }
+    if (C && a && a.cast && (a.alt !== 'free' || a.sorceryTiming) && !c.faceDown && !C.instantSpeed(c) && !isType(c, 'land') && !(RB && RB.flash(s, pid, Object.assign({ zone: c.zone && c.zone !== 'limbo' ? c.zone : (a.from || 'hand') }, c)))) {   // cast during an effect (cascade): no timing check (608.2g)
       if (s.turn.active && s.turn.active !== pid) return `${cardName(c)} isn’t an instant and doesn’t have flash, so you can cast it only during your own turn (307.1).`;
       if (s.turn.active && !/^Main/.test(PHASES[s.turn.phase])) return `${cardName(c)} can be cast only in one of your main phases (307.1).`;
       if (stackCards(s).length) return `${cardName(c)} can be cast only while the stack is empty (307.1).`;

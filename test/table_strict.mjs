@@ -18,8 +18,8 @@ for (const name of ['Marissa', 'Alex', 'Sam', 'Jo']) {
 const [A, B, C, D] = players;
 await wait(800);
 console.log('D sees seats:', await D.p.evaluate(() => KT.S.seats.map(x => KT.S.players[x].name).join(', ')));
-for (const P of [A, B]) {
-  await P.p.click('#top >> text=Decks'); await P.p.setInputFiles('#importfile', 'test/deck.csv'); await P.p.waitForSelector('text=Imported');
+for (const P of [A, B, C, D]) {
+  await P.p.evaluate(() => KT.openDecks()); await P.p.setInputFiles('#importfile', 'test/deck.csv'); await P.p.waitForSelector('text=Imported');
   await P.p.click('.dline:has-text("Alesha") .star'); await P.p.click('text=Play this deck'); await wait(1000);
 }
 await A.p.click('text=Start game'); await wait(800);
@@ -30,7 +30,7 @@ const t1 = Date.now(); await B.p.evaluate(() => KT.act({ type: 'player', patch: 
 await D.p.waitForFunction(() => Object.values(KT.S.players).some(p => p.life === 33), null, { timeout: 10000 });
 console.log('life change reached Jo in', Date.now() - t1, 'ms');
 // sleeve + playmat (big pictures) reach other players
-await B.p.click('#top >> text=Decks'); await B.p.setInputFiles('#matfile', 'test/mat.jpg'); await B.p.click('text=Save playmat'); await wait(300); await B.p.click('.modal .x');
+await B.p.evaluate(() => KT.openDecks()); await B.p.setInputFiles('#matfile', 'test/mat.jpg'); await B.p.click('text=Save playmat'); await wait(300); await B.p.click('.modal .x');
 await C.p.waitForFunction(() => Object.values(KT.table.sleeves).some(v => v && v.mat), null, { timeout: 20000 }).then(() => console.log('playmat reached Sam: true')).catch(() => console.log('playmat reached Sam: FALSE'));
 // host leaves -> someone takes over
 const hostName = (await Promise.all(players.map(async P => [P.name, await P.p.evaluate(() => KT.status)]))).find(x => x[1] === 'host')[0];
