@@ -1020,12 +1020,13 @@
     let cards = [], hits = [];
     if (t.until) { const want = Math.max(1, t.count || 1); for (const c of library) { cards.push(c); if (matchesWhat(asCard(c), t.until)) { hits.push(c.id); if (hits.length >= want) break; } } }
     else cards = library.slice(0, Math.max(0, t.n | 0));
-    const R0 = t.routes || [];
+    const R0 = (t.routes || []).map(r => Object.assign({}, r, { used: 0 }));
     const plan = cards.map(c => {
       let d = null;
       if (t.until) { const hr = R0.find(r => r.hit) || R0.find(r => !r.if && !r.else); if (hits.includes(c.id)) d = hr || null; else d = t.rest || null; }
       else {
-        const byIf = R0.find(r => r.if && matchesWhat(asCard(c), r.if.replace(/ cards?$/, '')));
+        const byIf = R0.find(r => r.if && matchesWhat(asCard(c), r.if.replace(/ cards?$/, '')) && !(r.limit && (r.used = r.used || 0) >= r.limit) && (r.limit ? (r.used = (r.used || 0) + 1) : true))
+          || R0.find(r => r.limit && !r.if && !(r.used >= r.limit) && (r.used = (r.used || 0) + 1));
         d = byIf || (R0.some(r => r.if) ? R0.find(r => r.else) : null) || R0.find(r => !r.if && !r.else && !r.hit) || t.rest || null;
         if (!d && R0.some(r => r.if) && t.rest) d = t.rest;
       }

@@ -8,6 +8,61 @@
 - Older browser tests (views, decks_ui, ux_fixes, table_strict, ui_stack, counters, looks) time out because of the changed menus; phone.mjs has been fixed, the rest still need updating.
 
 
+## Card mechanics pass (v9.1, 2026-10-25 night) — NEXT: fresh-agent playtest in the morning
+**Asked for (10 questions answered):**
+- dev-mode test of every precon card on a full table;
+- choices split into parts;
+- pay-as-much pickers;
+- a reveal window with if/then/or routing;
+- moving counters;
+- restrictions (Muldrotha) explained;
+- phone-hand rows for cards playable from elsewhere;
+- update the sheets.
+
+The user will test with a fresh agent in the morning.
+
+**Tools:**
+- `node tools/cardplay.js [--deck N] [--card "Name"] [--verbose]` plays every precon card on a full table.
+  - The table: the tester has lands, creatures, an artifact, an Aura, and cards in the graveyard and exile; the opponent has creatures, an artifact, an enchantment, a land, a planeswalker and graveyard cards; one combat is in progress.
+  - Each ability is used with legal targets, and the result is compared with the table before.
+  - It lists: by-hand, no-effect, no-target, not-offered, static?.
+  - At the start: 221 of 1150 cards had something open. Now: 133 (91 by-hand clauses, 29 statics, 10 not-offered — mostly channel lands and class levels).
+- `tools/cardcheck.js`: a quicker read-only check.
+
+**Built:**
+- **Activation costs** (`Cards.costPart` / `costPool`): return lands, untap or tap creatures, remove or put counters, exile from the graveyard, discard N, sacrifice N, life by colour identity. The UI asks for each choice; the server pays (`ab.extra`, `a.costs`). The AI skips abilities with costs it has to choose.
+- **Hand abilities** (`Cards.handAbilities`, action `handAb`, `G.handAbility`): cycling, landcycling, typecycling, channel, "{N}, Discard this:".
+- **"Your choice of …"**: op `choiceOf`. `Engine.hold` asks the controller (ask `pick`, button bar); the AI picks (`aiPick`).
+- **Number picker** (`askCount`): X, multikicker and replicate, showing the most you can afford. `c.kicks`; replicate copies.
+- **Reveal and route**:
+  - Effects pre-pass `routeStart` / `routeBuild` → op `route` → todo `route` → `Cards.routePlan` → `routeModal` (quarter window) → `G.routeApply`.
+  - "Mill N. You may put X from among them…" is a route too. The AI follows the routes.
+- **Moving counters**: op `moveCounters`; the source target needs the counter (`flags.counter`).
+- **Restrictions**: `Rulebook.why` explains used-up Muldrotha types; graveyard and exile cards get a hover title with the reason. "Target spell or nonland permanent" now targets permanents too.
+- **Phone hand**: rows below the hand. The host computes `phoneElsewhere()`; the phone shows bright-green "Castable through X" or the keyword line (Flashback {4}{R}). Tap a card to cast or play it, or to use the ability (`playElsewhereFromPhone`, `activateFromPhone`, `phonePicks`).
+- **Statics**:
+  - can't be countered; trigger doubling (modern "entering" wording, Veyran, chosen type, Shaman/Wizard);
+  - extra land types; any-colour mana; triple mana; granted quoted abilities; control Auras;
+  - legend-rule exception; unpreventable combat damage; flying-only attacks; skip draw step; dredge;
+  - cost reductions — "this costs {X} less" never matched before.
+- **Parsing**:
+  - flavour-named ability lines ("Eternity Gate — …") are read;
+  - spell back-references ("that creature" after a target) apply to every spell;
+  - "Search …, put it into your hand, shuffle".
+- **New effects**: populate, goad, counter all other spells, a random graveyard card to hand, shuffle hand and graveyard, N target players each…
+- **Tests:**
+  - test/build4.test.js (unit);
+  - test/mechanics_ui.mjs (dev-mode browser spot check: cycling, choice bar, X picker, reveal window, return-a-land cost, Muldrotha and the hover reason);
+  - test/phone_elsewhere.mjs.
+
+**Still open (from cardplay.js):**
+- Channel-land and Class-level abilities in the "not offered" list are false alarms.
+- ~90 one-off clauses: votes, piles, phasing, "when that creature dies this turn", divided damage, cast-from-among, Myriad-style copies…
+- Statics: Hideaway, fabricate grant, ripple, demonstrate, "double all damage of the chosen type", "monarch controls enchanted creature".
+- Searches with ", where X is …" before "Reveal those cards".
+- The AI doesn't use cycling or channel, or the new choice costs (return lands, untap creatures).
+- Game 1's open AI items, further down, are still open.
+
 ## Combat window (v9.0, 20:10)
 - **Where:** `combatBar()` in ui.js now draws a centred panel, `.cpanel`, about a quarter of the screen.
 - **Attacking:** the opponents are evenly spaced tabs across the top, with each one's own colour, life and attacker count. Planeswalkers and battles appear as chips below. All of your creatures are shown; clicking one sends it at the current tab, or moves it there from another tab. Creatures that can't attack are dimmed, with the reason.
@@ -90,7 +145,7 @@ The agent prompt is in this session's history (the "Play one game as human vs AI
 - The 4-player AI sweep is clean: no errors or stalls. Games last about 40 turns (≈10 rounds), which is normal.
 
 ## Where things stand
-- Live and test sites both run **v9.0** (see version.txt).
+- Live and test sites both run **v9.1** (see version.txt).
   - Live: starlit-conkies-c2facb.netlify.app (siteId 12ee5b76-1741-480c-8f66-9a4f87d4af69)
   - Test: joyful-rabanadas-f66e6c.netlify.app (siteId 5236eb56-b402-43c4-a92f-1aac62cc691d)
 - The engine revision (docs/ENGINE_REVISION_PLAN.md) is built: stages 1–4 plus the follow-up mechanics.

@@ -468,6 +468,9 @@
     if ((m = c.match(/^you control exactly (\w+) permanents$/))) return Object.values(s.cards).filter(x => x.zone === 'battlefield' && x.ctrl === me).length === (num(m[1]) || 0);
     if (/^you cast it$/.test(c)) return !!src.wasCast;
     if ((m = c.match(/^(?:it|this) has no ([+\-\d/]+|[a-z]+) counters on (?:it|this)$/))) return !((src.counters || {})[m[1]] > 0);
+    if ((m = c.match(/^there are no ([+\-\d/]+|[a-z]+) counters on (?:it|this)$/))) return !((src.counters || {})[m[1]] > 0);
+    if ((m = c.match(/^(?:this|it) has an? ([+\-\d/]+|[a-z]+) counter on it$/))) return ((src.counters || {})[m[1]] || 0) > 0;
+    if ((m = c.match(/^an opponent has (\w+) or more cards in their graveyard$/))) return (s.seats || []).some(p => p !== me && Object.values(s.cards).filter(x => x.zone === 'graveyard' && x.owner === p).length >= (num(m[1]) || 0));
     if (/^you have no cards in hand$/.test(c)) return ((s.players[me] || {}).handCount || 0) === 0;   // hellbent
     if ((m = c.match(/^you have (\w+) or fewer cards in hand$/))) return ((s.players[me] || {}).handCount || 0) <= (num(m[1]) || 0);
     if ((m = c.match(/^you have (\w+) or more cards in hand$/))) return ((s.players[me] || {}).handCount || 0) >= (num(m[1]) || 0);

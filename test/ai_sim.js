@@ -88,6 +88,7 @@ async function game(gi) {
     cascadeDecline: id => { const c = take(P[p].hand, [id])[0]; if (c) P[p].lib.push(c); },
     impulse: t => { const cs = P[p].lib.splice(0, Math.max(1, t.n || 1)); if (cs.length) act(p, { type: 'enter', zone: 'exile', from: 'library', cards: cs, mayPlay: { until: t.until, from: t.from } }); return cs.map(c => c.id); },
     handToTop: ids => { const cs = take(P[p].hand, ids); P[p].lib.unshift(...cs); },
+    handToLib: () => { const cs = P[p].hand.splice(0); P[p].lib.push(...cs); for (let i = P[p].lib.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [P[p].lib[i], P[p].lib[j]] = [P[p].lib[j], P[p].lib[i]]; } },
     routePlan: t => Cards.routePlan(t, P[p].lib, p),
     routeApply: (t, dec) => { const by = to => dec.filter(x => x.to === to).map(x => x.id); const bot = take(P[p].lib, by('bottom')); P[p].lib.push(...bot); const hd = take(P[p].lib, by('hand')); P[p].hand.push(...hd);
       for (const [z, tapped] of [['battlefield', false], ['battlefield', true], ['graveyard', false], ['exile', false]]) { const ids = dec.filter(x => x.to === z && !!x.tapped === tapped).map(x => x.id); const cs = take(P[p].lib, ids); if (cs.length) act(p, { type: 'enter', zone: z, from: 'library', cards: cs, tapped }); } },

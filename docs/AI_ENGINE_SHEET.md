@@ -11,6 +11,7 @@
 | `choose` | “As this enters, choose a color / creature type / player” | `{ value: "white" \| "Dragon" \| playerId }` | brain.answerAsk → choose |
 | `enterOpt` | “Pay 2 life or it enters tapped” / “reveal a card or it enters tapped” | `{ yes: true\|false }` | brain.answerAsk → enterOpt |
 | `legend` | Legend rule: keep one of my same-name legends (704.5j) | `{ keep: cardId }` | brain.answerAsk → legend |
+| `pick` | “Your choice of …” (flying, vigilance or trample; a +1/+1, flying or lifelink counter): pick one before it resolves (608.2d) | `{ value: index }` | engine picks for AI seats (aiPick: best keyword, +1/+1 counters high) |
 | `cmdrZone` | My commander went to a graveyard/exile (or would go to my hand/library): command zone or not (903.9) | `{ command: true\|false }` | brain.answerAsk → cmdrZone (AI seats decide at once: always the command zone) |
 | `punisher` | Combustible Gearhulk: let its controller draw N cards, or take damage from N milled cards | `{ yes: true\|false } (true = they draw)` | brain.answerAsk → punisher (AI seats decide at once) |
 | `payLife` | Killing Wave: pay N life for each of my creatures I keep; the rest are sacrificed | `{ ids: [cardId, …] } (creatures to keep)` | brain.answerAsk → payLife (AI seats are decided at resolution) |
@@ -39,6 +40,8 @@
 | `search` | Search the library for a card | executor.onTodo → missing combo piece, key card, needed color |
 | `cascade` | Cascade / discover N: reveal and maybe cast free (discover: or put it into my hand) | executor.onTodo → cast it unless it has no good target |
 | `sacSearch` | Scapeshift: sacrifice any number of lands, then search for that many land cards (onto the battlefield tapped) | executor.onTodo → sacrifice every land, fetch the best ones |
+| `route` | Reveal / exile / look at the top of my library and put each card where the card says (if it’s a land … otherwise …); where it doesn’t say, the player chooses | executor.onTodo → Cards.routePlan, then lands to the battlefield if allowed, else hand |
+| `handToLibrary` | Shuffle my whole hand into my library (Timetwister-style, Midnight Clock) | executor.onTodo → io.handToLib |
 | `freeCast` | You may cast a spell (of a kind, up to a mana value) from your hand or graveyard without paying its mana cost | executor.onTodo → best castable fit, cast with alt free |
 | `impulse` | Exile the top N cards; I may play them this turn / until the end of my next turn (Riku, Jeska’s Will) | executor.onTodo → io.impulse; the plan then casts or plays them from exile |
 | `handToTop` | Put N cards from my hand on top of my library (Brainstorm) | executor.onTodo → brain.worstCards |

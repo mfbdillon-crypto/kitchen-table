@@ -1208,6 +1208,14 @@
           const att = {}, names = [], defs = new Set();
           // "Attacks that player this turn if able" (encore, 508.1d): added if it was left out and can attack.
           a = Object.assign({}, a, { list: (a.list || []).slice(0, 80) });
+          // Goaded (701.38): attacks each combat if able, a player other than the goading player if able — until the goader's next turn.
+          for (const c of Object.values(s.cards)) {
+            const g = c.goaded; if (!g || c.zone !== 'battlefield' || c.ctrl !== pid || c.tapped || a.list.some(it => it && it.id === c.id)) continue;
+            if (s.turn.active === g.by && s.turn.n > g.n) { c.goaded = null; continue; }
+            if (sick(s, c) && !(C && C.has(c, 'haste', s))) continue;
+            const opp = s.seats.filter(p => p !== pid && s.players[p] && !s.players[p].lost); const tgt = opp.find(p => p !== g.by) || opp[0];
+            if (tgt) a.list.push({ id: c.id, p: tgt });
+          }
           for (const c of Object.values(s.cards)) if (c.zone === 'battlefield' && c.ctrl === pid && c.mustAttack && !c.tapped && !a.list.some(it => it && it.id === c.id) && s.players[c.mustAttack] && !s.players[c.mustAttack].lost && (!sick(s, c) || (C && C.has(c, 'haste', s)))) a.list.push({ id: c.id, p: c.mustAttack });
           for (const it of a.list) {
             const c = s.cards[it && it.id];

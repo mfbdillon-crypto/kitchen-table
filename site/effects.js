@@ -95,6 +95,12 @@
       const from = targetOf(m[3], st), to = targetOf(m[4], st);
       if (from && to) return [wrap({ op: 'moveCounters', n: m[1] === 'all' || m[1] === 'any number of' ? 'all' : (amt(m[1]) || 1), kind: m[2] ? m[2].trim() : 'any', from, to })];
     }
+    if ((m = s.match(/^goad (.+)$/))) { const what = targetOf(m[1], st); if (what) return [wrap({ op: 'goad', what })]; }   // 701.38
+    if (/^populate$/.test(s)) return [wrap({ op: 'populate' })];   // 701.36: copy a creature token you control
+    if ((m = s.match(/^(two|three|four) target players each (.+)$/))) { const sub = parse(`target player ${m[2].replace(/^draw /, 'draws ').replace(/^lose /, 'loses ').replace(/^gain /, 'gains ')}.`, null, st).ops; if (sub.length && sub.every(o => o.op !== 'manual')) { for (const o of sub) for (const k of ['who', 'what']) if (o[k] && o[k].k === 't') o[k].n = amt(m[1]); return sub.map(wrap); } }
+    if (/^counter all other spells$/.test(s)) return [wrap({ op: 'counterAll' })];
+    if ((m = s.match(/^return an? ([a-z ]+?) card at random from your graveyard to your hand$/))) return [wrap({ op: 'randomGy', what: m[1] })];
+    if (/^shuffle your hand and graveyard into your library$/.test(s)) return [wrap({ op: 'shuffleHandGy' })];
     if ((m = s.match(/^adapt (\d+)$/))) return [wrap({ op: 'if', cond: 'this has no +1/+1 counters on it', ops: [{ op: 'counters', n: +m[1], kind: '+1/+1', on: { k: 'self' } }] })];   // 702.140
     // "Your choice of …" (608.2d): the controller picks one option as it resolves — one bar of buttons, the AI picks for itself.
     if ((m = s.match(/^(.+?) (gains?|has|have) your choice of (.+?)( until end of turn| until your next turn)?$/))) {
@@ -288,10 +294,10 @@
     if (/^search your library for two cards$/.test(s)) { st.pendingSearch = 'card'; return []; }
     if (st.pendingSearch && /^put one into your hand and the other into your graveyard$/.test(s)) { const f = st.pendingSearch; st.pendingSearch = null; return [wrap({ op: 'search', n: 2, upTo: true, filter: f, dest: 'hand', splitGy: true })]; }
     if ((m = s.match(/^search your library for an? ([a-z ]+?) card, reveal it, put it into your hand or graveyard(?:, then shuffle)?$/))) return [wrap({ op: 'search', n: 1, filter: m[1], dest: 'handOrGy' })];
-    if ((m = s.match(/^search your library for (up to )?(an?|one|two|three|four|five|\w+) (.+?) cards?( with [^,]+)?, (?:reveal (?:it|them|that card|those cards), )?(?:and )?put (?:it|them|that card|those cards|one of them|one) (into your hand|onto the battlefield)( tapped)?(?:(?: and the other| and the rest) into your hand)?(?:, then shuffle)?$/))) {
+    if ((m = s.match(/^search your library for (up to )?(an?|one|two|three|four|five|\w+) (?:(.+?) )?cards?( with [^,]+)?, (?:reveal (?:it|them|that card|those cards), )?(?:and )?put (?:it|them|that card|those cards|one of them|one) (into your hand|onto the battlefield)( tapped)?(?:(?: and the other| and the rest) into your hand)?(?:, (?:then )?shuffle)?$/))) {
       // "with mana value 3 or less" / "with mana cost {0} or {1}": the most it may cost.
       const w = m[4] || '', mv = w.match(/mana value (\d+) or less/) || w.match(/mana cost \{(\d)\}(?: or \{(\d)\})?/);
-      return [wrap({ op: 'search', n: amt(m[2]) || 1, upTo: !!m[1], filter: m[3], mvMax: mv ? Math.max(+mv[1], +(mv[2] || 0)) : undefined, dest: /hand/.test(m[5]) ? 'hand' : 'battlefield', tapped: !!m[6], split: /the other into your hand/.test(s) })];
+      return [wrap({ op: 'search', n: amt(m[2]) || 1, upTo: !!m[1], filter: m[3] || 'card', mvMax: mv ? Math.max(+mv[1], +(mv[2] || 0)) : undefined, dest: /hand/.test(m[5]) ? 'hand' : 'battlefield', tapped: !!m[6], split: /the other into your hand/.test(s) })];
     }
     if ((m = s.match(/^look at the top (\w+) cards? of your library/))) return [wrap({ op: 'look', n: amt(m[1]), text: raw })];
     if ((m = s.match(/^reveal the top (\w+) cards? of your library/))) return [wrap({ op: 'look', n: amt(m[1]), reveal: true, text: raw })];
@@ -451,7 +457,7 @@
     // player chooses whether to pay; if they don't, the rest happens.
     const t2 = t1c.replace(/\b(that player|its controller|they|that opponent) may pay ((?:\{[^}]+\})+)\. if (?:they|that player|the player|he or she|its controller) (?:doesn't|don't|do not), ([^.]+)\./g, (all, w, cost, rest) => `__payor|${w}|${cost}|${rest}__.`);
     // "where X is …" applies to the clause before it.
-    const sentences = t2.replace(/\.?\n/g, '. ').split(/(?<=\.)\s+|(?<=\.)$/).map(x => x.trim()).filter(Boolean);
+    const sentences = t2.replace(/(search your library for [^.]+?)\. (reveal (?:it|them|those cards|that card), put (?:it|them|that card|those cards) into your hand(?:, then shuffle)?)/g, '$1, $2').replace(/\.?\n/g, '. ').split(/(?<=\.)\s+|(?<=\.)$/).map(x => x.trim()).filter(Boolean);
     // Reveal and route (701.16, 608.2c): "Reveal the top N cards… If it's a land card, put it onto the battlefield. Otherwise,
     // put it into your hand." — the start and the sentences that say where the cards go become one effect; what the table
     // can't read is asked, card by card, on the owner's device.
@@ -557,6 +563,16 @@
     // "Choose target artifact or creature. … gain control of it": "it" is the chosen target.
     const ch = ops.find(o => o.op === 'choose' && o.what && o.what.k === 't');
     if (ch) for (const o of ops) { if (o === ch) continue; for (const k of ['what', 'of', 'to']) if (o[k] && o[k].k === 'ev') o[k] = ch.what; }
+    // "Mill N cards. You may put a permanent card from among them into your hand." — the reveal-and-route window, milling.
+    for (let k = 0; k + 1 < ops.length; k++) {
+      const a = ops[k], b = ops[k + 1];
+      if (a.op !== 'mill' || b.op !== 'fromAmong' || !(a.who && a.who.k === 'you') || typeof a.n !== 'number') continue;
+      const f = String(b.filter || 'card'); const lim = f.match(/^(?:up to )?(an?|one|two|three|four|five|any number of)\s+/);
+      const what = f.replace(/^(?:up to )?(?:an?|one|two|three|four|five|any number of)\s+/, '').replace(/ cards?$/, '').replace(/ and\/or /g, ' or ');
+      const limit = lim ? (/any number/.test(lim[1]) ? 99 : (RNUM[lim[1]] || 1)) : 1;
+      const dest = /battlefield/.test(b.dest) ? 'battlefield' : 'hand';
+      ops.splice(k, 2, { op: 'route', act: 'mill', n: a.n, until: null, whose: 'your', routes: [{ if: what === 'card' ? null : what, to: dest, tapped: !!b.tapped, may: true, limit }], rest: { to: 'graveyard' }, unknown: [], zones: [dest, 'graveyard'], reveal: false, text: (a.src || '') + '. ' + (b.src || ''), src: a.src });
+    }
     return { ops, understood, targets: st.ti };
   }
 

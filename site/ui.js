@@ -991,7 +991,7 @@
     if (!plan.cards.length) { G.toast(`${t.src}: your library is empty.`, 'info'); done(); return; }
     const dec = {}; for (const c of plan.cards) if (c.dest) dec[c.id] = { to: c.dest.to, tapped: c.dest.tapped, random: c.dest.random };
     const more = {};
-    const verb = t.act === 'look at' ? 'Look at' : t.act === 'exile' ? 'Exile' : 'Reveal';
+    const verb = t.act === 'look at' ? 'Look at' : t.act === 'exile' ? 'Exile' : t.act === 'mill' ? 'Mill' : 'Reveal';
     openModal(`${t.src}: ${verb.toLowerCase()} ${t.until ? 'until a ' + t.until + ' card' : 'the top ' + (plan.cards.length > 1 ? plan.cards.length + ' cards' : 'card')}`, b => {
       b.append(h('p', { class: 'muted small' }, '“' + String(t.text || '').replace(/^./, x => x.toUpperCase()) + '”'));
       const zones = (t.zones && t.zones.length ? t.zones : ['hand', 'graveyard', 'bottom']);
@@ -2340,6 +2340,7 @@
       return;
     }
     if (t.k === 'impulse') { G.impulse(t).then(() => { ack(); setTimeout(pumpAsks, 50); }); return; }
+    if (t.k === 'handToLibrary') { const ids = G.P.hand.map(c => c.id); if (ids.length) G.handToLibrary(ids, 'shuffle'); G.toast(`${t.src}: your hand was shuffled into your library.`, 'info'); ack(); return pumpAsks(); }
     if (t.k === 'handToTop') {
       const n = Math.min(t.n || 1, G.P.hand.length), sel = [];
       if (!n) { ack(); return pumpAsks(); }

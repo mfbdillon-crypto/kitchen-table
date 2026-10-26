@@ -659,7 +659,7 @@
       return undefined;
     };
     const condOk = cond => { const ec = evCond(cond); if (ec !== undefined) return ec; return condOk0(cond); };
-    const condOk0 = cond => { const em = String(cond).match(/^(?:that|the) (?:creature|enchantment|artifact|card|permanent|spell|land) is an? ([a-z ]+)$/); if (em && ctx.c && s.cards[ctx.c]) return C.matchesWhat(Object.assign({}, s.cards[ctx.c]), em[1]); const sm = String(cond).match(/^(?:at least )?(\w+)(?: or more)? mana was spent to cast (?:that spell|it)$/); if (sm) return (ctx.mv || 0) >= (({ two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8 })[sm[1]] || +sm[1] || 0); const xm = String(cond).match(/^x is (\d+) or (more|greater|less|fewer)$/); if (xm) { const v = st.lastX != null ? st.lastX : (ctx.mv || X || 0); return /less|fewer/.test(xm[2]) ? v <= +xm[1] : v >= +xm[1]; } const r = O().conditionHolds(s, Object.assign({}, src, { ctrl: by }), cond); if (r === null) { st.manual.push(`Check: if ${cond}`); return false; } return r; };
+    const condOk0 = cond => { const em = String(cond).match(/^(?:that|the) (?:creature|enchantment|artifact|card|permanent|spell|land) is an? ([a-z ]+)$/) || String(cond).match(/^it'?s an? ([a-z ]+?)(?: card)?$/); if (em && ctx.c && s.cards[ctx.c]) return C.matchesWhat(Object.assign({}, s.cards[ctx.c]), em[1]); const sm = String(cond).match(/^(?:at least )?(\w+)(?: or more)? mana was spent to cast (?:that spell|it)$/); if (sm) return (ctx.mv || 0) >= (({ two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8 })[sm[1]] || +sm[1] || 0); const xm = String(cond).match(/^x is (\d+) or (more|greater|less|fewer)$/); if (xm) { const v = st.lastX != null ? st.lastX : (ctx.mv || X || 0); return /less|fewer/.test(xm[2]) ? v <= +xm[1] : v >= +xm[1]; } const r = O().conditionHolds(s, Object.assign({}, src, { ctrl: by }), cond); if (r === null) { st.manual.push(`Check: if ${cond}`); return false; } return r; };
     const runList = (list, off) => {
       for (let k = 0; k < list.length; k++) {
         const o = shiftOp(list[k], off || 0);
@@ -1122,6 +1122,24 @@
         case 'look': R.todo(s, by, { k: 'look', n: val(o.n), reveal: !!o.reveal, text: o.text, src: srcName }); break;
         case 'addlCost': case 'altCost': case 'choose': case 'rest': case 'newTargets': break;
         case 'reveal': for (const p of players(o.who)) notes.push(`${nameOf(s, p)} reveals their hand (${srcName}) — they show it to the table`); break;
+        case 'goad': { const cs = cards(o.what).filter(c => c.zone === 'battlefield'); for (const c of cs) c.goaded = { by, n: s.turn.n }; if (cs.length) notes.push(`${R.listNames(cs.map(cardName))} ${cs.length > 1 ? 'are' : 'is'} goaded by ${nameOf(s, by)} — must attack each combat, and a player other than ${nameOf(s, by)} if able (701.38)`); break; }
+        case 'populate': {   // 701.36: create a copy of a creature token you control (the biggest)
+          const toks = Object.values(s.cards).filter(c => c.zone === 'battlefield' && c.ctrl === by && c.token && R.isType(c, 'creature') && c.d).sort((a, b) => ((C.pt(s, b) || [0, 0])[0] + (C.pt(s, b) || [0, 0])[1]) - ((C.pt(s, a) || [0, 0])[0] + (C.pt(s, a) || [0, 0])[1]));
+          if (!toks.length) { notes.push(`${srcName}: no creature token to populate`); break; }
+          R.makeToken(s, by, JSON.parse(JSON.stringify(toks[0].d)), 1, false, notes); notes.push(`${nameOf(s, by)} populated (${cardName(toks[0])})`); break;
+        }
+        case 'counterAll': for (const c of Object.values(s.cards)) { if (c.zone !== 'stack' || c.id === srcId || c.id === item.id || c.ab) continue; if (C.uncounterable && C.uncounterable(s, c)) continue; const nm = cardName(c); if (c.token) delete s.cards[c.id]; else R.moveOne(s, c, 'graveyard', 'top', null, notes); notes.push(`${srcName} countered ${nm}`); } break;
+        case 'randomGy': {
+          const pool = Object.values(s.cards).filter(c => c.zone === 'graveyard' && c.owner === by && C.matchesWhat(c, o.what));
+          if (!pool.length) { notes.push(`${srcName}: no ${o.what} card in the graveyard`); break; }
+          const pick = pool[Math.floor(Math.random() * pool.length)];
+          R.moveOne(s, pick, 'hand', 'top', null, notes); notes.push(`${nameOf(s, by)} returned ${cardName(pick)} at random from their graveyard to their hand (${srcName})`); break;
+        }
+        case 'shuffleHandGy': {   // the hand is on the owner's device; the graveyard is shuffled in here
+          R.todo(s, by, { k: 'handToLibrary', src: srcName });
+          const gy = Object.values(s.cards).filter(c => c.zone === 'graveyard' && c.owner === by); for (const c of gy) R.moveOne(s, c, 'library', 'shuffle', null, notes);
+          notes.push(`${nameOf(s, by)} shuffled their hand and graveyard into their library (${srcName})`); break;
+        }
         case 'shuffleGy': for (const p of players(o.who)) { const gy = Object.values(s.cards).filter(c => c.zone === 'graveyard' && c.owner === p); for (const c of gy) R.moveOne(s, c, 'library', 'shuffle', null, notes); notes.push(`${nameOf(s, p)} shuffled their graveyard (${gy.length}) into their library (${srcName})`); } break;
         case 'freeCast': if (o.from === 'hand' || o.from === 'graveyard') { R.todo(s, by, { k: 'freeCast', from: o.from, filter: o.filter, mvMax: o.mvMax == null ? undefined : val(o.mvMax), src: srcName }); notes.push(`${nameOf(s, by)} may cast ${o.filter === 'card' ? 'a spell' : 'a ' + o.filter + ' spell'} from their ${o.from} for free (${srcName})`); } else st.manual.push(o.src || 'Cast it without paying its mana cost'); break;
         case 'choiceOf': { const pk = item.picks && item.picks[o.key] != null ? item.picks[o.key] : (s.cards[item.id] && s.cards[item.id].picks || {})[o.key]; const i = pk != null ? pk : aiPick(o.options); const opt = o.options[i] || o.options[0]; notes.push(`${nameOf(s, by)} chose ${opt.label} (${srcName})`); runList(opt.ops, 0); break; }

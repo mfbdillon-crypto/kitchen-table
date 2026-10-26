@@ -32,7 +32,7 @@ check('attack window ~quarter of the screen, centred', box.a > 0.15 && box.a < 0
 const tabs = await p.$$eval('.cptab', bs => bs.map(b => [b.textContent, Math.round(b.getBoundingClientRect().width)]));
 check('a tab per opponent, evenly spaced', tabs.length === 2 && Math.abs(tabs[0][1] - tabs[1][1]) < 3, JSON.stringify(tabs));
 const k = await p.evaluate(() => KT.KEY.slice(1, 9));
-await p.click(`.cpanel [data-id="${k}-g1"]`);
+await p.waitForSelector(`.cpanel [data-id="${k}-g1"]`, { timeout: 15000 }); await p.click(`.cpanel [data-id="${k}-g1"]`);
 await p.click('.cptab >> nth=1');
 await p.click(`.cpanel [data-id="${k}-b1"]`);
 await p.screenshot({ path: 'test/shots/combat_attack.png' });

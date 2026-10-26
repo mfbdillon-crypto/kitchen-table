@@ -469,6 +469,7 @@
         await io.routeApply(t, dec); B.note('did', `${t.src}: ${dec.map(x => x.to).join(', ')}`); return;
       }
       if (t.k === 'impulse') { const ids = await io.impulse(t); B.note('did', `exiled ${ids.length} from the top to play (${t.src})`); return; }
+      if (t.k === 'handToLibrary') { if (io.handToLib) await io.handToLib(); return; }
       if (t.k === 'handToTop') {
         const ids = B.worstCards(hand(), t.n || 1).map(c => c.id);
         await io.handToTop(ids);

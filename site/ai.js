@@ -42,6 +42,7 @@
     cascadeReveal: (mv, top) => G.cascadeReveal(mv, top),
     cascadeDecline: id => G.cascadeDecline(id),
     handToTop: ids => G.handToLibrary(ids, 'top'),
+    handToLib: () => { const ids = G.P.hand.map(c => c.id); return ids.length ? G.handToLibrary(ids, 'shuffle') : null; },
     impulse: t => G.impulse(t),
     digFind: t => G.digFind(t),
     routePlan: t => G.routePlan(t), routeApply: (t, d) => G.routeApply(t, d),
