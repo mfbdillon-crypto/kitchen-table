@@ -1045,3 +1045,56 @@ button.small { padding: 3px 9px; font-size: 13px; }
 .wcard .wlabel { display: block; text-align: left; font-size: 13px; color: var(--muted); margin: 10px 0 4px; }
 .wcard input#welcomename, .wcard input#welcomecode { width: 100%; font-size: 17px; }
 .wcard button.big { width: 100%; margin-top: 12px; font-size: 17px; padding: 10px; }
+
+/* ===== Combat window (attack / block), about a quarter of the screen, centred ===== */
+.cpanel { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 26; width: min(880px, max(52vw, 560px)); max-height: 60vh;
+  display: grid; grid-template-rows: auto minmax(0, 1fr) auto; background: #22140f; border: 2px solid #c4643d; border-radius: 14px;
+  box-shadow: 0 18px 50px rgba(0,0,0,.6); --cw: 78px; overflow: hidden; }
+.cpanel.def { border-color: #e2715c; background: #2a1513; }
+.cpanel.min { width: auto; max-height: none; top: auto; bottom: calc(var(--toastb, 170px) + 6px); transform: translateX(-50%); padding: 6px; border-radius: 999px; }
+.cphead { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 14px; border-bottom: 1px solid rgba(255,255,255,.08); }
+.cphead b { font-family: var(--display); font-size: 17px; color: #f2a07f; letter-spacing: .02em; }
+.cpbody { overflow: auto; padding: 10px 14px; display: grid; gap: 10px; align-content: start; }
+.cpfoot { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; padding: 9px 14px; border-top: 1px solid rgba(255,255,255,.08); }
+.cphint { text-align: center; }
+/* opponent tabs: evenly spaced bars across the top */
+.cptabs { display: grid; grid-template-columns: repeat(var(--n), minmax(0, 1fr)); gap: 6px; }
+.cptab { display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 8px 6px; border-radius: 9px; border: 2px solid hsl(var(--hue) 45% 35%);
+  background: hsl(var(--hue) 30% 16%); min-width: 0; }
+.cptab .nm { font-weight: 700; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cptab .lf, .cptab .ct { font-size: 12px; color: var(--muted); }
+.cptab .ct { color: hsl(var(--hue) 80% 72%); font-weight: 700; }
+.cptab.on { background: hsl(var(--hue) 55% 30%); border-color: hsl(var(--hue) 80% 62%); box-shadow: 0 0 0 2px hsl(var(--hue) 80% 62% / .35); }
+.cptab.on .lf { color: var(--ink); }
+.cpwalk { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.cpwalk .chip.set { border-color: hsl(var(--hue) 80% 62%); }
+/* creature strip */
+.cppool { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; padding: 8px; border-radius: 10px; background: rgba(0,0,0,.22); }
+.cpitem { display: grid; justify-items: center; gap: 3px; }
+.cpitem.off { opacity: .45; }
+.cpitem.sent .card > img { box-shadow: 0 0 0 3px hsl(var(--hue) 80% 62%), 0 0 14px hsl(var(--hue) 80% 55% / .7); }
+.cplab { font-size: 11.5px; color: var(--muted); max-width: calc(var(--cw) + 20px); text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cpitem.sent .cplab { color: hsl(var(--hue) 80% 72%); font-weight: 700; }
+/* blocking lanes: attacker on top, arrow at me, blockers in front of it */
+.cplanes { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+.cplane { display: grid; justify-items: center; gap: 4px; padding: 6px 8px 8px; border-radius: 10px; background: rgba(226,113,92,.08); border: 1px dashed transparent; cursor: pointer; }
+.cplane.drop { border-color: rgba(127,196,138,.55); background: rgba(127,196,138,.08); }
+.cplane.cur { border-color: #b6f0bf; }
+.cpname { font-size: 12px; color: #f2a07f; max-width: calc(var(--cw) * 1.9); text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cparrow { color: #e2715c; font-size: 22px; line-height: 1; text-shadow: 0 0 8px rgba(226,113,92,.8); animation: cpdrop 1.1s ease-in-out infinite; }
+@keyframes cpdrop { 0%, 100% { transform: translateY(-2px); } 50% { transform: translateY(4px); } }
+.cpslot { display: flex; justify-content: center; min-height: calc(var(--cw) * 88 / 63); min-width: var(--cw); }
+.cpslot .cpblk + .cpblk { margin-left: calc(var(--cw) * var(--ov) * -1); }
+.cpblk { transition: transform .15s; }
+.cpblk:hover { transform: translateY(-6px); z-index: 2; }
+.cpempty { width: var(--cw); aspect-ratio: 63 / 88; border: 2px dashed rgba(255,255,255,.15); border-radius: 6px; display: grid; place-items: center; font-size: 11px; color: var(--muted); }
+.cplane.drop .cpempty { border-color: rgba(127,196,138,.7); color: var(--good); }
+.cpsum { margin: 0; padding: 4px 4px 4px 22px; display: grid; gap: 6px; }
+.cpsum .foe { color: hsl(var(--hue) 80% 72%); }
+.cpanel > .cpsum { overflow: auto; padding: 12px 14px 12px 34px; }
+@media (max-width: 760px), (pointer: coarse) {
+  .cpanel { width: 96vw; max-height: 74vh; --cw: 62px; }
+  .cphead b { font-size: 15px; }
+}
+/* while the combat window is open, messages show at the top so they don't cover its buttons */
+body:has(.cpanel:not(.min)) #toasts { top: 64px; bottom: auto; }

@@ -46,13 +46,14 @@ await p.waitForFunction(() => !KT.S.prio, null, { timeout: 20000 });
 console.log('AI life after bolt:', await p.evaluate(() => KT.S.players[KT.S.seats.find(x => KT.S.players[x].ai)].life));
 // combat bar
 await p.evaluate(() => KT.act({ type: 'phase', to: Rules.PHASES.indexOf('Beginning of combat') }));
-await p.waitForSelector('.combatbar');
+await p.waitForSelector('.cpanel');
 console.log('giant:', await p.evaluate(() => JSON.stringify([KT.S.turn.n, KT.S.turn.active === KT.KEY, KT.S.turn.starts, Object.values(KT.S.cards).filter(c => c.id.endsWith('-giant1')).map(c => [c.zone, c.ctrl === KT.KEY, c.tapped, c.ctlT])])));
 await p.screenshot({ path: 'test/s3_attack.png' });
-const giantUp = await p.evaluate(() => Object.values(KT.S.cards).some(c => c.id.endsWith('-giant1') && c.zone === 'battlefield'));
-if (giantUp) { await p.click('.board .card[data-id$="-giant1"]'); await wait(200); }
-console.log('combat bar:', await p.$eval('.combatbar', e => e.textContent));
-await p.click(giantUp ? '.combatbar button.primary' : '.combatbar >> text=No attack');
+const giantUp = await p.evaluate(() => !!document.querySelector('.cpanel .cpitem:not(.off) .card[data-id$="-giant1"]'));
+if (giantUp) { await p.click('.cpanel .card[data-id$="-giant1"]'); await wait(200); }
+console.log('combat window:', await p.$eval('.cpanel', e => e.textContent));
+await p.click(giantUp ? '.cpfoot button.primary' : '.cpfoot >> text=No attack');
+await p.click('.cpfoot button.primary');   // confirm
 await wait(3000);
 console.log('after attack:', await p.evaluate(() => KT.S.log.slice(-4).map(l => l.text).join(' | ')));
 // open the AI panel
@@ -66,7 +67,7 @@ for (let i = 0; i < 120 && !(gotPrio && gotBlock); i++) {
   const st = await p.evaluate(() => ({ prio: KT.S.prio && KT.S.prio.holder === KT.KEY, block: !!(KT.S.combat && !KT.S.combat.done && KT.S.combat.waiting.includes(KT.KEY) && !KT.S.combat.ok[KT.KEY]), mine: KT.S.turn.active === KT.KEY }));
   if (st.prio && !gotPrio) { await wait(300); await p.screenshot({ path: 'test/s5_respond.png' }); gotPrio = true; console.log('respond bar:', await p.$eval('.prio', e => e.textContent).catch(() => 'none')); }
   if (st.prio) await p.click('.prio button.primary').catch(() => {});
-  if (st.block && !gotBlock) { await wait(300); await p.screenshot({ path: 'test/s6_block.png' }); gotBlock = true; console.log('block bar:', await p.$eval('.combatbar', e => e.textContent).catch(() => 'none')); await p.click('.combatbar button.primary', { timeout: 3000 }).catch(() => console.log('   (no block button — auto no-blocks)')); }
+  if (st.block && !gotBlock) { await wait(300); await p.screenshot({ path: 'test/s6_block.png' }); gotBlock = true; console.log('block window:', await p.$eval('.cpanel', e => e.textContent).catch(() => 'none')); await p.click('.cpfoot >> text=No blocks').catch(() => {}); await p.click('.cpfoot button.primary', { timeout: 3000 }).catch(() => console.log('   (no block button — auto no-blocks)')); }
   if (st.mine && !st.prio) await p.evaluate(() => KT.act({ type: 'phase', dir: 'pass' }));
   await wait(700);
 }

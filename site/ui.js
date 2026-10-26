@@ -395,7 +395,7 @@
     el.addEventListener('mouseleave', hidePreview);
     el.addEventListener('contextmenu', e => { e.preventDefault(); if (!opt.noMenu) { hidePreview(); openMenu({ x: e.clientX, y: e.clientY }, items(), R.cardName(c)); } });
     // Double-click a permanent you control to tap or untap it quickly.
-    el.addEventListener('dblclick', e => { if (c.zone === 'battlefield' && c.ctrl === KEY && G.seated()) { e.stopPropagation(); closeMenu(); tapMine(c); } });
+    el.addEventListener('dblclick', e => { if (!opt.panel && c.zone === 'battlefield' && c.ctrl === KEY && G.seated()) { e.stopPropagation(); closeMenu(); tapMine(c); } });
     el.addEventListener('click', e => {
       if (G.targeting) { e.stopPropagation(); finishTarget(c); return; }
       if (G.picking && c.zone !== 'hand' && c.zone !== 'library' && !opt.noMenu) { e.stopPropagation(); pickTarget({ c: c.id }); return; }
@@ -1261,13 +1261,14 @@
     const P = G.combatPick;
     if (P.kind === 'attack') {
       if (!canAttackUI(c) && !P.sel[c.id]) { G.toast(c.ctrl !== KEY ? 'Click your own creatures to attack with them.' : c.tapped ? `${R.cardName(c)} is tapped.` : R.sick(S(), c) ? `${R.cardName(c)} has summoning sickness (it hasn’t been yours since your turn began).` : `${R.cardName(c)} can’t attack.`, 'err'); return; }
-      if (P.sel[c.id]) delete P.sel[c.id]; else P.sel[c.id] = P.def;
+      if (P.sel[c.id] && sameT(P.sel[c.id], P.def)) delete P.sel[c.id]; else P.sel[c.id] = P.def;   // a creature sent at someone else moves to this opponent
+      P.confirm = false;
     } else {
       // Either order works: blocker then attacker, or attacker then blocker.
       const pair = (b, a) => {
         const why = blockProblem(b, a);
         if (why) { G.toast(why, 'err'); P.cur = null; P.curAtt = null; render(); return false; }
-        P.pairs[b.id] = a.id; P.cur = null; P.curAtt = null; return true;
+        P.pairs[b.id] = a.id; P.cur = null; P.curAtt = null; P.confirm = false; return true;
       };
       if (c.ctrl === KEY && canBlockUI(c)) {
         if (P.pairs[c.id]) delete P.pairs[c.id];
@@ -1289,45 +1290,101 @@
   // Could any of my creatures block any of these attackers?
   const anyBlock = atts => Object.values(S().cards).some(b => b.zone === 'battlefield' && canBlockUI(b) && atts.some(a => !blockProblem(b, a)));
   function defLabel(d) { return d.p ? nameOf(d.p) : R.cardName(S().cards[d.c] || {}); }
+  // The combat window: a panel in the middle of the table (about a quarter of the screen).
+  //   Attacking — opponents as tabs across the top, all my creatures below; click a creature to send it at the chosen tab.
+  //   Blocking  — the attackers across the top with arrows pointing at me, my creatures below; a blocker moves in front of
+  //               the attacker it blocks (several overlap, more so the more there are).
+  //   Both end with a confirmation of the whole plan.
+  const FOE_HUES = [12, 205, 48, 280, 150, 330, 95];
+  const whyNoAttack = c => c.tapped ? 'tapped' : (R.sick(S(), c) && !CD.keywords(c, S()).has('haste')) ? 'summoning sick' : CD.keywords(c, S()).has('defender') ? 'defender' : CD.keywords(c, S()).has("can't attack") ? 'can’t attack' : '';
+  const whyNoBlock = c => c.tapped ? 'tapped' : CD.keywords(c, S()).has("can't block") ? 'can’t block' : '';
+  const myCreatures = () => Object.values(S().cards).filter(c => c.zone === 'battlefield' && c.ctrl === KEY && (c.faceDown || R.isType(c, 'creature')));
+  const ptText = c => { const pt = CD.pt(S(), c); return pt ? pt.join('/') : ''; };
+  function cpCard(c, extra) {
+    const el = cardEl(c, Object.assign({ noMenu: true, noGlow: true, noButtons: true, panel: true }, extra || {}));
+    return el;
+  }
+  function combatShell(kind, title, body, foot) {
+    const min = G.combatMin;
+    if (min) return h('div', { class: 'cpanel min ' + kind, role: 'dialog' }, h('button', { class: 'primary', onclick: () => { G.combatMin = false; render(); } }, kind === 'def' ? '⚔ Blocks — show' : '⚔ Attack — show'));
+    return h('div', { class: 'cpanel ' + kind, role: 'dialog', 'aria-label': title },
+      h('div', { class: 'cphead' }, h('b', null, title), h('button', { class: 'ghost small', title: 'Hide this window to look at the table', onclick: () => { G.combatMin = true; render(); } }, '▾ Hide')),
+      body, h('div', { class: 'cpfoot' }, foot));
+  }
   function combatBar() {
     const s = S(), T = s.turn, K = s.combat;
     if (!G.seated() || !T.active || s.prio) return null;
     const P = G.combatPick;
-    // Defending: something is attacking me.
+    // ---- Defending: something is attacking me.
     if (K && !K.done && K.n === T.n && K.waiting.includes(KEY) && !K.ok[KEY]) {
       const atts = Object.keys(K.att).map(id => s.cards[id]).filter(c => c && attackingMe(c));
-      if (!P || P.kind !== 'block') { G.combatPick = { kind: 'block', pairs: {}, cur: null, prevTab: G.tab }; if (s.seats.length > 1) G.tab = 'all'; return combatBar(); }
-      const n = Object.keys(P.pairs).length;
+      if (!P || P.kind !== 'block') { G.combatPick = { kind: 'block', pairs: {}, cur: null, curAtt: null }; G.combatMin = false; return combatBar(); }
+      const done = async list => { const r = await G.block(list); if (r.ok) { G.combatPick = null; render(); } };
       if (!anyBlock(atts)) {
         const k = 'noblk:' + s.gameId + ':' + T.n;
-        if (G._noBlock !== k) { G._noBlock = k; setTimeout(async () => { const r = await G.block([]); if (r && r.ok) { G.tab = P.prevTab || G.tab; G.combatPick = null; render(); } }, 900); }
-        return h('div', { class: 'combatbar def' }, h('div', null, h('b', null, `${nameOf(T.active)} is attacking you`), ` with ${R.listNames(atts.map(c => R.cardName(c)))}.`), h('div', { class: 'muted small' }, 'None of your creatures can block — no blocks.'));
+        if (G._noBlock !== k) { G._noBlock = k; setTimeout(async () => { const r = await G.block([]); if (r && r.ok) { G.combatPick = null; render(); } }, 1500); }
+        return combatShell('def', `${nameOf(T.active)} is attacking you`, h('div', { class: 'cplanes' }, atts.map(a => h('div', { class: 'cplane' }, cpCard(a), h('div', { class: 'cparrow' }, '▼')))), h('span', { class: 'muted small' }, 'None of your creatures can block — no blocks.'));
       }
-      return h('div', { class: 'combatbar def', role: 'alert' },
-        h('div', null, h('b', null, `${nameOf(T.active)} is attacking you`), ` with ${R.listNames(atts.map(c => { const pt = CD.pt(s, c); return R.cardName(c) + (pt ? ` (${pt.join('/')})` : ''); }))}.`),
-        h('div', { class: 'muted small' }, P.cur ? `Now click the attacker that ${R.cardName(s.cards[P.cur])} should block.` : P.curAtt && s.cards[P.curAtt] ? `Now click the creature that should block ${R.cardName(s.cards[P.curAtt])}.` : 'Click one of your untapped creatures and the attacker it blocks (either order). Repeat for more blockers.'),
-        Object.keys(P.pairs).length ? h('div', { class: 'chips' }, Object.entries(P.pairs).map(([b, a]) => h('button', { class: 'chip set', title: 'Remove this block', onclick: () => { delete P.pairs[b]; render(); } }, `${R.cardName(s.cards[b])} blocks ${R.cardName(s.cards[a])} ✕`))) : null,
-        h('div', { class: 'row wrap' },
-          h('button', { class: 'primary', onclick: async () => { const list = Object.entries(P.pairs).map(([id, att]) => ({ id, att })); const r = await G.block(list); if (r.ok) { G.tab = P.prevTab || G.tab; G.combatPick = null; render(); } } }, n ? `Block (${n})` : 'No blocks')));
+      const pairs = P.pairs, n = Object.keys(pairs).length;
+      if (P.confirm) {
+        const lines = atts.map(a => { const bs = Object.keys(pairs).filter(b => pairs[b] === a.id).map(b => R.cardName(s.cards[b])); return h('li', null, h('b', null, R.cardName(a)), bs.length ? ' is blocked by ' + R.listNames(bs) : h('span', { class: 'muted' }, ' — unblocked (' + (ptText(a).split('/')[0] || '?') + ' damage to you)')); });
+        return combatShell('def', 'Confirm your blocks', h('ul', { class: 'cpsum' }, lines),
+          [h('button', { onclick: () => { P.confirm = false; render(); } }, '← Back'), h('button', { class: 'primary', onclick: () => done(Object.entries(pairs).map(([id, att]) => ({ id, att }))) }, n ? `Confirm ${n} block${n > 1 ? 's' : ''}` : 'Confirm — no blocks')]);
+      }
+      const lanes = h('div', { class: 'cplanes' }, atts.map(a => {
+        const bs = Object.keys(pairs).filter(b => pairs[b] === a.id).map(b => s.cards[b]).filter(Boolean);
+        const ov = bs.length > 1 ? Math.min(0.8, 0.42 + 0.09 * (bs.length - 2)) : 0;   // more blockers → more overlap
+        const x = K.att[a.id], at = x && x.def && x.def.c ? ' → your ' + R.cardName(s.cards[x.def.c] || {}) : '';
+        return h('div', { class: 'cplane' + (P.curAtt === a.id ? ' cur' : '') + (P.cur ? ' drop' : ''), onclick: e => { if (e.target.closest('.cpblk')) return; combatClick(a); } },
+          h('div', { class: 'cpname' }, R.cardName(a) + (ptText(a) ? ' · ' + ptText(a) : '') + at),
+          cpCard(a, { cls: P.curAtt === a.id ? 'blk-cur' : '' }),
+          h('div', { class: 'cparrow' }, '▼'),
+          h('div', { class: 'cpslot', style: `--ov:${ov}` }, bs.length ? bs.map(b => h('div', { class: 'cpblk', title: 'Click to take this blocker back' }, cpCard(b, { cls: 'blk-sel' }))) : h('div', { class: 'cpempty' }, P.cur ? 'Block here' : 'unblocked')));
+      }));
+      const pool = myCreatures().filter(c => !pairs[c.id]).sort((a, b) => !!whyNoBlock(a) - !!whyNoBlock(b));
+      const body = h('div', { class: 'cpbody' }, lanes,
+        h('div', { class: 'cphint muted small' }, P.cur ? `Now click the attacker ${R.cardName(s.cards[P.cur])} should block.` : P.curAtt ? `Now click the creature that should block ${R.cardName(s.cards[P.curAtt])}.` : 'Click one of your creatures, then the attacker it blocks (either order). Click a blocker again to take it back.'),
+        h('div', { class: 'cppool' }, pool.length ? pool.map(c => { const why = whyNoBlock(c); return h('div', { class: 'cpitem' + (why ? ' off' : '') }, cpCard(c, { cls: P.cur === c.id ? 'blk-cur' : why ? '' : 'blk-ok' }), h('div', { class: 'cplab' }, why || ptText(c))); }) : h('span', { class: 'muted small' }, 'All your creatures are blocking.')));
+      return combatShell('def', `${nameOf(T.active)} is attacking you`, body,
+        [h('button', { onclick: () => { P.pairs = {}; P.confirm = true; render(); } }, 'No blocks'), h('button', { class: 'primary', disabled: !n, onclick: () => { P.confirm = true; render(); } }, n ? `Block (${n})…` : 'Block…')]);
     }
-    if (P && P.kind === 'block') { G.combatPick = null; if (P.prevTab) G.tab = P.prevTab; }
-    // Attacking: my turn, start of combat, haven't attacked yet.
+    if (P && P.kind === 'block') G.combatPick = null;
+    // ---- Attacking: my turn, start of combat, haven't attacked yet.
     const step = R.PHASES[T.phase];
     if (T.active !== KEY || !['Beginning of combat', 'Declare attackers'].includes(step) || (K && K.n === T.n)) { if (G.combatPick && G.combatPick.kind === 'attack') G.combatPick = null; return null; }
-    const foes = s.seats.filter(p => p !== KEY);
+    const foes = s.seats.filter(p => p !== KEY && s.players[p] && !s.players[p].lost);
     const walkers = Object.values(s.cards).filter(c => c.zone === 'battlefield' && c.ctrl !== KEY && (R.isType(c, 'planeswalker') || R.isType(c, 'battle')));
-    if (!P || P.kind !== 'attack') G.combatPick = { kind: 'attack', sel: {}, def: { p: foes[0] } };
+    if (!P || P.kind !== 'attack') { G.combatPick = { kind: 'attack', sel: {}, def: { p: foes[0] } }; G.combatMin = false; }
     const Q = G.combatPick;
-    const ready = Object.values(s.cards).filter(c => c.zone === 'battlefield' && canAttackUI(c));
+    const hueOf = d => { const i = d.p ? foes.indexOf(d.p) : foes.length + walkers.findIndex(w => w.id === d.c); return FOE_HUES[(i < 0 ? 0 : i) % FOE_HUES.length]; };
+    const mine = myCreatures();
+    const ready = mine.filter(c => canAttackUI(c) && !CD.keywords(c, s).has("can't attack"));
     const n = Object.keys(Q.sel).length;
-    return h('div', { class: 'combatbar' },
-      h('div', null, h('b', null, 'Combat — choose your attackers. '), ready.length ? h('span', { class: 'muted' }, `Click your creatures (${ready.length} can attack). `) : h('span', { class: 'muted' }, 'None of your creatures can attack right now. ')),
-      foes.length + walkers.length > 1 ? h('div', { class: 'chips' }, h('span', { class: 'muted small' }, 'Attack:'), foes.map(p => ({ p })).concat(walkers.map(c => ({ c: c.id }))).map(d => h('button', { class: 'chip' + (sameT(Q.def, d) ? ' set' : ''), onclick: () => { Q.def = d; render(); } }, defLabel(d)))) : null,
-      n ? h('div', { class: 'chips' }, Object.entries(Q.sel).map(([id, d]) => h('button', { class: 'chip set', title: 'Remove', onclick: () => { delete Q.sel[id]; render(); } }, `${R.cardName(s.cards[id])} → ${defLabel(d)} ✕`))) : null,
-      h('div', { class: 'row wrap' },
-        h('button', { class: 'primary', disabled: !n, onclick: async () => { const list = Object.entries(Q.sel).map(([id, d]) => Object.assign({ id }, d)); const r = await G.attack(list); if (r.ok) { G.combatPick = null; render(); } } }, n ? `Attack (${n})` : 'Attack'),
-        ready.length ? h('button', { onclick: () => { for (const c of ready) Q.sel[c.id] = Q.def; render(); } }, 'Select all') : null,
-        h('button', { onclick: async () => { G.combatPick = null; await G.attack([]); } }, 'No attack — skip combat')));
+    const go = async () => { const list = Object.entries(Q.sel).map(([id, d]) => Object.assign({ id }, d)); const r = await G.attack(list); if (r.ok) { G.combatPick = null; render(); } else { Q.confirm = false; render(); } };
+    if (Q.confirm) {
+      const groups = foes.map(p => ({ p })).concat(walkers.map(c => ({ c: c.id }))).map(d => ({ d, cs: Object.keys(Q.sel).filter(id => sameT(Q.sel[id], d)).map(id => s.cards[id]).filter(Boolean) })).filter(g => g.cs.length);
+      return combatShell('atk', 'Confirm your attack', h('ul', { class: 'cpsum' }, groups.length ? groups.map(g => h('li', { style: `--hue:${hueOf(g.d)}` }, h('b', { class: 'foe' }, defLabel(g.d)), ' ← ', R.listNames(g.cs.map(c => R.cardName(c) + (ptText(c) ? ' (' + ptText(c) + ')' : ''))))) : h('li', { class: 'muted' }, 'No attackers — combat is skipped.')),
+        [h('button', { onclick: () => { Q.confirm = false; render(); } }, '← Back'), h('button', { class: 'primary', onclick: () => n ? go() : (G.combatPick = null, G.attack([])) }, n ? `Confirm attack (${n})` : 'Confirm — no attack')]);
+    }
+    const count = d => Object.values(Q.sel).filter(x => sameT(x, d)).length;
+    const tabs = h('div', { class: 'cptabs', style: `--n:${Math.max(1, foes.length)}` }, foes.map(p => {
+      const d = { p }, P0 = s.players[p];
+      return h('button', { class: 'cptab' + (sameT(Q.def, d) ? ' on' : ''), style: `--hue:${hueOf(d)}`, onclick: () => { Q.def = d; render(); } },
+        h('span', { class: 'nm' }, nameOf(p)), h('span', { class: 'lf' }, '♥ ' + P0.life), count(d) ? h('span', { class: 'ct' }, '⚔ ' + count(d)) : null);
+    }));
+    const wtabs = walkers.length ? h('div', { class: 'cpwalk' }, h('span', { class: 'muted small' }, 'Or attack:'), walkers.map(w => { const d = { c: w.id }; return h('button', { class: 'chip' + (sameT(Q.def, d) ? ' set' : ''), style: `--hue:${hueOf(d)}`, onclick: () => { Q.def = d; render(); } }, R.cardName(w) + (count(d) ? ' ⚔' + count(d) : '')); })) : null;
+    const strip = h('div', { class: 'cppool atk' }, mine.length ? mine.slice().sort((a, b) => !!whyNoAttack(a) - !!whyNoAttack(b)).map(c => {
+      const d = Q.sel[c.id], why = canAttackUI(c) && !CD.keywords(c, s).has("can't attack") ? '' : whyNoAttack(c) || 'can’t attack';
+      return h('div', { class: 'cpitem' + (why ? ' off' : '') + (d ? ' sent' : ''), style: d ? `--hue:${hueOf(d)}` : '' },
+        cpCard(c, { cls: d ? 'atk-sel' : why ? '' : 'atk-ok' }),
+        h('div', { class: 'cplab' }, d ? '→ ' + defLabel(d) : why || ptText(c)));
+    }) : h('span', { class: 'muted small' }, 'You have no creatures.'));
+    const label = defLabel(Q.def);
+    return combatShell('atk', 'Combat — choose your attackers', h('div', { class: 'cpbody' }, foes.length > 1 || walkers.length ? tabs : null, wtabs,
+      h('div', { class: 'cphint muted small' }, ready.length ? `Click a creature to attack ${label}${foes.length > 1 ? ' — pick another tab to send creatures at someone else' : ''}.` : 'None of your creatures can attack right now.'), strip),
+      [h('button', { onclick: () => { Q.sel = {}; Q.confirm = true; render(); } }, 'No attack'),
+        ready.length ? h('button', { onclick: () => { for (const c of ready) if (!Q.sel[c.id]) Q.sel[c.id] = Q.def; render(); } }, `All → ${label}`) : null,
+        h('button', { class: 'primary', disabled: !n, onclick: () => { Q.confirm = true; render(); } }, n ? `Attack (${n})…` : 'Attack…')]);
   }
 
   // ======================= library menu =======================

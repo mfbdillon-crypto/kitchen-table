@@ -45,7 +45,7 @@ await p.evaluate(() => {
       const K = s.combat; if (K && K.n === T.n && !K.done) out.push(`COMBAT: ${JSON.stringify(K.att)} waiting blocks from ${K.waiting.filter(p => !K.ok[p]).map(p => R.nameOf(s, p)).join(', ') || 'nobody'}`);
       const asks = (s.ask || []).filter(a => a.pid === me()); if (asks.length) { out.push('QUESTIONS FOR YOU (answer with H.answer):'); for (const a of asks) out.push('  ' + JSON.stringify(a)); }
       const btns = [...document.querySelectorAll('#top .turn button')].map(b => b.innerText.trim()); out.push('Top-bar buttons: ' + (btns.join(' | ') || 'none'));
-      const bars = [...document.querySelectorAll('.prio, .combatbar, .pickbar')].map(b => b.innerText.replace(/\s+/g, ' ').slice(0, 200)); if (bars.length) out.push('Prompts on screen: ' + bars.join(' || '));
+      const bars = [...document.querySelectorAll('.prio, .cpanel, .pickbar')].map(b => b.innerText.replace(/\s+/g, ' ').slice(0, 200)); if (bars.length) out.push('Prompts on screen: ' + bars.join(' || '));
       out.push('RECENT LOG:'); for (const l of s.log.slice(-14)) out.push('  ' + (l.pid ? R.nameOf(s, l.pid) + ' ' : '') + l.text);
       return out.join('\n');
     },

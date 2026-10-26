@@ -8,6 +8,14 @@
 - Older browser tests (views, decks_ui, ux_fixes, table_strict, ui_stack, counters, looks) time out because of the changed menus; phone.mjs has been fixed, the rest still need updating.
 
 
+## Combat window (v9.0, 20:10)
+- **Where:** `combatBar()` in ui.js now draws a centred panel, `.cpanel`, about a quarter of the screen.
+- **Attacking:** the opponents are evenly spaced tabs across the top, with each one's own colour, life and attacker count. Planeswalkers and battles appear as chips below. All of your creatures are shown; clicking one sends it at the current tab, or moves it there from another tab. Creatures that can't attack are dimmed, with the reason.
+- **Blocking:** each attacker gets a lane with an arrow pointing down at you. A chosen blocker moves into the slot in front of its attacker; several blockers overlap, more so the more there are (`--ov`). Your remaining creatures are shown underneath.
+- **Confirming:** both attacks and blocks end with a confirmation summary (Back / Confirm). "▾ Hide" shrinks the window to a pill so you can look at the table.
+- **Toasts:** they move to the top while the window is open.
+- **Test:** test/combat_ui.mjs, with screenshots in test/shots/combat_*.png.
+
 ## Browser storage (v8.9, 19:50)
 The user couldn't add players because the browser's storage was full.
 - **Clean start:** opening a table code different from the last one (a new table, or joining someone else's) clears this browser's decks, AI players, saved games and pictures. Kept: name, player key, phone links and preferences (`KEEP` in game.js).
@@ -82,7 +90,7 @@ The agent prompt is in this session's history (the "Play one game as human vs AI
 - The 4-player AI sweep is clean: no errors or stalls. Games last about 40 turns (≈10 rounds), which is normal.
 
 ## Where things stand
-- Live and test sites both run **v8.9** (see version.txt).
+- Live and test sites both run **v9.0** (see version.txt).
   - Live: starlit-conkies-c2facb.netlify.app (siteId 12ee5b76-1741-480c-8f66-9a4f87d4af69)
   - Test: joyful-rabanadas-f66e6c.netlify.app (siteId 5236eb56-b402-43c4-a92f-1aac62cc691d)
 - The engine revision (docs/ENGINE_REVISION_PLAN.md) is built: stages 1–4 plus the follow-up mechanics.
