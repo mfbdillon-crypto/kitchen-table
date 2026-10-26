@@ -308,7 +308,7 @@
       if (e.cond && O() && O().conditionHolds(s, Object.assign({}, c, { ctrl: pid }), e.cond) === false) continue;
       if (e.what === 'permanent' && !C().isPermanentCard(c)) continue;
       if (!covers(e, c, zone)) continue;
-      if (usedUp(s, pid, e, c)) continue;
+      if (usedUp(s, pid, e, c)) { if (o.used) o.used.push({ e, act: land ? 'play' : 'cast' }); continue; }
       const act = land ? 'play' : 'cast';
       if (!acts.includes(act)) continue;
       add({ act, kind: e.free ? 'free' : 'normal', cost: e.free ? '' : mc, via: 'perm:' + useKey(e), label: `${land ? 'Play' : 'Cast'} it (${e.srcName})`, src: e.src, perm: e });
@@ -380,8 +380,10 @@
   }
   // Dev mode: what this card can do and what stops it.
   function why(s, pid, c) {
-    const blocked = [];
-    const w = ways(s, pid, c, { blocked, top: c.zone === 'library' });
+    const blocked = [], used = [];
+    const w = ways(s, pid, c, { blocked, used, top: c.zone === 'library' });
+    // A once-a-turn permission already spent (Muldrotha: one permanent of each type; Lurrus; Karador): say so.
+    if (!w.length) for (const u of used) blocked.push({ act: u.act, label: 'from ' + c.zone, by: { srcName: u.e.srcName, text: u.e.limit === 'eachType' ? `already ${u.act === 'play' ? 'played a land' : 'cast a ' + (isLand(c) ? 'land' : permType(c).filter(t => t !== 'land')[0] || 'permanent') + ' spell'} from your ${c.zone} this turn (one of each type)` : `already used this turn` } });
     const rows = w.map(x => ({ ok: true, act: x.act, how: x.label + (x.kind && x.kind !== 'normal' ? ' [' + x.kind + ']' : ''), by: x.via || 'default rules' }));
     for (const b of blocked) rows.push({ ok: false, act: b.act, how: b.label, by: `${b.by.srcName}: ${b.by.text}` });
     if (!w.length && !blocked.length && ['graveyard', 'exile', 'library'].includes(c.zone)) rows.push({ ok: false, act: isLand(c) ? 'play' : 'cast', how: 'from ' + c.zone, by: 'default rule ' + (DEFAULTS.find(d => d.id === 'cast.' + (c.zone === 'graveyard' ? 'gy' : c.zone)) || {}).rule });

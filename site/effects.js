@@ -48,6 +48,7 @@
     s = String(s || '').trim().replace(/\.$/, '');
     let m;
     if (/^the amount of \{e\} (?:paid|you paid) this way$/.test(s)) return { v: 'lastX' };
+    if (/^the number of times (?:this spell|this|it) was kicked$/.test(s)) return { v: 'kicks' };
     if ((m = s.match(/^the number of (.+?) you control$/))) return { v: 'count', what: m[1], ctrl: 'you' };
     if ((m = s.match(/^the number of (.+?) (?:your opponents control|an opponent controls)$/))) return { v: 'count', what: m[1], ctrl: 'opp' };
     if ((m = s.match(/^the number of (.+?) on the battlefield$/))) return { v: 'count', what: m[1], ctrl: 'any' };
@@ -87,9 +88,23 @@
     let optional = false, ifDid = false, m;
     if ((m = s.match(/^if you do,? (.+)$/))) { ifDid = true; s = m[1]; }
     if ((m = s.match(/^you may (.+)$/))) { optional = true; s = m[1]; }
-    s = s.replace(/^you put /, 'put ');   // "You put a -1/-1 counter on …" (Persistent Constrictor)
+    s = s.replace(/^you put /, 'put ');
     const wrap = op => op && Object.assign(op, optional ? { optional: true } : {}, ifDid ? { ifDid: true } : {}, op.op !== 'manual' && !op.src ? { src: raw.trim().replace(/\.$/, '').replace(/^./, x => x.toUpperCase()) } : {});
+    // Moving counters (122.5): "Move a +1/+1 counter from target creature onto another target creature." Source first, then destination.
+    if ((m = s.match(/^move (a|an|one|two|three|all|any number of|x) ?((?:[+\-\d/]+|[a-z]+) )?counters? from (.+?) onto (.+)$/))) {
+      const from = targetOf(m[3], st), to = targetOf(m[4], st);
+      if (from && to) return [wrap({ op: 'moveCounters', n: m[1] === 'all' || m[1] === 'any number of' ? 'all' : (amt(m[1]) || 1), kind: m[2] ? m[2].trim() : 'any', from, to })];
+    }
     if ((m = s.match(/^adapt (\d+)$/))) return [wrap({ op: 'if', cond: 'this has no +1/+1 counters on it', ops: [{ op: 'counters', n: +m[1], kind: '+1/+1', on: { k: 'self' } }] })];   // 702.140
+    // "Your choice of …" (608.2d): the controller picks one option as it resolves — one bar of buttons, the AI picks for itself.
+    if ((m = s.match(/^(.+?) (gains?|has|have) your choice of (.+?)( until end of turn| until your next turn)?$/))) {
+      const opts = m[3].split(/,\s*(?:or\s+)?|\s+or\s+/).map(x => x.trim()).filter(Boolean);
+      if (opts.length > 1) { const ti0 = st.ti; let tiMax = ti0; const options = opts.map(o => { st.ti = ti0; const r = parse(`${m[1]} ${m[2]} ${o}${m[4] || ''}.`, null, st); tiMax = Math.max(tiMax, st.ti); return { label: o, ops: r.ops }; }); st.ti = tiMax; if (options.every(o => o.ops.length && o.ops.every(x => x.op !== 'manual'))) return [wrap({ op: 'choiceOf', key: 'c' + (st.choiceN = (st.choiceN || 0) + 1), options })]; }
+    }
+    if ((m = s.match(/^put your choice of (.+?) on (.+)$/))) {
+      const opts = m[1].split(/,\s*(?:or\s+)?|\s+or\s+/).map(x => x.trim().replace(/^an? /, '')).filter(Boolean);
+      if (opts.length > 1) { const tgt = targetOf(m[2], st); if (tgt) return [wrap({ op: 'choiceOf', key: 'c' + (st.choiceN = (st.choiceN || 0) + 1), options: opts.map(o => ({ label: o, ops: [{ op: 'counters', n: 1, kind: o.replace(/ counters?$/, ''), on: tgt }] })) })]; }
+    }
     if ((m = s.match(/^untap (that land|that creature|that permanent|it)$/))) return [wrap({ op: 'untap', what: { k: 'ev' } })];
     if ((m = s.match(/^exchange control of two target ([a-z ]+?)s$/))) { const what = { k: 't', n: 2, upTo: false, what: m[1], i: st.ti++ }; return [wrap({ op: 'exchange', what })]; }
     if (/^each player's life total becomes the lowest life total among all players$/.test(s)) return [wrap({ op: 'setLife', who: { k: 'eachPlayer' }, n: { v: 'lowestLife' } })];
@@ -361,6 +376,43 @@
   var m0;
 
   // ---------------- a whole ability ----------------
+  // ---- reveal and route ----
+  const RNUM = { a: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
+  function routeStart(sent) {
+    const t = sent.replace(/\.$/, ''); let m;
+    if ((m = t.match(/^(reveal|exile|look at) the top (card|x cards|(\w+) cards) of (your|their|that player's|target player's|target opponent's|each player's) library$/))) return { act: m[1], n: m[2] === 'card' ? 1 : m[2] === 'x cards' ? 'X' : (RNUM[m[3]] || +m[3] || 1), whose: m[4] };
+    if ((m = t.match(/^(reveal|exile) cards from the top of (your|their|that player's|target player's) library until (?:you|they) (?:reveal|exile) (an?|x|\w+) ([a-z ,/-]+?) cards?$/))) return { act: m[1], until: m[4].trim(), count: m[3] === 'x' ? 'X' : (RNUM[m[3]] || +m[3] || 1), whose: m[2] };
+    return null;
+  }
+  const routeFollows = x => /^(if (it'?s|it is|that card is|the revealed card is|they're|any of them are)|otherwise|(you may )?put (it|that card|them|the rest|those cards|all|each|any number|the revealed|the other|one of them|up to)|then put|the rest)/.test(x) && /(battlefield|hand|graveyard|library|exile)/.test(x);
+  function routeDest(str) {
+    const x = String(str || '').trim();
+    if (/^onto the battlefield/.test(x)) return { to: 'battlefield', tapped: /tapped/.test(x) };
+    if (/^into (?:your|their|its owner's) hand/.test(x)) return { to: 'hand' };
+    if (/^(?:into|in) (?:your|their|its owner's|that player's) graveyard/.test(x)) return { to: 'graveyard' };
+    if (/^(?:on the bottom|on the bottom of|at the bottom of)/.test(x)) return { to: 'bottom', random: /random/.test(x) };
+    if (/^(?:on top of|back on top)/.test(x)) return { to: 'top' };
+    if (/^into exile|^in exile/.test(x)) return { to: 'exile' };
+    return null;
+  }
+  function routeBuild(r, follow, whole) {
+    const spec = { act: r.act, n: r.n, until: r.until || null, count: r.count, whose: r.whose, routes: [], rest: null, unknown: [], reveal: r.act !== 'look at', text: whole };
+    for (const f0 of follow) {
+      const f = f0.replace(/\.$/, ''); let m, d;
+      if ((m = f.match(/^if (?:it'?s|it is|that card is|the revealed card is) an? (.+?) card,? (you may )?(?:reveal it and )?put it (.+)$/)) && (d = routeDest(m[3]))) { spec.routes.push(Object.assign({ if: m[1], may: !!m[2] }, d)); continue; }
+      if ((m = f.match(/^put (?:it|that card) (.+?) if it'?s an? (.+?) card$/)) && (d = routeDest(m[1]))) { spec.routes.push(Object.assign({ if: m[2] }, d)); continue; }
+      if ((m = f.match(/^otherwise,? (you may )?put (?:it|that card) (.+)$/)) && (d = routeDest(m[2]))) { spec.routes.push(Object.assign({ else: true, may: !!m[1] }, d)); continue; }
+      if ((m = f.match(/^(?:you may )?put (?:that card|it|those cards|them) (.+?) and the rest (.+)$/)) && (d = routeDest(m[1]))) { spec.routes.push(Object.assign({ hit: true }, d)); spec.rest = routeDest(m[2]); continue; }
+      if ((m = f.match(/^(?:you may )?put (?:all|each|any number of|up to (?:one|two|three)) (.+?) cards? (?:revealed this way|from among them|revealed) (.+?)(?: and the rest (.+))?$/)) && (d = routeDest(m[2]))) { spec.routes.push(Object.assign({ if: m[1].replace(/^the /, '') }, d)); if (m[3]) spec.rest = routeDest(m[3]); continue; }
+      if ((m = f.match(/^(?:then )?put the rest (.+)$/)) && (d = routeDest(m[1]))) { spec.rest = d; continue; }
+      if ((m = f.match(/^the rest (?:go|are put) (.+)$/)) && (d = routeDest(m[1]))) { spec.rest = d; continue; }
+      if ((m = f.match(/^(you may )?put (?:it|that card|them|those cards|the revealed cards?) (.+)$/)) && (d = routeDest(m[2]))) { spec.routes.push(Object.assign({ may: !!m[1] }, d)); continue; }
+      spec.unknown.push(f0);
+    }
+    spec.zones = ['battlefield', 'hand', 'graveyard', 'exile'].filter(z => whole.includes(z)).concat(/bottom/.test(whole) ? ['bottom'] : [], /on top|back on top/.test(whole) ? ['top'] : []);
+    if (!spec.zones.length) spec.zones = ['hand', 'graveyard', 'bottom'];
+    return spec;
+  }
   function parse(text, opts, st0) {
     const st = st0 || { ti: 0 };
     // "You get an emblem with "…"" (114): the quoted text is the emblem's ability, kept whole.
@@ -400,9 +452,22 @@
     const t2 = t1c.replace(/\b(that player|its controller|they|that opponent) may pay ((?:\{[^}]+\})+)\. if (?:they|that player|the player|he or she|its controller) (?:doesn't|don't|do not), ([^.]+)\./g, (all, w, cost, rest) => `__payor|${w}|${cost}|${rest}__.`);
     // "where X is …" applies to the clause before it.
     const sentences = t2.replace(/\.?\n/g, '. ').split(/(?<=\.)\s+|(?<=\.)$/).map(x => x.trim()).filter(Boolean);
+    // Reveal and route (701.16, 608.2c): "Reveal the top N cards… If it's a land card, put it onto the battlefield. Otherwise,
+    // put it into your hand." — the start and the sentences that say where the cards go become one effect; what the table
+    // can't read is asked, card by card, on the owner's device.
+    const routes = [];
+    for (let i = 0; i < sentences.length; i++) {
+      const r = routeStart(sentences[i]); if (!r) continue;
+      let j = i + 1; const follow = [];
+      while (j < sentences.length && routeFollows(sentences[j])) { follow.push(sentences[j]); j++; }
+      if (!follow.length && !r.until) continue;
+      routes.push(routeBuild(r, follow, sentences.slice(i, j).join(' ')));
+      sentences.splice(i, j - i, `__route:${routes.length - 1}__.`);
+    }
     const ops = [];
     let understood = true;
     for (let sent of sentences) {
+      { const rt = sent.match(/^__route:(\d+)__\.?$/); if (rt) { ops.push(Object.assign({ op: 'route' }, routes[+rt[1]])); continue; } }
       const dg = sent.match(/^__dig:([a-z -]+):(mut|1):(either|battlefield|hand):([01]):(bottom|exile)__\.?$/);
       if (/^as an additional cost to cast this(?: spell)?, discard (?:a|one) card\.?$/.test(sent)) continue;
       if (/^as an additional cost to cast this(?: spell)?, (?:pay x life|sacrifice (?:a|an) [a-z ]+?(?: or discard a card)?|discard a card or sacrifice (?:a|an) [a-z ]+?)\.?$/.test(sent)) continue;   // paid as it's cast (601.2f)
@@ -509,5 +574,5 @@
     return { keepTop: false, pick, filter: filter && filter !== 'card' ? filter : null, dest, rest, random: /random order/.test(t), tapped: /onto the battlefield tapped/.test(t), reveal: /reveal/.test(t), upTo: /up to|may|any number/.test(t) };
   }
 
-  root.Effects = { parse, clause, variable, tokenSpec, who, obj, lookPlan };
+  root.Effects = { parse, clause, variable, tokenSpec, who, obj, lookPlan, routeDest };
 })(typeof window !== 'undefined' ? window : globalThis);

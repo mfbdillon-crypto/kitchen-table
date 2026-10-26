@@ -332,7 +332,7 @@
       const abs = C().abilities(c);
       for (let i = 0; i < abs.length; i++) {
         const ab = abs[i];
-        if (!ab.tap || ab.sac || ab.sacOther || ab.discard || ab.manaAb || ab.crew || ab.equip || ab.loyalty !== undefined) continue;
+        if (!ab.tap || ab.sac || ab.sacOther || ab.discard || ab.manaAb || ab.crew || ab.equip || ab.loyalty !== undefined || (ab.extra && ab.extra.some(p => !['counter', 'exert', 'lifeId'].includes(p.k) && !p.self))) continue;
         const pay = C().pay(ab.mana, B.sources().filter(x => x.id !== c.id), 0); if (!pay) continue;
         const eff = C().effectsIn(ab.text);
         if (!eff.understood || !eff.effects.some(e => ['dmg', 'draw', 'life', 'counters', 'tap', 'token', 'scry'].includes(e.k))) continue;
@@ -361,7 +361,7 @@
       const abs = C().abilities(c);
       for (let i = 0; i < abs.length; i++) {
         const ab = abs[i];
-        if (ab.manaAb || ab.equip || ab.crew || ab.loyalty !== undefined || (ab.sac && !ab.energy) || ab.sacOther || ab.life > 0 || /discard|return .* to (?:its|their) owner's hand/i.test(ab.cost || '') || (/exile/i.test(ab.cost || '') && !(ab.exileSelf && /extra turn/i.test(ab.text || '')))) continue;
+        if (ab.manaAb || ab.equip || ab.crew || ab.loyalty !== undefined || (ab.sac && !ab.energy) || ab.sacOther || ab.life > 0 || (ab.extra && ab.extra.some(p => !['counter', 'exert', 'lifeId'].includes(p.k) && !p.self)) || /discard|return .* to (?:its|their) owner's hand/i.test(ab.cost || '') || (/exile/i.test(ab.cost || '') && !(ab.exileSelf && /extra turn/i.test(ab.text || '')))) continue;
         if (ab.tap && (c.tapped || (B.isCre(c) && R().sick(s, c) && !B.kw(c).has('haste')))) continue;
         if (/^level \d/i.test(ab.text || '')) continue;
         { const lim = (ab.text || '').toLowerCase().match(/activate (?:this ability )?only ([^.]+)/g) || []; let bad = false;
@@ -462,6 +462,11 @@
         const r = o.card.zone === 'hand' ? await io.castFromHand(o.id, { tg: o.tg, mode: o.mode, alt: 'free', fromPool: [] }) : await io.castPublic(o.id, { tg: o.tg, mode: o.mode, alt: 'free', fromPool: [], copy: t.copy || undefined });
         B.note('did', `${t.src}: cast ${o.name} for free${r && r.ok === false ? ' (refused: ' + r.err + ')' : ''}`);
         return;
+      }
+      if (t.k === 'route') {   // reveal and route: follow the card's words; where it doesn't say, a land onto the battlefield if it may, else the hand
+        const plan = io.routePlan(t); const z = t.zones || [];
+        const dec = plan.cards.map(c => { if (c.dest) return { id: c.id, to: c.dest.to, tapped: c.dest.tapped, random: c.dest.random }; const land = /\bland\b/i.test((c.d.faces[0] || {}).t || ''); const to = land && z.includes('battlefield') ? 'battlefield' : z.includes('hand') ? 'hand' : z[0] || 'graveyard'; return { id: c.id, to }; });
+        await io.routeApply(t, dec); B.note('did', `${t.src}: ${dec.map(x => x.to).join(', ')}`); return;
       }
       if (t.k === 'impulse') { const ids = await io.impulse(t); B.note('did', `exiled ${ids.length} from the top to play (${t.src})`); return; }
       if (t.k === 'handToTop') {

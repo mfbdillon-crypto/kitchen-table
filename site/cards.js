@@ -15,8 +15,19 @@
   // The game state the rules are looking at (for things like a god's devotion check).
   let CUR = null;
   function setState(s) { CUR = s; }
+  // "Each land is a Forest in addition to its other land types" / "All lands are Islands in addition to their other types"
+  // (305.7, Prismatic Omen-style): the basic land types every land on the battlefield also has.
+  let landCache = { s: null, key: null, types: [] };
+  function extraLandTypes(s) {
+    if (!s || !s.cards) return [];
+    const key = s.seq; if (landCache.s === s && landCache.key === key) return landCache.types;
+    const types = [];
+    for (const o of Object.values(s.cards)) { if (o.zone !== 'battlefield' || o.faceDown || !o.d) continue; const t = rawText(o); let m; const re = /(?:each land is an? (plains|island|swamp|mountain|forest)|all lands are (plains|island|swamp|mountain|forest)s?) in addition to (?:its|their) other(?: land)? types/gi; while ((m = re.exec(t))) types.push((m[1] || m[2]).toLowerCase()); }
+    landCache = { s, key, types }; return types;
+  }
   function isType(c, w) {
     if (c && c.animated && c.zone === 'battlefield' && new RegExp('\\b' + w + '\\b', 'i').test(c.animated)) return true;   // crewed Vehicle, animated land
+    if (CUR && c && c.zone === 'battlefield' && /^(plains|island|swamp|mountain|forest)$/i.test(w) && /\bland\b/i.test(typeLine(c)) && extraLandTypes(CUR).includes(w.toLowerCase())) return true;
     if (!new RegExp('\\b' + w + '\\b', 'i').test(typeLine(c))) { if (CUR && c && c.zone === 'battlefield' && /^(creatures?|[A-Z][a-z]+)$/i.test(w) && !/^(artifact|enchantment|land|planeswalker|battle|instant|sorcery|legendary|basic|token|permanent)s?$/i.test(w)) { const an = staticAnim(CUR, c); if (an && (/^creatures?$/i.test(w) || new RegExp('^' + an.sub + 's?$', 'i').test(w))) return true; } return false; }
     if (/^creatures?$/i.test(w) && CUR && c && c.zone === 'battlefield' && !c.faceDown && notCreatureNow(CUR, c)) return false;
     return true;
@@ -73,8 +84,12 @@
     }
     return out.join('\n');
   }
+  // A flavour name in front of an ability ("Eternity Gate — Whenever this attacks…", "Mold Harvest — {1}, Sacrifice…: …",
+  // "∞ — At the beginning…") isn't part of the rules; ability words and keyword costs ("Ward—{3}") are left alone.
+  const FLAVOR_PREFIX = /^(?!(?:Equip|Ward|Companion|To solve|Reconfigure|Crew|Cycling|Flashback|Escape|Kicker|Multikicker|Buyback|Suspend|Foretell|Plot|Disturb|Embalm|Eternalize|Unearth|Encore|Dash|Blitz|Evoke|Ninjutsu|Madness|Morph|Megamorph|Disguise|Boast|Channel|Spree|Offspring|Gift|Craft|Station|Warp|Harmonize|Impending|Prototype|Bestow|Emerge|Surge|Mutate|Overload|Spectacle|Prowl|Entwine|Escalate|Replicate|Splice|Transmute|Fuse|Cleave|Casualty|Squad|Bargain|Freerunning|Sneak|Exhaust|Max speed|Start your engines)\b)([A-Z∞][^—\n:{}".]{0,40}?) — (?=When\b|Whenever\b|At\b|\{|[^\n]*?:)/gm;
+  const stripFlavor = t => String(t || '').replace(FLAVOR_PREFIX, '');
   function text(c) {
-    let t = levelText(c, rawText(c)).replace(/\([^)]*\)/g, '').replace(/[ \t]+$/gm, '').replace(/ +\n/g, '\n');
+    let t = stripFlavor(levelText(c, rawText(c))).replace(/\([^)]*\)/g, '').replace(/[ \t]+$/gm, '').replace(/ +\n/g, '\n');
     const n = nameOf(c);
     if (n) {
       const short = n.split(',')[0];
@@ -82,7 +97,23 @@
     }
     return t;
   }
-  const lines = c => text(c).split('\n').map(l => l.trim()).filter(Boolean);
+  // Abilities other permanents give this one (613.1f): "Enchanted land has "{T}: Add two mana of any one color."",
+  // "Treasures you control have "{T}, Sacrifice this: Add two mana of any one color."", "Equipped creature has "…"".
+  function granted(c) {
+    if (!CUR || !CUR.cards || !c || c.zone !== 'battlefield' || c.faceDown) return [];
+    const out = [];
+    for (const o of Object.values(CUR.cards)) {
+      if (o.zone !== 'battlefield' || o.faceDown || !o.d || o.id === c.id) continue;
+      const t = rawText(o); if (!/ ha(?:s|ve) "/.test(t)) continue;
+      let m;
+      const re1 = /(?:enchanted|equipped) (?:land|creature|permanent|artifact) has "([^"]+)"/gi;
+      if (o.attachedTo === c.id) while ((m = re1.exec(t))) out.push(m[1]);
+      const re2 = /(?:^|\n)(other )?([a-z][a-z ]*?) you control have "([^"]+)"/gi;
+      while ((m = re2.exec(t))) { if (o.ctrl !== c.ctrl || (m[1] && o.id === c.id)) continue; const w = m[2].toLowerCase().replace(/s$/, '').replace(/ies$/, 'y'); if (w === 'creature' ? isType(c, 'creature') : matchesWhat(c, w)) out.push(m[3]); }
+    }
+    return out.map(x => x.replace(/\bthis (?:land|creature|artifact|permanent)\b/gi, 'this'));
+  }
+  const lines = c => text(c).split('\n').map(l => l.trim()).filter(Boolean).concat(granted(c));
   const isPermanentCard = c => /\b(creature|artifact|enchantment|planeswalker|land|battle)\b/i.test(typeLine(c));
 
   // ---------- keywords ----------
@@ -329,6 +360,7 @@
       const all = [...new Set(cols.concat(pm))];
       if (all.length) best = { amount: 1, colors: all.join(''), sac: false };
     }
+    if (/\bland\b/.test(tl) && CUR && c.zone === 'battlefield') { const ex = extraLandTypes(CUR).map(t => BASIC[t]).filter(Boolean); if (ex.length) { if (best && !best.sac && !best.filter && best.amount === 1 && !best.units) best = Object.assign({}, best, { colors: [...new Set((best.colors + ex.join('')).split(''))].join('') }); else if (!best) best = { amount: 1, colors: [...new Set(ex)].join(''), sac: false }; } }
     // Auras like Fertile Ground / Wild Growth / Utopia Sprawl: "Whenever enchanted land is tapped for mana, its controller adds an additional…" (605.4a)
     if (best && !best.sac && CUR && CUR.cards && c.id) {
       for (const o of Object.values(CUR.cards)) {
@@ -347,6 +379,11 @@
         best = { amount: units.length * 2, colors: best.colors, sac: false, units: units.concat(units) };
       }
     }
+    // "If you tap a permanent for mana, it produces three times as much of that mana instead." (Nyxbloom Ancient)
+    if (best && CUR && CUR.cards && c.id && Object.values(CUR.cards).some(o => o.zone === 'battlefield' && !o.faceDown && o.d && o.ctrl === c.ctrl && /if you tap a permanent for mana, it produces three times as much/i.test(rawText(o)))) {
+      const units = best.units ? best.units.slice() : Array.from({ length: best.amount }, () => best.colors);
+      best = Object.assign({}, best, { amount: units.length * 3, units: units.concat(units, units) });
+    }
     return best;
   }
 
@@ -355,6 +392,8 @@
   // spell: the card being cast, so "spend this mana only to cast an Angel spell" sources count only for it.
   function pay(cost, sources, x, spell) {
     sources = sources.filter(s => !s.only || (spell && matchesWhat(Object.assign({}, spell, { zone: 'stack' }), s.only)));
+    // "You may spend mana as though it were mana of any color" (Sliver Hivelord-style, Mycosynth…): every unit pays any color.
+    if (CUR && CUR.cards && Object.values(CUR.cards).some(o => o.zone === 'battlefield' && !o.faceDown && o.d && (!spell || o.ctrl === (spell.ctrl || spell.owner)) && /you may spend mana as though it were mana of any color/i.test(rawText(o)))) sources = sources.map(s => Object.assign({}, s, { colors: 'WUBRGC', units: s.units ? s.units.map(() => 'WUBRGC') : s.units }));
     const plain = sources.filter(s => !s.filter), filters = sources.filter(s => s.filter);
     let r = pay0(cost, plain, x);
     if (r || !filters.length) return r;
@@ -499,6 +538,13 @@
   }
 
   function targetsIn(str) {
+    const out0 = targetsIn0(str);
+    // "Move a counter from target X onto another target Y": the first target must have a counter (of that kind) to move.
+    const mv = String(str).toLowerCase().match(/move (?:a|an|one|two|three|all|any number of|x) ?((?:[+\-\d/]+|[a-z]+) )?counters? from target/);
+    if (mv && out0[0]) out0[0].flags = Object.assign({}, out0[0].flags, { counter: mv[1] ? mv[1].trim() : 'any' });
+    return out0;
+  }
+  function targetsIn0(str) {
     const reqs = [];
     // A reflexive "When you do, …" ability picks its own targets later (603.12).
     const s = str.replace(/\n/g, ' ').replace(/\bwhen you do\b.*$/i, '');
@@ -598,10 +644,13 @@
       return true;
     }
     if (req.kinds.includes('ability') && !req.kinds.includes('spell')) return false;
-    if (req.kinds.includes('spell')) {
+    // "target spell or nonland permanent" (Press the Enemy, Venser): either a spell, or a permanent on the battlefield.
+    const spellOr = req.kinds.includes('spell') && /\bspell or\b/i.test(req.text || '');
+    if (req.kinds.includes('spell') && (c.zone === 'stack' || !spellOr)) {
       if (c.zone !== 'stack' || c.ab) return false;
       if (req.ctrl === 'you' && c.ctrl !== by) return false;
-      const others = req.kinds.filter(k => k !== 'spell' && k !== 'ability');
+      if (req.ctrl === 'opp' && c.ctrl === by) return false;
+      const others = spellOr ? [] : req.kinds.filter(k => k !== 'spell' && k !== 'ability');
       if (others.length && !others.some(k => isType(c, k))) return false;
       if (req.non.some(k => isType(c, k))) return false;
       return true;
@@ -614,6 +663,7 @@
     if (req.ctrl === 'you' && c.ctrl !== by) return false;
     if (req.ctrl === 'opp' && c.ctrl === by) return false;
     if (req.own && c.owner !== by) return false;
+    if (req.flags.counter && !(req.flags.counter === 'any' ? Object.values(c.counters || {}).some(v => v > 0) : (c.counters || {})[req.flags.counter] > 0)) return false;
     if (req.flags.tapped && !c.tapped) return false;
     if (req.flags.untapped && c.tapped) return false;
     const attacking = !!(s.combat && s.combat.att && s.combat.att[c.id]);
@@ -760,24 +810,29 @@
     let n = 0;
     const own = text(c).toLowerCase();
     let m;
-    if ((m = own.match(/this spell costs \{(\d+)\} less to cast for each ([a-z -]+?) (on the battlefield|you control|your opponents control)/))) n += +m[1] * count(m[2], /you control/.test(m[3]) ? 'you' : /opponents/.test(m[3]) ? 'opp' : 'any');
+    if ((m = own.match(/this(?: spell)? costs \{(\d+)\} less to cast for each ([a-z -]+?) (on the battlefield|you control|your opponents control)/))) n += +m[1] * count(m[2], /you control/.test(m[3]) ? 'you' : /opponents/.test(m[3]) ? 'opp' : 'any');
     if ((m = own.match(/affinity for ([a-z]+)/))) n += count(m[1].replace(/s$/, ''), 'you');
     // Karador: "…for each creature card in your graveyard".
-    if ((m = own.match(/this spell costs \{(\d+)\} less to cast for each ([a-z ]+?) cards? in your graveyard/))) n += +m[1] * Object.values(s.cards).filter(o => o.zone === 'graveyard' && o.owner === by && matchesWhat(o, m[2])).length;
-    if ((m = own.match(/this spell costs \{x\} less to cast, where x is (the greatest power among creatures you control|the total power of creatures you control|the greatest number of ([a-z]+) an opponent controls)/))) {
+    if ((m = own.match(/this(?: spell)? costs \{(\d+)\} less to cast for each ([a-z ]+?) cards? in your graveyard/))) n += +m[1] * Object.values(s.cards).filter(o => o.zone === 'graveyard' && o.owner === by && matchesWhat(o, m[2])).length;
+    if ((m = own.match(/this(?: spell)? costs \{x\} less to cast, where x is (the greatest power among creatures you control|the total power of creatures you control|the greatest number of ([a-z]+) an opponent controls)/))) {
       const mine = bf.filter(o => o.ctrl === by && isType(o, 'creature'));
       if (/greatest power/.test(m[1])) n += Math.max(0, ...mine.map(pow));
       else if (/total power/.test(m[1])) n += mine.reduce((a, o) => a + Math.max(0, pow(o)), 0);
       else { const per = {}; for (const o of bf) if (o.ctrl !== by && matchesWhat(o, m[2].replace(/s$/, ''))) per[o.ctrl] = (per[o.ctrl] || 0) + 1; n += Math.max(0, ...Object.values(per)); }
     }
+    // "This costs {1} less to cast for each {E} you've paid or lost this turn."
+    if ((m = own.match(/this(?: spell)? costs \{(\d+)\} less to cast for each \{e\}\s*you've paid or lost this turn/))) n += +m[1] * (((s.turn && s.turn.stats && s.turn.stats.energy) || {})[by] || 0);
     // Statics on my permanents.
     for (const o of bf) {
       if (o.ctrl !== by) continue;
       const t = text(o).toLowerCase();
       for (const line of t.split('\n')) {
-        const r = line.match(/^(?:each spell you cast that's ([a-z ]+?)|([a-z ,]+?) spells you cast(?: of the chosen type)?) costs? \{(\d+)\} less to cast(?: for each ([+\-\d/]+) counter on this)?\.?$/);
+        // "During your turn, spells you cast cost {1} less to cast for each creature you control with power 4 or greater."
+        const dm = line.match(/^during your turn, spells you cast cost \{(\d+)\} less to cast for each creature you control with power (\d+) or greater\.?$/);
+        if (dm) { if (s.turn && s.turn.active === by) n += +dm[1] * bf.filter(x => x.ctrl === by && isType(x, 'creature') && pow(x) >= +dm[2]).length; continue; }
+        const r = line.match(/^(?:each spell you cast that's ([a-z ]+?)|([a-z ,]+?) spells(?: you cast)?(?: of the chosen type)?(?: you cast)?) costs? \{(\d+)\} less to cast(?: for each ([+\-\d/]+) counter on this)?\.?$/);
         if (!r) continue;
-        if (!r[1] && !r[4]) continue;   // the plain "X spells you cast cost {N} less" is already in costOf
+        if (!r[1] && !r[4] && /you cast/.test(line)) continue;   // the plain "X spells you cast cost {N} less" is already in costOf
         const per = r[4] ? ((o.counters || {})[r[4]] || 0) : 1;
         let ok;
         if (r[1]) ok = r[1].split(/ or /).some(w => matchesWhat(c, w.trim()));
@@ -922,11 +977,109 @@
   }
 
   // Activated abilities written on a permanent: "{2}, {T}: Draw a card." → [{cost, tap, text}]
+  // One part of an activation cost: { k: 'plain' } for the parts the old reader handles (mana, {T}, sacrifice this, pay N life…),
+  // or a choice the player makes as they activate (602.2b):
+  //   bounce   "Return a land you control to its owner's hand" / "Return this to its owner's hand"
+  //   untap    "Untap a tapped creature you control"         tapOther "Tap an untapped creature you control"
+  //   counter  "Remove a +1/+1 counter from this" / "Put a -1/-1 counter on this"
+  //   exileGy  "Exile a creature card from your graveyard"   discard "Discard two cards"   sacN "Sacrifice two creatures"
+  function costPart(p0) {
+    const p = p0.trim().toLowerCase(); let m;
+    if (/^(?:\{[^}]+\})+$|^tap$|^sacrifice this\b|^sacrifice (?:an?|another) [a-z ]+$|^discard a card$|^pay \d+ life$|^pay (?:\{e\})+$|^pay \w+ \{e\}$|^exile this\b/.test(p)) return { k: 'plain' };
+    if ((m = p.match(/^return this to its owner's hand$/))) return { k: 'bounce', self: true, n: 1, what: 'this' };
+    if ((m = p.match(/^return (an?|one|two|three|four|five) ([a-z ]+?) you control to (?:its|their) owner's hand$/))) return { k: 'bounce', n: toNum(m[1]) || 1, what: m[2].replace(/s$/, '') };
+    if ((m = p.match(/^untap (an?|one|two|three|four|five|fifteen|\d+) tapped ([a-z ]+?) you control$/))) return { k: 'untap', n: toNum(m[1]) || (m[1] === 'fifteen' ? 15 : 1), what: m[2].replace(/s$/, '') };
+    if ((m = p.match(/^tap (an?|one|two|three|four|five|x|\d+) untapped ([a-z ]+?) you control$/))) return { k: 'tapOther', n: toNum(m[1]) || 1, what: m[2].replace(/s$/, '') };
+    if ((m = p.match(/^remove (an?|one|two|three|four|five|x|\d+) ([+\-\d/a-z]+) counters? from this$/))) return { k: 'counter', n: -(toNum(m[1]) || 1), kind: m[2] };
+    if ((m = p.match(/^remove (an?|one|two|three) counters? from this$/))) return { k: 'counter', n: -(toNum(m[1]) || 1), kind: 'any' };
+    if ((m = p.match(/^put (an?|one|two|three) ([+\-\d/a-z]+) counters? on this$/))) return { k: 'counter', n: toNum(m[1]) || 1, kind: m[2] };
+    if ((m = p.match(/^exile (an?|one|two|three|four|five|x|\d+) ([a-z ]*?)cards? from your graveyard$/))) return { k: 'exileGy', n: toNum(m[1]) || 1, what: m[2].trim() || 'card' };
+    if ((m = p.match(/^discard (two|three|x|\d+) cards$/))) return { k: 'discard', n: toNum(m[1]) || 2 };
+    if ((m = p.match(/^sacrifice (two|three|four|five|\d+) ([a-z ]+?)$/))) return { k: 'sacN', n: toNum(m[1]) || 2, what: m[2].replace(/s$/, '') };
+    if ((m = p.match(/^exert this$/))) return { k: 'exert' };
+    if ((m = p.match(/^tap another untapped ([a-z ]+?) you control$/))) return { k: 'tapOther', n: 1, what: m[1] };
+    if (/^pay life equal to the number of colors in your commanders?'? color identity$/.test(p)) return { k: 'lifeId' };
+    return null;
+  }
+  // Who can be chosen for a cost part (ids), and whether there are enough.
+  function costPool(s, src, part) {
+    const all = Object.values(s.cards);
+    if (part.k === 'bounce') return part.self ? [src.id] : all.filter(x => x.zone === 'battlefield' && x.ctrl === src.ctrl && matchesWhat(x, part.what)).map(x => x.id);
+    if (part.k === 'untap') return all.filter(x => x.zone === 'battlefield' && x.ctrl === src.ctrl && x.tapped && matchesWhat(x, part.what)).map(x => x.id);
+    if (part.k === 'tapOther') return all.filter(x => x.zone === 'battlefield' && x.ctrl === src.ctrl && !x.tapped && x.id !== src.id && matchesWhat(x, part.what)).map(x => x.id);
+    if (part.k === 'exileGy') return all.filter(x => x.zone === 'graveyard' && x.owner === src.ctrl && (part.what === 'card' || matchesWhat(x, part.what))).map(x => x.id);
+    if (part.k === 'sacN') return all.filter(x => x.zone === 'battlefield' && x.ctrl === src.ctrl && matchesWhat(x, part.what)).map(x => x.id);
+    return [];
+  }
+  // Abilities used from the hand (602.2, 702.29 cycling, 702.140? channel): "Cycling {2}", "Swampcycling {2}", "Basic landcycling {1}",
+  // "Wizardcycling {3}", "Channel — {1}{G}, Discard this: …", "{2}, Discard this: …". Each: { kind, cost, mana, text }.
+  // Reveal and route: which cards come off the top of a library and where each goes by the card's own words; null = ask.
+  //   t: the 'route' todo { n | until, count, routes:[{if|else|hit, to, tapped, may}], rest }, library: [{id, d}] top first.
+  function routePlan(t, library, owner) {
+    const asCard = c => Object.assign({ zone: 'library', owner: owner || null, counters: {}, face: 0 }, c);
+    let cards = [], hits = [];
+    if (t.until) { const want = Math.max(1, t.count || 1); for (const c of library) { cards.push(c); if (matchesWhat(asCard(c), t.until)) { hits.push(c.id); if (hits.length >= want) break; } } }
+    else cards = library.slice(0, Math.max(0, t.n | 0));
+    const R0 = t.routes || [];
+    const plan = cards.map(c => {
+      let d = null;
+      if (t.until) { const hr = R0.find(r => r.hit) || R0.find(r => !r.if && !r.else); if (hits.includes(c.id)) d = hr || null; else d = t.rest || null; }
+      else {
+        const byIf = R0.find(r => r.if && matchesWhat(asCard(c), r.if.replace(/ cards?$/, '')));
+        d = byIf || (R0.some(r => r.if) ? R0.find(r => r.else) : null) || R0.find(r => !r.if && !r.else && !r.hit) || t.rest || null;
+        if (!d && R0.some(r => r.if) && t.rest) d = t.rest;
+      }
+      return { id: c.id, d: c.d, dest: d ? { to: d.to, tapped: !!d.tapped, random: !!d.random, may: !!d.may } : null, hit: hits.includes(c.id) };
+    });
+    return { cards: plan, hits };
+  }
+  // Can this spell be countered? (101.2) "This spell can't be countered", "Spells you control can't be countered",
+  // "Creature spells you control can't be countered", "Creature and enchantment spells you control can't be countered".
+  function uncounterable(s, c) {
+    if (!c || c.ab) return false;
+    if (/(?:^|\n|\. )this(?: spell)? can't be countered/i.test(text(c))) return true;
+    for (const o of Object.values((s && s.cards) || {})) {
+      if (o.zone !== 'battlefield' || o.faceDown || !o.d || o.ctrl !== c.ctrl) continue;
+      const m = text(o).match(/(?:^|\n)((?:[a-z]+ )*?(?:[a-z]+ and [a-z]+ )?)spells you control can't be countered(?! by)/i);
+      if (!m) continue;
+      const kinds = m[1].trim().toLowerCase().split(/\s+and\s+|\s+or\s+/).filter(Boolean);
+      if (!kinds.length || kinds.some(k => isType(c, k))) return true;
+    }
+    return false;
+  }
+  function handAbilities(c) {
+    const out = [];
+    for (const line of lines(c)) {
+      let m;
+      if ((m = line.match(/^(basic land|[a-z]+)?cycling ((?:\{[^}]+\})+)/i))) {
+        const t = (m[1] || '').trim().toLowerCase();
+        const text = !t ? 'Draw a card.' : t === 'basic land' ? 'Search your library for a basic land card, reveal it, put it into your hand, then shuffle.' : `Search your library for a ${t === 'land' ? 'land' : t.replace(/^./, x => x.toUpperCase())} card, reveal it, put it into your hand, then shuffle.`;
+        out.push({ kind: t ? t + 'cycling' : 'cycling', label: (t ? t.replace(/^./, x => x.toUpperCase()) + 'cycling' : 'Cycling') + ' ' + m[2], cost: m[2] + ', Discard this', mana: parseCost(m[2]), text });
+        continue;
+      }
+      if ((m = line.match(/^channel\s*[—-]\s*((?:\{[^}]+\})*)(?:,\s*)?discard this(?: card)?:\s*(.+)$/i))) { out.push({ kind: 'channel', label: 'Channel ' + (m[1] || ''), cost: (m[1] ? m[1] + ', ' : '') + 'Discard this', mana: parseCost(m[1] || ''), text: m[2].trim() }); continue; }
+      if ((m = line.match(/^((?:\{[^}]+\})*),?\s*discard this(?: card)?:\s*(.+)$/i))) out.push({ kind: 'discard', label: (m[1] || '') + ' Discard', cost: (m[1] ? m[1] + ', ' : '') + 'Discard this', mana: parseCost(m[1] || ''), text: m[2].trim() });
+    }
+    return out;
+  }
+  // Is this one line an activated ability whose cost the table can pay? (for the card model: lines it couldn't place)
+  function abilityLine(line) { const c = { d: { n: '', faces: [{ n: '', t: '', o: line }] }, counters: {}, zone: 'battlefield' }; const a = abilities(c).find(x => !x.crew && !x.equip && x.loyalty === undefined); return a || null; }
   function abilities(c) {
     const out = [];
     for (const line of lines(c)) {
-      const m = line.match(/^((?:\{[^}]+\}|,|\s|tap|sacrifice this[a-z ]*|sacrifice (?:an?|another) [a-z ]+?|discard a card|pay \d+ life|pay (?:\{E\})+|pay (?:one|two|three|four|five|six|seven|eight|nine|ten|x|\d+) \{E\}|exile this[a-z ]*|remove [a-z ]+ counters? from this[a-z ]*)+?):\s*(.+)$/i);
-      if (!m) continue;
+      let m = line.match(/^((?:\{[^}]+\}|,|\s|tap|sacrifice this[a-z ]*|sacrifice (?:an?|another) [a-z ]+?|discard a card|pay \d+ life|pay (?:\{E\})+|pay (?:one|two|three|four|five|six|seven|eight|nine|ten|x|\d+) \{E\}|exile this[a-z ]*|remove [a-z ]+ counters? from this[a-z ]*)+?):\s*(.+)$/i);
+      // Other costs (602.2, 118): every part before the colon has to be one the table knows how to pay.
+      let extra = null;
+      if (!m) {
+        const mm = line.match(/^([^:"]{2,160}):\s*(.+)$/);
+        if (!mm || /^(when|whenever|at|if|as long as|you may|each|this|all|creatures|enchanted|equipped)\b/i.test(mm[1])) continue;
+        const parts = mm[1].split(/,\s*/), known = [];
+        let ok = true;
+        for (const p of parts) { const c0 = costPart(p); if (!c0) { ok = false; break; } if (c0.k !== 'plain') known.push(c0); }
+        if (!ok) continue;
+        m = [line, parts.filter(p => costPart(p).k === 'plain').join(', '), mm[2]]; extra = known;
+      }
+      else extra = m[1].split(/,\s*/).map(costPart).filter(x => x && x.k !== 'plain' && x.k !== 'exert' || (x && x.k === 'counter'));
       // Energy (107.14): "Pay {E}{E}" / "Pay six {E}" / "Pay X {E}".
       const em = m[1].match(/pay ((?:\{E\})+)|pay (\w+) \{E\}/i);
       const energy = em ? (em[1] ? em[1].length / 3 : (/^x$/i.test(em[2]) ? 'X' : toNum(em[2]) || 1)) : 0;
@@ -935,7 +1088,8 @@
       const life = +((m[1].match(/pay (\d+) life/i) || [])[1] || 0);
       // Tap-only mana abilities are used by tapping the card; ones with other costs (Kykar's "Sacrifice a Spirit: Add {R}") are in the menu.
       if (/^add\b/i.test(m[2]) && !sacOther && !life && !energy && !/\{\d+\}/.test(m[1])) continue;
-      out.push({ exileSelf: /exile this/i.test(m[1]) || undefined, energy: energy || undefined, cost: (m[1].trim() + (energy ? (m[1].trim() ? ', ' : '') + 'Pay ' + (energy === 'X' ? 'X {E}' : '{E}'.repeat(energy)) : '')).trim(), tap: /\{T\}/.test(m[1]), sac: /sacrifice this/i.test(m[1]), sacOther: sacOther && sacOther.trim(), life, manaAb: /^add\b/i.test(m[2]), mana: parseCost(m[1].replace(/\{T\}|\{Q\}/g, '')), text: m[2].trim() });
+      out.push({ extra: extra && extra.length ? extra : undefined, exileSelf: /exile this/i.test(m[1]) || undefined, energy: energy || undefined, cost: (m[1].trim() + (energy ? (m[1].trim() ? ', ' : '') + 'Pay ' + (energy === 'X' ? 'X {E}' : '{E}'.repeat(energy)) : '')).trim(), tap: /\{T\}/.test(m[1]), sac: /sacrifice this/i.test(m[1]), sacOther: sacOther && sacOther.trim(), life, manaAb: /^add\b/i.test(m[2]), mana: parseCost(m[1].replace(/\{T\}|\{Q\}/g, '')), text: m[2].trim() });
+      if (extra && extra.length) out[out.length - 1].cost = line.slice(0, line.indexOf(':')).trim();   // the whole cost, as printed
     }
     // Crew N (702.122): tap untapped creatures with total power N or more — the Vehicle becomes an artifact creature until end of turn.
     for (const line of lines(c)) {
@@ -975,5 +1129,5 @@
   // Spree: the extra mana for the modes chosen.
   function spreeCost(c, mode) { const md = modesOf(c); if (!md || !mode) return null; if (md.escalate) return parseCost(Array(Math.max(0, [].concat(mode).length - 1)).fill(md.escalate).join('')); if (!md.spree) return null; return parseCost([].concat(mode).map(i => md.spree[i] || '').join('')); }
   root.Cards = { freeFromHand, spreeCost, discardCost, freeWithCommander, levelText, modePick, sacCost, costReduction, KEYWORDS, colorsOf, face, typeLine, isType, nameOf, text, rawText, keywords, has, statics, pt, parseCost, costOf, manaValue, costTotal, manaSource, pay,
-    setState, notCreatureNow, staticAnim, wardCost, targetReqs, targetsIn, legalTarget, targetChoices, reqLabel, protections, protectedFrom, blockProblem, matchesWhat, helpfulTarget, orderChoices, modesOf, effectsIn, effectsOf, abilities, triggers, instantSpeed, isPermanentCard, toNum, spellText };
+    setState, notCreatureNow, staticAnim, stripFlavor, costPart, costPool, handAbilities, routePlan, abilityLine, uncounterable, wardCost, targetReqs, targetsIn, legalTarget, targetChoices, reqLabel, protections, protectedFrom, blockProblem, matchesWhat, helpfulTarget, orderChoices, modesOf, effectsIn, effectsOf, abilities, triggers, instantSpeed, isPermanentCard, toNum, spellText };
 })(typeof window !== 'undefined' ? window : globalThis);

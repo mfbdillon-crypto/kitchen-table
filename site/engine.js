@@ -162,16 +162,24 @@
     const ctrl = src.ctrl;
     let n = 1;
     const ent = ev.type === 'enter' && ev.card;
+    const srcCre = src.zone === 'battlefield' && (src.faceDown || R.isType(src, 'creature'));
     for (const c of Object.values(s.cards)) {
       if (c.zone !== 'battlefield' || c.faceDown || !c.d) continue;
       const t = C.text(c).toLowerCase();
       if (!/additional time|don't cause abilities/.test(t)) continue;
+      const EB = '(?: the battlefield)?';
       if (c.ctrl === ctrl) {
         if (ev.type === 'die' && /if a creature dying causes a triggered ability of a permanent you control to trigger/.test(t)) n++;
-        if (ent && /if an artifact or creature entering the battlefield causes a triggered ability of a permanent you control to trigger/.test(t) && (R.isType(ent, 'artifact') || R.isType(ent, 'creature'))) n++;
-        if (ent && /(?:if a permanent entering the battlefield causes|permanents entering the battlefield cause) (?:a )?triggered abilit(?:y|ies) of (?:a )?permanents? you control to trigger/.test(t)) n++;
+        if (ent && new RegExp(`if an artifact or creature entering${EB} causes a triggered ability of a permanent you control to trigger`).test(t) && (R.isType(ent, 'artifact') || R.isType(ent, 'creature'))) n++;
+        if (ent && new RegExp(`(?:if a permanent entering${EB} causes|permanents entering${EB} cause) (?:a )?triggered abilit(?:y|ies) of (?:a )?permanents? you control to trigger`).test(t)) n++;
         if (ev.type === 'attack' && /if a creature attacking causes a triggered ability of a permanent you control to trigger/.test(t)) n++;
-      } else if (ent && /permanents entering the battlefield don't cause abilities of permanents your opponents control to trigger/.test(t)) return 0;
+        // Veyran: "If you casting or copying an instant or sorcery spell causes a triggered ability of a permanent you control to trigger…"
+        if (ev.type === 'cast' && ev.card && (R.isType(ev.card, 'instant') || R.isType(ev.card, 'sorcery')) && /if you casting or copying an instant or sorcery spell causes a triggered ability of a permanent you control to trigger/.test(t) && src.zone === 'battlefield') n++;
+        // "If a triggered ability of another creature you control of the chosen type triggers, it triggers an additional time."
+        if (/if a triggered ability of another creature you control of the chosen type triggers/.test(t) && srcCre && src.id !== c.id && c.chosen && new RegExp('\\b' + c.chosen + '\\b', 'i').test(R.typeLine(src))) n++;
+        // "If an ability of a Shaman or another Wizard you control triggers, that ability triggers an additional time."
+        { const mm = t.match(/if an ability of an? ([a-z]+) or another ([a-z]+) you control triggers/); if (mm && src.zone === 'battlefield' && (C.matchesWhat(src, mm[1]) || (src.id !== c.id && C.matchesWhat(src, mm[2])))) n++; }
+      } else if (ent && new RegExp(`permanents entering${EB} don't cause abilities of permanents your opponents control to trigger`).test(t)) return 0;
     }
     return Math.min(n, 4);
   }
@@ -415,8 +423,29 @@
 
   // ======================= resolving =======================
   // Before an engine ability resolves: "use it?" for optional abilities; unknown "if" conditions.
+  // "Your choice of …" options of the top of the stack: asked of its controller before it resolves; the AI picks its own.
+  const KW_RANK = ['double strike', 'lifelink', 'flying', 'deathtouch', 'first strike', 'trample', 'indestructible', 'hexproof', 'vigilance', 'menace', 'haste', 'reach'];
+  function aiPick(options) { let best = 0, bv = -1; options.forEach((o, i) => { const l = String(o.label).toLowerCase(); const r = /\+1\/\+1/.test(l) ? 5.5 : KW_RANK.indexOf(l.replace(/ counters?$/, '')); const v = r < 0 ? 0 : (r === 5.5 ? 6 : KW_RANK.length - r); if (v > bv) { bv = v; best = i; } }); return best; }
+  function choicesOf(s, top) {
+    let ops = null;
+    try { if (top.ab && top.ab.eng) { const a = abilityOf({ d: top.d, face: top.face, i: top.ab.i, fixed: top.ab.fixed, text: top.ab.text, effect: top.ab.text }); ops = a ? a.ops : (root.Effects ? root.Effects.parse(top.ab.text).ops : null); } else { const E = spellOps(s, top); ops = E && E.ops; } } catch (e) { ops = null; }
+    const out = []; const walk = x => { if (Array.isArray(x)) return x.forEach(walk); if (x && typeof x === 'object') { if (x.op === 'choiceOf') out.push(x); for (const v of Object.values(x)) if (v && typeof v === 'object') walk(v); } };
+    walk(ops || []); return out;
+  }
+  function holdChoices(s, top) {
+    const R = I();
+    const ch = choicesOf(s, top).filter(o => !(top.picks && top.picks[o.key] != null));
+    if (!ch.length) return false;
+    if (isAI(s, top.ctrl) || !R.live(s, top.ctrl)) { top.picks = top.picks || {}; for (const o of ch) top.picks[o.key] = aiPick(o.options); return false; }
+    if ((s.ask || []).some(x => x.kind === 'pick' && x.item === top.id)) { if (s.prio) s.prio.holder = null; return true; }
+    const o = ch[0];
+    s.ask = (s.ask || []).concat([{ id: 'a' + (++s.seq), kind: 'pick', pid: top.ctrl, item: top.id, key: o.key, name: top.ab ? top.ab.name : R.cardName(top), text: top.ab ? top.ab.text : '', options: o.options.map(x => x.label), since: Date.now() }]);
+    if (s.prio) s.prio.holder = null;
+    return true;
+  }
   function hold(s, notes) {
     const R = I(); const top = R.stackTop(s);
+    if (top && holdChoices(s, top)) return true;
     if (!top || !top.ab || !top.ab.eng) return false;
     const ab = top.ab;
     const need = (ab.optional && ab.may === undefined) || (ab.askCond && ab.condOk === undefined);
@@ -472,7 +501,8 @@
   function shiftOp(o, off) {
     if (!off) return o;
     const c = JSON.parse(JSON.stringify(o));
-    for (const k of ['what', 'to', 'on', 'who', 'a', 'b', 'of']) if (c[k] && c[k].k === 't') c[k].i += off;
+    const fix = x => { if (!x || typeof x !== 'object') return; for (const k of ['what', 'to', 'on', 'who', 'a', 'b', 'of']) if (x[k] && x[k].k === 't') x[k].i += off; for (const l of [x.ops, ...(x.options || []).map(o => o.ops)]) if (Array.isArray(l)) l.forEach(fix); };
+    fix(c);
     return c;
   }
   // Carry out a list of operations. legal[i] = the still-legal targets for target number i.
@@ -518,6 +548,7 @@
         case 'X': return X;
         case 'X2': return 2 * X;
         case 'lastX': return st.lastX || 0;
+        case 'kicks': return item.kicks || (s.cards[srcId] && s.cards[srcId].kicks) || 0;
         case 'thatMany': return ctx.n || st.last || 0;
         case 'lastAmount': return st.last || ctx.n || 0;
         case 'count': return count(n);
@@ -854,7 +885,7 @@
           const cs = cards(o.what); const got = [];
           for (const c of cs) got.push(...grantTo(c, o.kws, o.untilNext));
           if (cs.length) notes.push(`${R.listNames(cs.map(cardName))} gained ${o.kws} ${o.untilNext ? 'until ' + nameOf(s, by) + '’s next turn' : 'until end of turn'} (${srcName})`);
-          if (!got.length) st.manual.push(`Give ${o.kws}`);
+          if (cs.length && !got.length) st.manual.push(`Give ${o.kws}`);
           break;
         }
         case 'regen': for (const c of cards(o.what)) { if (c.zone !== 'battlefield') continue; c.regen = (c.regen || 0) + 1; badge(c, { label: 'regeneration shield', until: 'eot', regen: true }); notes.push(`${cardName(c)} has a regeneration shield until end of turn (${srcName})`); } break;
@@ -918,6 +949,23 @@
           notes.push(`${srcName}: ${nameOf(s, by)} reveals cards until ${n > 1 ? n + ' ' + o.what + ' cards' : (/^[aeiou]/.test(o.what) ? 'an ' : 'a ') + o.what + ' card'}`);
           break;
         }
+        case 'moveCounters': {
+          const f = cards(o.from)[0], t0 = cards(o.to)[0];
+          if (!f || !t0 || f.id === t0.id) { notes.push(`${srcName}: no counter moved`); break; }
+          const kinds = o.kind === 'any' ? Object.keys(f.counters || {}).filter(k => f.counters[k] > 0).sort((a, b) => (b === '+1/+1') - (a === '+1/+1')) : [o.kind];
+          let moved = 0;
+          for (const k of kinds) { const have = f.counters[k] || 0; const n = o.n === 'all' ? have : Math.min(have, (o.n | 0) - moved); if (n <= 0) continue; addCounter(f, k, -n); addCounter(t0, k, n); moved += n; notes.push(`${srcName} moved ${n} ${k} counter${n > 1 ? 's' : ''} from ${cardName(f)} onto ${cardName(t0)}`); if (o.n !== 'all' && moved >= (o.n | 0)) break; }
+          st.did = moved > 0; break;
+        }
+        case 'route': {   // reveal / exile / look at the top of a library, and say where each card goes (done on the owner's device)
+          const tp = [].concat(...(legal || [])).find(t => t && t.p);
+          const owner = /^your$/.test(o.whose) ? by : (tp && tp.p) || ctx.p || by;
+          const n = o.n === 'X' ? (item.x || X || 0) : o.n, count = o.count === 'X' ? (item.x || X || 1) : o.count;
+          if (!o.until && !(n > 0)) { notes.push(`${srcName}: nothing to reveal`); break; }
+          R.todo(s, owner, { k: 'route', by, act: o.act, n, until: o.until, count, routes: o.routes || [], rest: o.rest || null, unknown: o.unknown || [], zones: o.zones || [], reveal: !!o.reveal, text: o.text, src: srcName });
+          notes.push(`${srcName}: ${nameOf(s, owner)} ${o.act === 'look at' ? 'looks at' : o.act === 'exile' ? 'exiles' : 'reveals'} ${o.until ? 'cards from the top of their library until a ' + o.until + ' card' : 'the top ' + (n > 1 ? n + ' cards' : 'card') + ' of their library'}`);
+          break;
+        }
         case 'cascade': R.todo(s, by, { k: 'cascade', mv: ctx.mv || (+((item.d || {}).cmc) || 0), src: srcName }); notes.push(`${srcName}: cascade (${nameOf(s, by)} reveals until a cheaper nonland card)`); break;
         case 'poison': { const n = val(o.n); for (const p of players(o.who)) { const P = s.players[p]; if (P) P.poison = (P.poison || 0) + n; } notes.push(`${R.listNames(players(o.who).map(p => nameOf(s, p)))} got ${n} poison counter${n > 1 ? 's' : ''} (${srcName})`); break; }
         case 'doublePT': for (const c of cards(o.what)) { const v = C.pt(s, c) || [0, 0]; if (o.powerOnly) v[1] = 0; c.mod = [(c.mod ? c.mod[0] : 0) + v[0], (c.mod ? c.mod[1] : 0) + v[1]]; badge(c, { label: `+${v[0]}/+${v[1]}`, until: 'eot' }); } notes.push(`${srcName} doubled ${o.powerOnly ? 'power' : 'power and toughness'} until end of turn`); break;
@@ -933,7 +981,7 @@
           }
           break;
         }
-        case 'counterSpell': for (const c of cards(o.what)) { if (c.zone !== 'stack') continue; const nm = cardName(c); if (c.ab || (c.token && !c.d)) delete s.cards[c.id]; else R.moveOne(s, c, 'graveyard', 'top', null, notes); notes.push(`${srcName} countered ${nm}`); } break;
+        case 'counterSpell': for (const c of cards(o.what)) { if (c.zone !== 'stack') continue; if (C.uncounterable && C.uncounterable(s, c)) { notes.push(`${cardName(c)} can’t be countered`); continue; } const nm = cardName(c); if (c.ab || (c.token && !c.d)) delete s.cards[c.id]; else R.moveOne(s, c, 'graveyard', 'top', null, notes); notes.push(`${srcName} countered ${nm}`); } break;
         case 'fight': {
           const a = cards(o.a)[0], b = cards(o.b)[0];
           if (a && b && a.zone === 'battlefield' && b.zone === 'battlefield') { const pa = (C.pt(s, a) || [0])[0], pb = (C.pt(s, b) || [0])[0]; hurt({ c: b }, pa, a); hurt({ c: a }, pb, b); notes.push(`${cardName(a)} fought ${cardName(b)}`); }
@@ -1076,6 +1124,7 @@
         case 'reveal': for (const p of players(o.who)) notes.push(`${nameOf(s, p)} reveals their hand (${srcName}) — they show it to the table`); break;
         case 'shuffleGy': for (const p of players(o.who)) { const gy = Object.values(s.cards).filter(c => c.zone === 'graveyard' && c.owner === p); for (const c of gy) R.moveOne(s, c, 'library', 'shuffle', null, notes); notes.push(`${nameOf(s, p)} shuffled their graveyard (${gy.length}) into their library (${srcName})`); } break;
         case 'freeCast': if (o.from === 'hand' || o.from === 'graveyard') { R.todo(s, by, { k: 'freeCast', from: o.from, filter: o.filter, mvMax: o.mvMax == null ? undefined : val(o.mvMax), src: srcName }); notes.push(`${nameOf(s, by)} may cast ${o.filter === 'card' ? 'a spell' : 'a ' + o.filter + ' spell'} from their ${o.from} for free (${srcName})`); } else st.manual.push(o.src || 'Cast it without paying its mana cost'); break;
+        case 'choiceOf': { const pk = item.picks && item.picks[o.key] != null ? item.picks[o.key] : (s.cards[item.id] && s.cards[item.id].picks || {})[o.key]; const i = pk != null ? pk : aiPick(o.options); const opt = o.options[i] || o.options[0]; notes.push(`${nameOf(s, by)} chose ${opt.label} (${srcName})`); runList(opt.ops, 0); break; }
         case 'manual': st.manual.push(o.text); break;
         default: st.manual.push(o.text || (typeof o.src === 'string' ? o.src : '') || o.op);
       }
@@ -1219,6 +1268,12 @@
       for (const id of ask.ids) if (id !== keep && s.cards[id] && s.cards[id].zone === 'battlefield') { const nm = cardName(s.cards[id]); I().moveOne(s, s.cards[id], 'graveyard', 'top', null, notes); notes.push(`${nameOf(s, ask.pid)} kept one ${nm} and put the other into the graveyard (legend rule, 704.5j)`); }
       return { ok: true };
     }
+    if (ask.kind === 'pick') {
+      const it = s.cards[ask.item];
+      if (it) { it.picks = it.picks || {}; it.picks[ask.key] = Math.max(0, Math.min(ask.options.length - 1, a.value | 0)); notes.push(`${nameOf(s, pid)} chose ${ask.options[it.picks[ask.key]]} (${ask.name})`); }
+      if (s.prio) { s.prio.holder = null; R.nextHolder(s, notes); }
+      return { ok: true };
+    }
     if (ask.kind === 'may') {
       const it = s.cards[ask.item];
       if (it && it.ab) { it.ab.may = !!a.yes; if (ask.cond) it.ab.condOk = a.cond === undefined ? !!a.yes : !!a.cond; }
@@ -1260,6 +1315,7 @@
       if (ask.kind === 'mutate') { s.ask.push(ask); answer(s, ask.pid, { id: ask.id, top: true }, notes); continue; }
       if (ask.kind === 'choose' || ask.kind === 'enterOpt' || ask.kind === 'copy') { s.ask.push(ask); answer(s, ask.pid, { id: ask.id, value: '', yes: false }, notes); continue; }
       if (ask.kind === 'legend') { s.ask.push(ask); answer(s, ask.pid, { id: ask.id, keep: ask.ids[ask.ids.length - 1] }, notes); continue; }
+      if (ask.kind === 'pick') { const it = s.cards[ask.item]; if (it) { it.picks = it.picks || {}; it.picks[ask.key] = 0; } notes.push(`${ask.name}: no answer in time — ${ask.options[0]}`); if (s.prio) { s.prio.holder = null; R.nextHolder(s, notes); } continue; }
       if (ask.kind === 'may') { const it = s.cards[ask.item]; if (it && it.ab) { it.ab.may = false; it.ab.condOk = false; } notes.push(`${ask.name}: no answer in time, so it wasn’t used`); if (s.prio) { s.prio.holder = null; R.nextHolder(s, notes); } }
       else { const q = (s.tq || []).find(x => x.id === ask.q); if (q) q.timeout = true; for (const q2 of s.tq || []) if (ask.kind === 'order') q2.ordered = true; place(s, notes); }
     }
@@ -1395,6 +1451,7 @@
     const R = I(), groups = {};
     for (const c of Object.values(s.cards)) {
       if (c.zone !== 'battlefield' || c.faceDown || !/\blegendary\b/i.test(R.typeLine(c))) continue;
+      if (Object.values(s.cards).some(o => o.zone === 'battlefield' && o.ctrl === c.ctrl && !o.faceDown && o.d && /the "legend rule" doesn't apply to permanents you control/i.test(Cd().rawText(o)))) continue;
       const k = c.ctrl + '|' + cardName(c); (groups[k] = groups[k] || []).push(c);
     }
     for (const list of Object.values(groups)) {

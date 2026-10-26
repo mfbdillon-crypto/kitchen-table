@@ -1055,6 +1055,28 @@
           if (stackCards(s).length) startPrio(s, null, notes); else s.prio = null;
           remember(); sba(s, notes); for (const n of notes) log(s, null, n, 'auto'); s.rev++; return { ok: true };
         }
+        case 'handAb': {
+          // An ability used from the hand (cycling, channel…): pay, discard the card, the ability goes on the stack (602.2, 702.29).
+          need();
+          if (mulligansPending(s)) return { ok: false, err: 'Wait until every player has kept their opening hand (103.5).' };
+          const d = cleanD(a.card && a.card.d); if (!d || !a.card.id) return { ok: false, err: 'Which card?' };
+          if (!(me.handCount > 0)) return { ok: false, err: 'You have no cards in hand.' };
+          const C = root.Cards; const probe = { id: String(a.card.id).slice(0, 40), owner: pid, ctrl: pid, zone: 'hand', counters: {}, d, face: 0 };
+          const hab = C.handAbilities(probe)[a.i | 0]; if (!hab) return { ok: false, err: 'That card has no such ability.' };
+          { const bl = root.Rulebook && root.Rulebook.cant(s, pid, 'activate', probe); if (bl) return { ok: false, err: `${bl.srcName}: ${bl.text}.` }; }
+          const reqs = C.targetsIn(hab.text), tg = cleanTargets(a.tg, reqs.length);
+          for (let i = 0; i < reqs.length; i++) for (const t of tg[i] || []) if (!C.legalTarget(s, reqs[i], t, pid)) return { ok: false, err: 'That isn’t a legal target for this ability.' };
+          spendPool(s, pid, hab.mana, num(a.x, 0, 99) || 0, a.fromPool);
+          const id0 = probe.id; if (s.cards[id0]) return { ok: false, err: 'That card is already on the table.' };
+          s.cards[id0] = Object.assign(probe, { zone: 'limbo', seq: ++s.seq });
+          moveOne(s, s.cards[id0], 'graveyard', 'top', null, notes);
+          if (root.Engine) root.Engine.emit({ type: 'discard', player: pid, card: s.cards[id0] });
+          me.handCount = Math.max(0, (me.handCount || 0) - 1);
+          const id = 'ab' + (++s.seq) + '-' + id0.slice(0, 12);
+          s.cards[id] = { id, owner: pid, ctrl: pid, d, face: 0, faceDown: false, token: true, cmdr: false, tapped: false, counters: {}, mod: null, attachedTo: null, row: null, zone: 'stack', seq: ++s.seq, ab: { src: id0, text: String(hab.text).slice(0, 400), name: cardName(probe) }, tg, reqs, x: num(a.x, 0, 99) || 0 };
+          startPrio(s, pid, notes);
+          return done(`${hab.kind === 'channel' ? 'channeled' : /cycling/.test(hab.kind) ? 'cycled' : 'discarded'} ${cardName(probe)}: “${hab.text}”${targetText(s, s.cards[id])}`);
+        }
         case 'activate': {
           // An activated ability of a permanent goes on the stack (602.2). Mana abilities don't (605.3).
           need();
@@ -1119,6 +1141,23 @@
           if (enNeed) { me.energy = (me.energy || 0) - enNeed; s.turn.stats = s.turn.stats || {}; (s.turn.stats.energy = s.turn.stats.energy || {})[pid] = ((s.turn.stats.energy || {})[pid] || 0) + enNeed; }
           // "Discard a card" in the cost (Pack Rat): the hand is private, so the owner's page discards it (602.2b).
           if (/discard (?:a|one) card/i.test(ab.cost || '')) { if (!(me.handCount > 0)) return { ok: false, err: 'You need a card in hand to discard.' }; todo(s, pid, { k: 'discard', n: 1, src: cardName(src) + ' (cost)' }); }
+          // The other parts of the cost (602.2b): lands returned, creatures untapped or tapped, counters, cards exiled from the graveyard…
+          if (ab.extra) {
+            const picks = Array.isArray(a.costs) ? a.costs : [];
+            const plan = [];
+            for (let k = 0; k < ab.extra.length; k++) {
+              const part = ab.extra[k];
+              if (part.k === 'counter') { const kind = part.kind === 'any' ? Object.keys(src.counters || {}).find(x => src.counters[x] > 0) : part.kind; if (part.n < 0 && (!kind || (src.counters[kind] || 0) < -part.n)) return { ok: false, err: `${cardName(src)} needs ${-part.n} ${part.kind === 'any' ? '' : part.kind + ' '}counter${part.n < -1 ? 's' : ''} to remove.` }; plan.push(() => { src.counters[kind] = (src.counters[kind] || 0) + part.n; if (!src.counters[kind]) delete src.counters[kind]; }); continue; }
+              if (part.k === 'exert') continue;
+              if (part.k === 'lifeId') { const ci = new Set(Object.values(s.cards).filter(x => x.cmdr && x.owner === pid && x.d).flatMap(x => x.d.ci || [])); const n = ci.size; if (me.life < n) return { ok: false, err: `You need ${n} life to pay.` }; plan.push(() => { me.life -= n; }); continue; }
+              if (part.k === 'discard') { if ((me.handCount || 0) < part.n) return { ok: false, err: `You need ${part.n} cards in hand to discard.` }; plan.push(() => todo(s, pid, { k: 'discard', n: part.n, src: cardName(src) + ' (cost)' })); continue; }
+              const pool = new Set(C.costPool(s, src, part));
+              const ids = part.self ? [src.id] : [...new Set((picks[k] || []).slice(0, part.n))];
+              if (ids.length !== part.n || !ids.every(id => pool.has(id))) return { ok: false, err: `Choose ${part.n} ${part.what} for the cost (${part.k === 'bounce' ? 'return to hand' : part.k === 'untap' ? 'untap' : part.k === 'tapOther' ? 'tap' : part.k === 'exileGy' ? 'exile from your graveyard' : 'sacrifice'}).` };
+              plan.push(() => { for (const id of ids) { const v = s.cards[id]; if (!v) continue; if (part.k === 'bounce') moveOne(s, v, 'hand', 'top', null, notes); else if (part.k === 'untap') v.tapped = false; else if (part.k === 'tapOther') v.tapped = true; else if (part.k === 'exileGy') moveOne(s, v, 'exile', 'top', null, notes); else if (part.k === 'sacN') moveOne(s, v, 'graveyard', 'top', { sac: true }, notes); } });
+            }
+            for (const f of plan) f();
+          }
           if (ab.tap) src.tapped = true;
           if (restr.some(r => /once each turn/.test(r))) { s.turn.actOnce = s.turn.actOnce || {}; s.turn.actOnce[onceKey] = s.turn.n; }
           spendPool(s, pid, ab.mana, num(a.x, 0, 99) || 0, a.fromPool);
@@ -1177,6 +1216,7 @@
             if (c.tapped) return { ok: false, err: `${cardName(c)} is tapped, so it can’t attack.` };
             const kw = C.keywords(c, s);
             if (sick(s, c) && !kw.has('haste')) return { ok: false, err: `${cardName(c)} hasn’t been under your control since your turn began and doesn’t have haste, so it can’t attack yet (summoning sickness, 302.6).` };
+            if (!kw.has('flying') && !kw.has('islandwalk') && Object.values(s.cards).some(o => o.zone === 'battlefield' && !o.faceDown && o.d && /creatures without flying or islandwalk can't attack/i.test(C.rawText(o)))) return { ok: false, err: `${cardName(c)} can’t attack — creatures without flying or islandwalk can’t attack.` };
             if (kw.has('defender') || kw.has("can't attack")) return { ok: false, err: `${cardName(c)} can’t attack.` };
             let def = null;
             if (it.p && s.players[it.p] && it.p !== pid && alive(s, it.p)) def = { p: it.p };
@@ -1343,7 +1383,21 @@
     return true;
   }
   // State-based actions (704.5) the table can check on its own.
+  // Control-changing Auras (613.1b): "You control enchanted creature." — the enchanted permanent is controlled by the Aura's
+  // controller while it's attached; it goes back when the Aura leaves.
+  function auraControl(s, notes) {
+    if (!root.Cards) return;
+    const want = {};
+    for (const a of Object.values(s.cards)) if (a.zone === 'battlefield' && a.attachedTo && !a.faceDown && a.d && /(?:^|\n)you control enchanted (?:creature|permanent|artifact|land|planeswalker)/i.test(root.Cards.rawText(a))) want[a.attachedTo] = a;
+    for (const c of Object.values(s.cards)) {
+      if (c.zone !== 'battlefield') continue;
+      const a = want[c.id];
+      if (a && c.ctrl !== a.ctrl) { if (!c.auraCtl) c.auraCtl = { from: c.ctrl }; c.ctrl = a.ctrl; c.ctlT = s.turn ? s.turn.n : 0; c.seq = ++s.seq; notes.push(`${nameOf(s, a.ctrl)} now controls ${cardName(c)} (${cardName(a)})`); }
+      else if (!a && c.auraCtl) { const back = s.players[c.auraCtl.from] ? c.auraCtl.from : c.owner; c.auraCtl = null; if (c.ctrl !== back) { c.ctrl = back; c.ctlT = s.turn ? s.turn.n : 0; c.seq = ++s.seq; notes.push(`${cardName(c)} went back to ${nameOf(s, back)}`); } }
+    }
+  }
   function sba(s, notes) {
+    auraControl(s, notes);
     for (let pass = 0; pass < 5; pass++) {
       let changed = false;
       for (const c of Object.values(s.cards)) {
@@ -1383,6 +1437,7 @@
     const seen = {};
     for (const c of Object.values(s.cards)) {
       if (c.zone !== 'battlefield' || c.faceDown || !/\blegendary\b/i.test(typeLine(c))) continue;
+      if (Object.values(s.cards).some(o => o.zone === 'battlefield' && o.ctrl === c.ctrl && !o.faceDown && o.d && root.Cards && /the "legend rule" doesn't apply to permanents you control/i.test(root.Cards.rawText(o)))) continue;   // Mirror Box, Sakashima
       const key = c.ctrl + '|' + cardName(c);
       (seen[key] = seen[key] || []).push(c);
     }
@@ -1547,6 +1602,9 @@
     c.castBy = pid;
     if (root.Rulebook && a && typeof a.perm === 'string') root.Rulebook.use(s, pid, a.perm, c);
     c.alt = a && typeof a.alt === 'string' && /^[a-z-]{3,20}$/.test(a.alt) ? a.alt : null;
+    // Kicked: once (kicker), any number of times (multikicker 702.33c); replicate makes that many copies now (702.56).
+    c.kicks = c.alt === 'kicker' ? 1 : (c.alt === 'multikicker' || c.alt === 'replicate') ? (num(a && a.kicks, 0, 30) || 0) : 0;
+    if (c.alt === 'replicate' && c.kicks) { for (let k = 0; k < c.kicks; k++) { const id = 'cp' + (++s.seq) + '-' + String(c.id).slice(0, 10); s.cards[id] = Object.assign(JSON.parse(JSON.stringify(c)), { id, token: true, copy: true, seq: ++s.seq, castBy: pid }); } log(s, pid, `replicated ${cardName(c)} ${c.kicks} time${c.kicks > 1 ? 's' : ''}`, 'auto'); }
     if (C && !c.faceDown && C.sacCost && C.sacCost(c) && a && Array.isArray(a.sacCost) && s.cards[a.sacCost[0]]) {
       const f = s.cards[a.sacCost[0]]; c.sacked = { name: cardName(f), pw: (C.pt(s, f) || [0])[0], mv: +((f.d || {}).cmc) || 0 };
       moveOne(s, f, 'graveyard', 'top', { sac: true }, []); log(s, pid, `sacrificed ${c.sacked.name} to cast ${cardName(c)}`, 'auto');
@@ -1788,7 +1846,7 @@
         case 'bounce': for (const t of T) { const c = tcard(t); if (!c) continue; const nm = cardName(c); moveOne(s, c, 'hand', 'top', null, notes); notes.push(`${srcName} returned ${nm} to its owner’s hand`); } break;
         case 'gyToHand': for (const t of T) { const c = tcard(t); if (!c) continue; const nm = cardName(c); moveOne(s, c, 'hand', 'top', null, notes); notes.push(`${srcName} returned ${nm} from the graveyard to its owner’s hand`); } break;
         case 'reanimate': for (const t of T) { const c = tcard(t); if (!c) continue; moveOne(s, c, 'battlefield', 'top', { by, tapped: e.tapped }, notes); notes.push(`${srcName} returned ${cardName(c)} to the battlefield`); } break;
-        case 'counter': for (const t of T) { const c = tcard(t); if (!c || c.zone !== 'stack') continue; const nm = cardName(c); if (c.ab || c.token) delete s.cards[c.id]; else moveOne(s, c, 'graveyard', 'top', null, notes); notes.push(`${srcName} countered ${nm}`); } break;
+        case 'counter': for (const t of T) { const c = tcard(t); if (!c || c.zone !== 'stack') continue; if (root.Cards.uncounterable && root.Cards.uncounterable(s, c)) { notes.push(`${cardName(c)} can’t be countered`); continue; } const nm = cardName(c); if (c.ab || c.token) delete s.cards[c.id]; else moveOne(s, c, 'graveyard', 'top', null, notes); notes.push(`${srcName} countered ${nm}`); } break;
         case 'pump': for (const t of T) { const c = tcard(t); if (!c) continue; const p = /x/.test(e.p) ? Math.sign(parseInt(e.p + '1', 10)) * X : parseInt(e.p, 10), q = /x/.test(e.t) ? Math.sign(parseInt(e.t + '1', 10)) * X : parseInt(e.t, 10); c.mod = [(c.mod ? c.mod[0] : 0) + p, (c.mod ? c.mod[1] : 0) + q]; grant(c, e.kws); notes.push(`${cardName(c)} got ${p >= 0 ? '+' : ''}${p}/${q >= 0 ? '+' : ''}${q} until end of turn`); } break;
         case 'attachSrc': { const eq = src.ab && s.cards[src.ab.src]; const t = T[0] && tcard(T[0]); if (eq && t && eq.zone === 'battlefield' && eq.ctrl === by && t.id !== eq.id) { eq.attachedTo = t.id; notes.push(`${cardName(eq)} is now attached to ${cardName(t)}`); } break; }
         case 'grant': for (const t of T) { const c = tcard(t); if (!c) continue; grant(c, e.kws); notes.push(`${cardName(c)} gained ${e.kws} until end of turn`); } break;
@@ -1934,7 +1992,9 @@
       // All combat damage in a step happens at once (510.2).
       // Fogs (615.1): combat damage prevented this turn.
       const T0 = s.turn, fog = T0.fog && T0.fog.n === T0.n ? T0.fog : null;
-      const prevented = e => (fog && (!fog.non || !isType(e.src, fog.non))) || e.src.fogBy === T0.n || (e.c && s.cards[e.c] && s.cards[e.c].fogTo === T0.n);
+      // "Combat damage that would be dealt by creatures you control can't be prevented." (Questing Beast-style)
+      const unpreventable = e => Object.values(s.cards).some(o => o.zone === 'battlefield' && o.ctrl === e.src.ctrl && !o.faceDown && o.d && /combat damage that would be dealt by creatures you control can't be prevented/i.test(C.rawText(o)));
+      const prevented = e => !unpreventable(e) && ((fog && (!fog.non || !isType(e.src, fog.non))) || e.src.fogBy === T0.n || (e.c && s.cards[e.c] && s.cards[e.c].fogTo === T0.n));
       for (const e of ev) {
         const k = kwOf(e.src);
         if (prevented(e)) { summary.push(`${e.n} combat damage from ${cardName(e.src)} was prevented`); continue; }

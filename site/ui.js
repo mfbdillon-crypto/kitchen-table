@@ -132,6 +132,8 @@
     }, { cls: 'small' });
   }
 
+  G.askDredge = opts => new Promise(res => choose('Dredge?', 'You’re about to draw a card. Dredge instead — mill that many cards and return the dredge card from your graveyard to your hand (702.52)?',
+    [{ label: 'Draw normally', primary: true, fn: () => res(null) }].concat(opts.map(o => ({ label: `Dredge ${o.n}: ${o.name}`, fn: () => res(o.id) })))));
   function choose(title, text, options) {
     openModal(title, b => {
       if (text) b.append(h('p', null, text));
@@ -338,6 +340,8 @@
     const el = h('div', { class: 'card' + fin + glow + (c.faceDown ? ' fd' : '') + (c.tapped && c.zone === 'battlefield' ? ' tap' : '') + (opt.cls ? ' ' + opt.cls : ''), 'data-id': c.id, tabindex: '0' },
       h('img', { src: src || BACK, alt: c.faceDown ? 'Face-down card' : R.cardName(c), draggable: false, loading: 'lazy' }));
     if (!src) el.append(h('div', { class: 'noimg' }, R.cardName(c)));
+    // Why a card of mine in the graveyard / exile can't be played right now (a used-up Muldrotha type, Grafdigger's Cage…).
+    if (!glow && c.owner === KEY && (c.zone === 'graveyard' || c.zone === 'exile') && window.Rulebook && G.seated()) { try { const no = Rulebook.why(S(), KEY, c).find(r => !r.ok && !/^default rule/.test(r.by)); if (no) el.title = `Can’t ${no.act} it: ${no.by}`; } catch (e) {} }
     if (c.faceDown && c.owner === KEY && G.peek(c.id)) el.append(h('div', { class: 'peek' }, 'face down'));
 
     // counter bars (right side)
@@ -623,6 +627,8 @@
     if (r && r.ok === false && r.err) G.toast(r.err, 'err');
   }
   // Why an activated ability can't be used right now (or null): tapped, summoning sickness, timing, loyalty, mana.
+  G.abilityProblem = (c, a) => abilityProblem(c, a);
+  G.activateFlow = (c, i) => activateFlow(c, i);
   function abilityProblem(c, a) {
     const s = S(), T = s.turn;
     { const bl = window.Rulebook && Rulebook.cant(s, KEY, 'activate', c); if (bl) return `${bl.srcName} stops it`; }
@@ -635,6 +641,11 @@
     if (a.mana && CD.costTotal(a.mana, 0) && !CD.pay(a.mana, myMana().filter(m => !(a.tap && m.id === c.id)), 0)) return 'not enough mana';
     if (a.crew) { const pw = Object.values(s.cards).filter(x => x.zone === 'battlefield' && x.ctrl === c.ctrl && x.id !== c.id && !x.tapped && (x.faceDown || R.isType(x, 'creature'))).reduce((t, x) => t + Math.max(0, (CD.pt(s, x) || [0])[0]), 0); if (pw < a.crew) return `needs untapped creatures with total power ${a.crew}`; }
     if (a.sacOther && !Object.values(s.cards).some(x => x.zone === 'battlefield' && x.ctrl === c.ctrl && CD.matchesWhat(x, a.sacOther))) return `no ${a.sacOther} to sacrifice`;
+    if (a.extra) for (const part of a.extra) {
+      if (part.k === 'counter' && part.n < 0) { const have = part.kind === 'any' ? Object.values(c.counters || {}).reduce((t, v) => t + v, 0) : (c.counters || {})[part.kind] || 0; if (have < -part.n) return `needs ${-part.n} ${part.kind === 'any' ? '' : part.kind + ' '}counter${part.n < -1 ? 's' : ''}`; }
+      else if (part.k === 'discard') { if (((G.me() || {}).handCount || 0) < part.n) return `needs ${part.n} cards in hand`; }
+      else if (!['exert', 'counter', 'lifeId'].includes(part.k) && CD.costPool(s, c, part).length < part.n) return `not enough ${part.what === 'this' ? '' : part.what + 's '}for the cost`;
+    }
     if (a.life && (G.me() || {}).life < a.life) return 'not enough life';
     if (a.energy && a.energy !== 'X' && ((G.me() || {}).energy || 0) < a.energy) return 'not enough energy';
     return null;
@@ -653,6 +664,7 @@
       (() => { const raw = String(CD.rawText(handCard(c))); if (land || !/(^|\n)foretell\b/i.test(raw) || S().turn.active !== KEY) return null; return { label: 'Foretell — {2} (exile it face down; cast it later for its foretell cost)', fn: async () => { if (!(await autoPay(handCard(c), 0, CD.parseCost('{2}')))) return; await G.fromHand([c.id], 'exile', { faceDown: true, special: 'foretell', fromPool: G.lastFromPool }); } }; })(),
       (() => { const pm = !land && String(CD.rawText(handCard(c))).match(/(?:^|\n)plot ((?:\{[^}]+\})+)/i); if (!pm) return null; return { label: `Plot — ${pm[1]} (cast it free on a later turn)`, fn: async () => { if (!(await autoPay(handCard(c), 0, CD.parseCost(pm[1])))) return; await G.fromHand([c.id], 'exile', { special: 'plot', fromPool: G.lastFromPool }); } }; })(),
       (() => { const sm = !land && String(CD.rawText(handCard(c))).match(/suspend (\d+)\s*[—-]\s*((?:\{[^}]+\})*)/i); return sm ? { label: `Suspend ${sm[1]} — ${sm[2] || 'free'}`, fn: async () => { if (sm[2] && !(await autoPay(handCard(c), 0, CD.parseCost(sm[2])))) return; await G.fromHand([c.id], 'exile', { suspend: true, fromPool: G.lastFromPool }); } } : null; })(),
+      ...CD.handAbilities(handCard(c)).map((hab, i) => ({ label: `${hab.label.trim()} — ${hab.text.length > 60 ? hab.text.slice(0, 58) + '…' : hab.text}`, fn: () => handAbFlow(c, i) })),
       !land && /\b(morph|megamorph|disguise)\b/i.test(CD.rawText(handCard(c))) ? { label: 'Cast face down (morph, disguise…)', fn: () => G.fromHand([c.id], 'stack', { faceDown: true }) } : null,
       devHost() ? { label: G.isRevealed(c.id) ? 'Dev: stop revealing' : 'Dev: reveal to everyone', fn: () => G.toggleReveal(c.id) } : null,
       devHost() ? { sep: true } : null,
@@ -771,18 +783,36 @@
       }, { live: true, onClose: () => finish(null) });
     });
   }
-  function askX(card) {
+  // How many? — X, multikicker, replicate: a −/+ picker that starts at 0, shows the most you can afford and the total cost.
+  //   base: the cost without the repeated part; unit: what one more costs (or null for X, which adds {1} per X pip).
+  const pipText = cst => { if (!cst) return ''; let t = ''; if (cst.g) t += '{' + cst.g + '}'; for (const k of ['W', 'U', 'B', 'R', 'G', 'C']) t += ('{' + k + '}').repeat(cst[k] || 0); for (const [a, b] of cst.hy || []) t += `{${a}/${b}}`; for (const k of cst.ph || []) t += `{${k}/P}`; return t || '{0}'; };
+  function costTimes(base, unit, n, xPips) {
+    const c = JSON.parse(JSON.stringify(base)); c.x = 0;
+    if (unit) { for (const k of ['g', 'W', 'U', 'B', 'R', 'G', 'C']) c[k] += (unit[k] || 0) * n; c.hy = c.hy.concat(...Array(n).fill(unit.hy || [])); c.ph = c.ph.concat(...Array(n).fill(unit.ph || [])); }
+    else c.g += (xPips || 1) * n;
+    return c;
+  }
+  function askCount(card, title, base, unit, opts) {
+    opts = opts || {};
+    const xPips = base && base.x ? base.x : 1;
+    const mana = myMana();
+    let max = 0; if (opts.max != null) max = opts.max; else for (let n = 1; n <= (opts.cap || 30); n++) { if (CD.pay(costTimes(base, unit, n, xPips), mana, 0, card)) max = n; else break; }
+    if (opts.life) max = Math.min(max || 99, Math.max(0, ((G.me() || {}).life || 0) - 1));
     return new Promise(resolve => {
-      let done = false; const fin = v => { if (done) return; done = true; resolve(v); };
-      openModal(`${R.cardName(card)} — choose X`, b => {
-        const inp = h('input', { type: 'number', min: '0', max: '99', value: '1', class: 'num', id: 'x-in' });
-        const go = () => { const n = Math.max(0, Math.min(99, parseInt(inp.value, 10) || 0)); closeModal(true); fin(n); };
-        inp.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
-        b.append(h('div', { class: 'row' }, inp, h('button', { class: 'primary', onclick: go }, 'OK')));
-        setTimeout(() => { inp.focus(); inp.select(); }, 30);
+      let done = false, n = opts.start != null ? Math.min(opts.start, max) : 0; const fin = v => { if (done) return; done = true; resolve(v); };
+      openModal(`${R.cardName(card)} — ${title}`, b => {
+        const val = h('span', { class: 'cnum' }), tot = h('div', { class: 'muted small' });
+        const show = () => { val.textContent = String(n); tot.textContent = opts.life ? `Pay ${n} life.` : `Total cost: ${pipText(costTimes(base, unit, n, xPips))}${max ? ` · you can afford up to ${max}` : ' · you can’t afford more than 0 with untapped mana'}`; };
+        const step = d => { n = Math.max(0, Math.min(99, n + d)); show(); };
+        b.append(h('p', { class: 'muted' }, opts.note || (unit ? `Each one costs ${pipText(unit)} more.` : 'Choose X.')));
+        b.append(h('div', { class: 'cstep' }, h('button', { onclick: () => step(-1) }, '−'), val, h('button', { onclick: () => step(1) }, '+'), h('button', { class: 'ghost', onclick: () => { n = max; show(); } }, `Max (${max})`)));
+        b.append(tot);
+        b.append(h('div', { class: 'row' }, h('button', { class: 'primary', onclick: () => { closeModal(true); fin(n); } }, 'OK'), h('button', { onclick: () => { closeModal(true); fin(null); } }, 'Cancel')));
+        show();
       }, { cls: 'small', onClose: () => fin(null) });
     });
   }
+  function askX(card, base) { return askCount(card, 'choose X', base || CD.parseCost('{X}'), null, { note: 'X — the most your untapped mana can pay is shown.' }); }
   // Cast a card: choose its mode, X and targets if it needs them, then put it on the stack.
   // v6: every way to cast this card from where it is (normal cost, flashback, kicker, evoke, dash, warp, overload…).
   const ALT_LABEL = { omni: 'Cast it free (Omniscience)', cmdrfree: 'Cast it free (you control a commander)', normal: 'Cast it', flashback: 'Flashback', escape: 'Escape', 'jump-start': 'Jump-start', retrace: 'Retrace', disturb: 'Disturb (back face)', harmonize: 'Harmonize',
@@ -828,7 +858,18 @@
     const payCost = !alt ? CD.costOf(card) : alt.additional ? (() => { const a = CD.costOf(card), b = CD.parseCost(altMana); for (const k of ['g', 'W', 'U', 'B', 'R', 'G', 'C', 'x']) a[k] += b[k] || 0; a.hy = a.hy.concat(b.hy); a.ph = a.ph.concat(b.ph); return a; })() : CD.parseCost(altMana);
     { const sp = CD.spreeCost && mode ? CD.spreeCost(card, mode) : null; if (sp && alt?.kind !== 'free') for (const k of ['g', 'W', 'U', 'B', 'R', 'G', 'C']) payCost[k] += sp[k] || 0; }   // Spree: each mode's extra cost
     if (alt?.kind !== 'free' && CD.costReduction) payCost.g = Math.max(0, payCost.g - CD.costReduction(S(), Object.assign({ owner: KEY, ctrl: KEY }, card), KEY));   // 601.2f
-    if (payCost.x || /as an additional cost to cast this spell, pay x life/i.test(CD.text(card))) { x = await askX(card); if (x == null) return; }
+    if (payCost.x) { x = await askX(card, payCost); if (x == null) return; }
+    else if (/as an additional cost to cast this spell, pay x life/i.test(CD.text(card))) { x = await askCount(card, 'pay X life', payCost, null, { life: true, note: 'Pay X life as you cast it.' }); if (x == null) return; }
+    // Multikicker / replicate: pay the extra cost any number of times (702.33c, 702.56).
+    let kicks;
+    if (alt && (alt.kind === 'multikicker' || alt.kind === 'replicate')) {
+      const unit = CD.parseCost(altMana);
+      const base = CD.costOf(card); if (CD.costReduction) base.g = Math.max(0, base.g - CD.costReduction(S(), Object.assign({ owner: KEY, ctrl: KEY }, card), KEY));
+      kicks = await askCount(card, alt.kind === 'multikicker' ? 'how many times to kick it' : 'how many copies (replicate)', base, unit, { start: 1 });
+      if (kicks == null) return;
+      for (const k of ['g', 'W', 'U', 'B', 'R', 'G', 'C']) payCost[k] = base[k] + (unit[k] || 0) * kicks;
+      payCost.hy = base.hy.concat(...Array(kicks).fill(unit.hy)); payCost.ph = base.ph.concat(...Array(kicks).fill(unit.ph));
+    }
     const extra = alt && String(alt.cost || '').replace(/\{[^}]+\}/g, '').replace(/^[,\s—-]+|[,\s]+$/g, '');
     if (extra && !/^\d+\/\d+$/.test(extra)) G.toast(`${ALT_LABEL[alt.kind] || alt.kind}: also ${extra.replace(/^./, m => m.toLowerCase())} — do that part with the card menus.`, 'info');
     const reqs = alt && alt.kind === 'overload' ? [] : CD.targetReqs(card, mode, alt && alt.kind);
@@ -860,7 +901,7 @@
       if (!id) return;
       sacCost = [id];
     }
-    const opts = { tg, mode: mode || undefined, x: x || undefined, wardPaid: wardPaid || undefined, alt: alt ? alt.kind : undefined, sacCost, perm: perm || undefined, top: from === 'library' || undefined }; if (extraOpts) Object.assign(opts, extraOpts);
+    const opts = { tg, mode: mode || undefined, x: x || undefined, kicks: kicks || undefined, wardPaid: wardPaid || undefined, alt: alt ? alt.kind : undefined, sacCost, perm: perm || undefined, top: from === 'library' || undefined }; if (extraOpts) Object.assign(opts, extraOpts);
     if (wardPaid && wardMana) { const cst = JSON.parse(JSON.stringify(payCost)); cst.g += wardMana; if (!(await autoPay(card, x, cst))) return; }
     else if (!(await autoPay(card, x, JSON.parse(JSON.stringify(payCost))))) return;
     opts.fromPool = G.lastFromPool;
@@ -942,13 +983,46 @@
       }, { live: true, onClose: () => resolve(null) });
     });
   }
+  // Reveal and route window (about a quarter of the screen): each revealed card with where it goes. The card's words decide
+  // where they can; the rest you pick from the places the text names (or any zone with "Other…"). Confirm moves them.
+  const ZONE_LABEL = { battlefield: 'Battlefield', hand: 'Hand', graveyard: 'Graveyard', exile: 'Exile', top: 'Top of library', bottom: 'Bottom of library' };
+  function routeModal(t, done) {
+    const plan = G.routePlan(t);
+    if (!plan.cards.length) { G.toast(`${t.src}: your library is empty.`, 'info'); done(); return; }
+    const dec = {}; for (const c of plan.cards) if (c.dest) dec[c.id] = { to: c.dest.to, tapped: c.dest.tapped, random: c.dest.random };
+    const more = {};
+    const verb = t.act === 'look at' ? 'Look at' : t.act === 'exile' ? 'Exile' : 'Reveal';
+    openModal(`${t.src}: ${verb.toLowerCase()} ${t.until ? 'until a ' + t.until + ' card' : 'the top ' + (plan.cards.length > 1 ? plan.cards.length + ' cards' : 'card')}`, b => {
+      b.append(h('p', { class: 'muted small' }, '“' + String(t.text || '').replace(/^./, x => x.toUpperCase()) + '”'));
+      const zones = (t.zones && t.zones.length ? t.zones : ['hand', 'graveyard', 'bottom']);
+      b.append(h('div', { class: 'rtcards' }, plan.cards.map(c => {
+        const d = dec[c.id], list = more[c.id] ? Object.keys(ZONE_LABEL) : zones;
+        return h('div', { class: 'rtcard' + (c.hit ? ' hit' : '') + (d ? '' : ' need') },
+          cardEl(Object.assign({ zone: 'library', owner: KEY, counters: {} }, { id: c.id, d: c.d }), { noMenu: true, noGlow: true }),
+          h('div', { class: 'rtdest' }, list.map(z => h('button', { class: 'chip' + (d && d.to === z ? ' set' : ''), onclick: () => { dec[c.id] = { to: z, tapped: z === 'battlefield' && !!(c.dest && c.dest.tapped) }; render(); } }, ZONE_LABEL[z])),
+            more[c.id] ? null : h('button', { class: 'chip ghost', onclick: () => { more[c.id] = true; render(); } }, 'Other…')),
+          h('div', { class: 'rtwhy small' }, c.dest ? (c.dest.may ? 'you may — ' : '') + 'by the card: ' + ZONE_LABEL[c.dest.to] + (c.dest.tapped ? ' (tapped)' : '') : 'the card doesn’t say — choose'));
+      })));
+      const ready = plan.cards.every(c => dec[c.id]);
+      b.append(h('div', { class: 'row' }, h('button', { class: 'primary', disabled: !ready, onclick: async () => { closeModal(true); await G.routeApply(t, plan.cards.map(c => Object.assign({ id: c.id }, dec[c.id]))); done(); } }, ready ? 'Confirm' : 'Choose where each card goes')));
+    }, { live: true, cls: 'routewin', sticky: true, noEsc: true });
+  }
+  async function handAbFlow(c, i) {
+    const card = handCard(c), hab = CD.handAbilities(card)[i]; if (!hab) return;
+    const reqs = CD.targetsIn(hab.text);
+    let tg;
+    if (reqs.length) { tg = await pickTargets(`${R.cardName(card)}: ${hab.label}`, card, reqs, null, { d: { faces: [{ n: R.cardName(card), t: 'Instant', o: hab.text }] }, counters: {} }); if (!tg) return; }
+    if (!(await autoPay(card, 0, Object.assign({}, hab.mana, { hy: hab.mana.hy.slice(), ph: hab.mana.ph.slice() })))) return;
+    const r = await G.handAbility(c.id, i, tg, 0, G.lastFromPool);
+    if (r && r.ok === false && r.err) G.toast(r.err, 'err');
+  }
   async function activateFlow(c, i) {
     const ab = CD.abilities(c)[i];
     if (!ab) return;
     const s0 = S();
     const extra = {};
     let xv = 0;
-    if ((ab.mana && ab.mana.x) || ab.energy === 'X') { xv = await askX(c); if (xv == null) return; extra.x = xv; if (ab.energy === 'X' && ((G.me() || {}).energy || 0) < xv) { G.toast(`You have only ${(G.me() || {}).energy || 0} energy.`, 'err'); return; } }
+    if ((ab.mana && ab.mana.x) || ab.energy === 'X') { xv = ab.energy === 'X' ? await askCount(c, 'choose X', CD.parseCost(''), null, { note: `Pay X energy (you have ${(G.me() || {}).energy || 0}).`, max: (G.me() || {}).energy || 0 }) : await askX(c, ab.mana); if (xv == null) return; extra.x = xv; if (ab.energy === 'X' && ((G.me() || {}).energy || 0) < xv) { G.toast(`You have only ${(G.me() || {}).energy || 0} energy.`, 'err'); return; } }
     if (ab.crew) {
       const pool = Object.values(s0.cards).filter(x => x.zone === 'battlefield' && x.ctrl === c.ctrl && x.id !== c.id && !x.tapped && (x.faceDown || R.isType(x, 'creature')));
       const pw = ids => ids.reduce((t, id) => t + Math.max(0, (CD.pt(S(), S().cards[id]) || [0])[0]), 0);
@@ -963,7 +1037,20 @@
       if (!ids) return;
       extra.sac = ids[0];
     }
-    if (extra.crew || extra.sac || ab.manaAb) {
+    // Costs where you choose (602.2b): lands to return, creatures to untap or tap, graveyard cards to exile, things to sacrifice.
+    if (ab.extra && ab.extra.some(p => ['bounce', 'untap', 'tapOther', 'exileGy', 'sacN'].includes(p.k) && !p.self)) {
+      extra.costs = [];
+      for (const part of ab.extra) {
+        if (!['bounce', 'untap', 'tapOther', 'exileGy', 'sacN'].includes(part.k) || part.self) { extra.costs.push([]); continue; }
+        const pool = CD.costPool(s0, c, part).map(id => s0.cards[id]);
+        const verb = { bounce: 'return to your hand', untap: 'untap', tapOther: 'tap', exileGy: 'exile from your graveyard', sacN: 'sacrifice' }[part.k];
+        if (pool.length < part.n) { G.toast(`Not enough ${part.what}s to ${verb}.`, 'err'); return; }
+        const ids = pool.length === part.n && part.k !== 'sacN' && part.k !== 'bounce' ? pool.map(x => x.id) : await pickOwn(`${R.cardName(c)}: ${verb} ${part.n > 1 ? part.n + ' ' + part.what + 's' : (/^[aeiou]/.test(part.what) ? 'an ' : 'a ') + part.what}`, `Part of the cost: ${ab.cost}.`, pool, part.n === 1, sel => sel.length === part.n);
+        if (!ids) return;
+        extra.costs.push(ids);
+      }
+    }
+    if (extra.crew || extra.sac || extra.costs || ab.manaAb) {
       if (!ab.manaAb && CD.targetsIn(ab.text).length) { /* falls through to targets below */ }
       else { if (CD.costTotal(ab.mana, xv) && !(await autoPay(c, xv, Object.assign({}, ab.mana, { hy: ab.mana.hy.slice(), ph: ab.mana.ph.slice() })))) return; return G.act(Object.assign({ type: 'activate', id: c.id, i, fromPool: G.lastFromPool }, extra)); }
     }
@@ -971,7 +1058,7 @@
     let tg;
     if (reqs.length) { tg = await pickTargets(`${R.cardName(c)}: ${ab.cost}`, c, reqs, null, { d: { faces: [{ n: R.cardName(c), t: 'Instant', o: ab.text }] }, counters: {} }); if (!tg) return; }
     if (!(await autoPay(c, xv, Object.assign({}, ab.mana, { hy: ab.mana.hy.slice(), ph: ab.mana.ph.slice() })))) return;
-    if (extra.crew || extra.sac) return G.act(Object.assign({ type: 'activate', id: c.id, i, tg, fromPool: G.lastFromPool }, extra));
+    if (extra.crew || extra.sac || extra.costs) return G.act(Object.assign({ type: 'activate', id: c.id, i, tg, fromPool: G.lastFromPool }, extra));
     G.activate(c.id, i, tg, xv, G.lastFromPool);
   }
 
@@ -1136,6 +1223,9 @@
   }
   // "Use it?" for an optional triggered ability, right as it's about to resolve.
   function askBar() {
+    const pk = myAsks().find(x => x.kind === 'pick');
+    if (pk) return h('div', { class: 'prio mine', role: 'alert' }, h('span', { class: 'pring' }), h('div', { class: 'ptext' }, h('b', null, `${pk.name}: `), 'choose one.', pk.text ? h('span', { class: 'muted small' }, ' “' + String(pk.text).slice(0, 140) + '”') : null),
+      h('div', { class: 'row wrap' }, pk.options.map((o, i) => h('button', { class: 'chip big' + (i === 0 ? '' : ''), onclick: () => answer(pk, { value: i }) }, o.replace(/^./, x => x.toUpperCase())))));
     const e = myAsks().find(x => x.kind === 'enterOpt');
     if (e) return h('div', { class: 'prio mine', role: 'alert' }, h('span', { class: 'pring' }), h('div', { class: 'ptext' }, h('b', null, `${e.name}: `), e.text),
       h('button', { class: 'primary', onclick: () => answer(e, { yes: true }) }, e.life ? `Pay ${e.life} life` : 'I reveal one'), h('button', { onclick: () => answer(e, { yes: false }) }, 'Let it enter tapped'));
@@ -2237,6 +2327,7 @@
       }, { live: true, sticky: true, noEsc: true });
       return;
     }
+    if (t.k === 'route') { routeModal(t, () => { ack(); setTimeout(pumpAsks, 50); }); return; }
     if (t.k === 'freeCast') {
       const want = String(t.filter || 'card');
       const fits = c => !R.isType(c, 'land') && (t.mvMax == null || (+((c.d || {}).cmc) || 0) <= t.mvMax) && (want === 'card' || CD.matchesWhat(Object.assign({}, c, { zone: 'stack' }), want));

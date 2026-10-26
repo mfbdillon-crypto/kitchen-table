@@ -286,7 +286,7 @@
       loyalty: f.loy || f.l || null, keywords: [], costs: [], abilities: [], unknown: []
     };
     const isSpell = m.types.includes('instant') || m.types.includes('sorcery');
-    const lines = stripReminder(C() && C().levelText ? C().levelText(c, (f.o || '') + (c.gained && c.zone === 'battlefield' ? '\n' + c.gained.join('\n') : '')) : (f.o || '')).split('\n').map(x => x.trim()).filter(Boolean);
+    const lines = (C() && C().stripFlavor ? C().stripFlavor : (x => x))(stripReminder(C() && C().levelText ? C().levelText(c, (f.o || '') + (c.gained && c.zone === 'battlefield' ? '\n' + c.gained.join('\n') : '')) : (f.o || ''))).split('\n').map(x => x.trim()).filter(Boolean);
     let modal = null;
     for (let raw of lines) {
       if (modal && /^[•●]/.test(raw)) { modal.modes.push(selfRef(raw.replace(/^[•●]\s*/, ''), name)); continue; }
@@ -305,7 +305,7 @@
         for (const k of kws) {
           m.keywords.push(k);
           if (ALT_COSTS[k.k]) m.costs.push(Object.assign({ kind: k.k, cost: k.param || '', text: line }, ALT_COSTS[k.k]));
-          if (k.k === 'equip' || k.k === 'crew' || k.k === 'reconfigure' || k.k === 'fortify') m.abilities.push({ kind: 'activated', keyword: k.k, cost: k.param, mana: (k.param.match(/\{[^}]+\}/g) || []).join(''), sorcery: k.k !== 'crew', effect: k.k === 'equip' ? 'Attach this to target creature you control.' : k.k === 'crew' ? `Tap untapped creatures with total power ${k.param} or more: this becomes an artifact creature until end of turn.` : line, text: line });
+          if (k.k === 'equip' || k.k === 'crew' || k.k === 'reconfigure' || k.k === 'fortify') m.abilities.push({ kind: 'activated', keyword: k.k, cost: k.param, mana: (k.param.match(/\{[^}]+\}/g) || []).join(''), sorcery: k.k !== 'crew', effect: k.k === 'equip' ? 'Attach this to target creature you control.' : k.k === 'crew' ? 'This becomes an artifact creature until end of turn.' : line, text: line });
           if (k.k === 'cycling' || /cycling$/.test(k.k)) m.abilities.push({ kind: 'activated', keyword: k.k, zone: 'hand', cost: k.param + ', Discard this card', mana: (k.param.match(/\{[^}]+\}/g) || []).join(''), effect: k.k === 'cycling' ? 'Draw a card.' : `Search your library for a ${k.k.replace(/cycling$/, '').trim() || 'land'} card, reveal it, put it into your hand, then shuffle.`, text: line });
         }
         m.abilities.push({ kind: 'keyword', text: line, keywords: kws.map(k => k.k) });
@@ -332,6 +332,7 @@
       const st = parseStatic(line);
       if (st) { m.abilities.push(Object.assign({ text: line, abilityWord }, st, { kind: 'static', sub: st.kind })); continue; }
       if (isSpell) { m.abilities.push({ kind: 'spell', text: line }); continue; }
+      { const al = !isSpell && C() && C().abilityLine ? C().abilityLine(line) : null; if (al) { m.abilities.push({ kind: al.manaAb ? 'mana' : 'activated', text: line, cost: al.cost, effect: al.text, extraCost: al.extra }); continue; } }
       // Vehicles' "Crew N" handled above; the rest of a permanent's text we couldn't place.
       m.abilities.push({ kind: 'static', text: line, unknownStatic: true });
       m.unknown.push(line);

@@ -18,11 +18,12 @@ window.KTPhone = (function () {
   let push = 'hand', chat = null, tab = 'hand', draft = '', chatTo = null;
   let cards = [], info = {}, status = 'connecting', banner = null, bannerT = null, sel = null, client = null, choose = null;
   const bottomSel = new Set();
+  let elsewhere = null, selX = null;   // cards usable from outside the hand, and the one opened
   const send = m => client && client.send(m);
 
   function onMsg(m) {
     if (!m || typeof m !== 'object') return;
-    if (m.t === 'hand') { push = m.push || 'hand'; chat = m.chat || null; if (push !== 'both') tab = push; cards = m.cards || []; info = m.info || {}; if (sel && !cards.some(c => c.id === sel)) sel = null; render(); }
+    if (m.t === 'hand') { push = m.push || 'hand'; chat = m.chat || null; elsewhere = m.elsewhere || null; if (push !== 'both') tab = push; cards = m.cards || []; info = m.info || {}; if (sel && !cards.some(c => c.id === sel)) sel = null; render(); }
     if (m.t === 'choose') { choose = m; sel = null; render(); return; }
     if (m.t === 'banner') {
       banner = m.text; clearTimeout(bannerT);
@@ -121,6 +122,19 @@ window.KTPhone = (function () {
       : 'Waiting for your computer. Keep Kitchen Table open there.'));
     parts.push(strip);
     if (cards.length && info.phase !== 'bottom') parts.push(h('div', { class: 'phint' }, 'Swipe up: lands are played, everything else is cast onto the stack · tap a card to see it big'));
+    // Below the hand: what I can use from elsewhere — rows shown only when something is in them.
+    if (status === 'linked' && elsewhere && info.phase !== 'bottom' && info.phase !== 'deciding') {
+      const ROWS = [['graveyard', 'From your graveyard'], ['exile', 'From exile'], ['top', 'Top of your library'], ['abilities', 'Abilities on the battlefield']];
+      for (const [k, title] of ROWS) {
+        const list = elsewhere[k] || []; if (!list.length) continue;
+        parts.push(h('div', { class: 'prow' }, h('div', { class: 'prowt' }, title), h('div', { class: 'phand small' }, list.map(e => {
+          const banner = e.grants && e.grants.length ? h('span', { class: 'pgrant' }, `${e.ways && e.ways.every(w => /^Play/.test(w.label)) ? 'Playable' : 'Castable'} through ${e.grants.join(' / ')}`) : null;
+          const words = !banner && e.words ? h('span', { class: 'pgrant words' }, e.words) : null;
+          const abil = k === 'abilities' ? h('span', { class: 'pgrant ab' + (e.abilities.every(a => a.why) ? ' off' : '') }, e.abilities.length === 1 ? e.abilities[0].cost : e.abilities.length + ' abilities') : null;
+          return h('div', { class: 'pc' + (e.tapped ? ' tapped' : ''), onclick: () => { selX = { k, id: e.id }; sel = null; render(); } }, h('img', { src: img(e), alt: e.d.n, draggable: false }), banner, words, abil);
+        }))));
+      }
+    }
     if (sel) {
       const c = cards.find(x => x.id === sel);
       if (c) {
@@ -138,6 +152,21 @@ window.KTPhone = (function () {
             b('Top of library', 'top'), b('Bottom of library', 'bottom'),
             b(c.rev ? 'Stop revealing' : 'Reveal to everyone', 'reveal'),
             h('button', { class: 'ghost', onclick: () => { sel = null; render(); } }, 'Close'))));
+      }
+    }
+    if (selX && elsewhere) {
+      const list = elsewhere[selX.k] || [], e = list.find(x => x.id === selX.id);
+      if (!e) selX = null;
+      else {
+        const close = () => { selX = null; render(); };
+        const acts = selX.k === 'abilities'
+          ? e.abilities.map(a => h('button', { class: a.why ? 'ghost' : 'primary', disabled: !!a.why, onclick: () => { send({ t: 'ability', id: e.id, i: a.i }); close(); } }, h('b', null, a.cost + ': '), a.text.length > 80 ? a.text.slice(0, 78) + '…' : a.text, a.why ? h('span', { class: 'muted small' }, ' — ' + a.why) : null))
+          : e.ways.map((w, i) => h('button', { class: 'primary', onclick: () => { send({ t: 'elsewhere', id: e.id, w: i }); close(); } }, w.label + (w.cost && !/free/i.test(w.label) ? ' — ' + w.cost : '')));
+        parts.push(h('div', { class: 'pbig', onclick: ev => { if (ev.target.classList.contains('pbig')) close(); } },
+          h('img', { src: img(e), alt: e.d.n }),
+          h('div', { class: 'pacts' }, h('b', null, e.d.n),
+            e.grants && e.grants.length ? h('div', { class: 'pgrantbig' }, `Castable through ${e.grants.join(' / ')}`) : e.words ? h('div', { class: 'pgrantbig' }, e.words) : null,
+            acts, h('button', { class: 'ghost', onclick: close }, 'Close'))));
       }
     }
     if (choose) {

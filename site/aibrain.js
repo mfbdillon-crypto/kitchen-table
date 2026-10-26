@@ -1553,6 +1553,7 @@
       }
       case 'legend': { const list = ask.ids.map(id => s.cards[id]).filter(Boolean).sort((a, b) => this.value(b) - this.value(a) + (a.tapped - b.tapped)); return { keep: (list[0] || {}).id || ask.ids[ask.ids.length - 1], why: 'keep the better one' }; }
       case 'punisher': return { yes: this.life(me) <= 14, why: this.life(me) <= 14 ? 'too low on life to risk the damage' : 'cards are worth more to them than ~8 damage to me' };
+      case 'pick': { const rank = ['double strike', 'lifelink', 'flying', 'deathtouch', 'first strike', 'trample', 'indestructible', 'hexproof', 'vigilance', 'menace', 'haste', 'reach']; let best = 0, bv = -1; (ask.options || []).forEach((o, i) => { const l = String(o).toLowerCase().replace(/ counters?$/, ''); const v = /\+1\/\+1/.test(l) ? 7 : rank.includes(l) ? rank.length - rank.indexOf(l) : 0; if (v > bv) { bv = v; best = i; } }); return { value: best }; }
       case 'cmdrZone': return { command: true, why: 'my commander is worth more in the command zone' };
       case 'payLife': {
         let life = this.life(me); const ids = [];

@@ -1098,3 +1098,30 @@ button.small { padding: 3px 9px; font-size: 13px; }
 }
 /* while the combat window is open, messages show at the top so they don't cover its buttons */
 body:has(.cpanel:not(.min)) #toasts { top: 64px; bottom: auto; }
+/* how-many picker (X, multikicker, replicate) */
+.cstep { display: flex; align-items: center; gap: 10px; justify-content: center; margin: 8px 0; }
+.cstep button { min-width: 44px; font-size: 20px; padding: 4px 10px; }
+.cstep .cnum { min-width: 48px; text-align: center; font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; }
+/* reveal and route window (about a quarter of the screen) */
+.modal.routewin { width: min(860px, max(52vw, 520px)); }
+.rtcards { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; margin: 8px 0; --cw: 96px; }
+.rtcard { display: grid; justify-items: center; gap: 5px; padding: 6px; border-radius: 10px; background: rgba(0,0,0,.2); border: 1px solid transparent; max-width: 200px; }
+.rtcard.hit { border-color: var(--good); }
+.rtcard.need { border-color: var(--warn); }
+.rtdest { display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; }
+.rtdest .chip { font-size: 12px; padding: 2px 8px; }
+.rtwhy { color: var(--muted); text-align: center; }
+.rtcard.need .rtwhy { color: var(--warn); }
+@media (max-width: 760px) { .modal.routewin { width: 96vw; } .rtcards { --cw: 72px; } }
+/* phone hand: rows for what can be used from outside the hand */
+.prow { margin-top: 4px; border-top: 1px solid rgba(255,255,255,.08); }
+.prowt { font-family: var(--display); color: var(--brass); font-size: 14px; padding: 8px 6px 0; letter-spacing: .03em; }
+.phand.small { padding: 8px 4px 12px; }
+.phand.small .pc { height: min(30vh, 190px); }
+.pc.tapped img { filter: brightness(.6); }
+.pgrant { position: absolute; left: 4px; right: 4px; bottom: 8%; padding: 4px 6px; border-radius: 6px; font-size: 11.5px; font-weight: 700; line-height: 1.2; text-align: center;
+  background: rgba(10, 40, 12, .88); color: #59ff6b; border: 1.5px solid #39ff4f; box-shadow: 0 0 10px rgba(57,255,79,.6); text-shadow: 0 0 6px rgba(57,255,79,.6); }
+.pgrant.words { font-style: italic; }
+.pgrant.ab { color: #ffe08a; border-color: #d1a54b; box-shadow: 0 0 8px rgba(209,165,75,.5); text-shadow: none; background: rgba(40, 30, 6, .88); }
+.pgrant.ab.off { opacity: .55; }
+.pgrantbig { color: #59ff6b; font-weight: 700; border: 1.5px solid #39ff4f; border-radius: 8px; padding: 6px 8px; background: rgba(10,40,12,.6); box-shadow: 0 0 10px rgba(57,255,79,.5); }

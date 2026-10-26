@@ -315,8 +315,28 @@
   };
 
   // ---------------- drawing ----------------
+  // Dredge (702.52): instead of drawing, mill N and return the dredge card from the graveyard to the hand.
+  function dredgeOptions() {
+    if (!G.S || !window.Cards) return [];
+    return Object.values(G.S.cards).filter(c => c.zone === 'graveyard' && c.owner === KEY && c.d).map(c => { const m = window.Cards.rawText(c).match(/(?:^|\n)dredge (\d+)/i); return m ? { id: c.id, name: R.cardName(c), n: +m[1] } : null; }).filter(o => o && P.library.length >= o.n);
+  }
   G.draw = function (n, why) {
     n = Math.max(1, n | 0);
+    if (!AI_ID && G.askDredge && dredgeOptions().length) return drawWithDredge(n, why);
+    return drawNow(n, why);
+  };
+  async function drawWithDredge(n, why) {
+    for (let i = 0; i < n; i++) {
+      const opts = dredgeOptions();
+      const pick = opts.length ? await G.askDredge(opts) : null;
+      if (!pick) { drawNow(1, why); continue; }
+      const o = opts.find(x => x.id === pick); if (!o) { drawNow(1, why); continue; }
+      await G.mill(o.n);
+      await G.move([o.id], 'hand');
+      log(`dredged ${o.name} (milled ${o.n}) instead of drawing`);
+    }
+  }
+  function drawNow(n, why) {
     const got = P.library.splice(0, n);
     P.hand.push(...got);
     { const seen = got.filter(c => (P.revealed || []).some(r => r.top && r.id === c.id)); if (seen.length) { P.revealed = P.revealed.filter(r => !seen.some(c => c.id === r.id)); knowInHand(seen); } }
@@ -372,7 +392,7 @@
     });
     savePriv();
     const land = cards.every(isLand);
-    const r = await act({ type: 'enter', zone, from, cards: send, tapped: !!opts.tapped, pos: opts.pos, row: opts.row, land: !!opts.playLand, tg: opts.tg, mode: opts.mode, x: opts.x, wardPaid: !!opts.wardPaid, fromPool: opts.fromPool, cast: !!opts.cast, alt: opts.alt, via: opts.via, perm: opts.perm, top: opts.top, suspend: opts.suspend || undefined, special: opts.special || undefined, textHint: opts.special === 'foretell' ? (cards[0] && cards[0].d ? (cards[0].d.faces || []).map(f => f.o || '').join('\n').slice(0, 2000) : '') : undefined, sacCost: opts.sacCost, mayPlay: opts.mayPlay, msg: msgFor(zone, Object.assign({ land }, opts), from) });
+    const r = await act({ type: 'enter', zone, from, cards: send, tapped: !!opts.tapped, pos: opts.pos, row: opts.row, land: !!opts.playLand, tg: opts.tg, mode: opts.mode, x: opts.x, kicks: opts.kicks, wardPaid: !!opts.wardPaid, fromPool: opts.fromPool, cast: !!opts.cast, alt: opts.alt, via: opts.via, perm: opts.perm, top: opts.top, suspend: opts.suspend || undefined, special: opts.special || undefined, textHint: opts.special === 'foretell' ? (cards[0] && cards[0].d ? (cards[0].d.faces || []).map(f => f.o || '').join('\n').slice(0, 2000) : '') : undefined, sacCost: opts.sacCost, mayPlay: opts.mayPlay, msg: msgFor(zone, Object.assign({ land }, opts), from) });
     if (r.ok) lastAct = { zone, ids, t: Date.now() };
     if (!r.ok) {
       // Only put the cards back if the table really refused. If we just never heard back, look at the board:
@@ -384,6 +404,14 @@
   }
 
   G.fromHand = (ids, zone, opts) => toPublic(P.hand, ids, zone, opts, 'hand');
+  // Cycling, channel and other abilities used from the hand: the card leaves the hand as the cost is paid.
+  G.handAbility = async function (id, i, tg, x, fromPool) {
+    const cs = take(P.hand, [id]); if (!cs.length) return { ok: false };
+    savePriv();
+    const r = await act({ type: 'handAb', card: { id: cs[0].id, d: cs[0].d }, i, tg, x, fromPool });
+    if (!r.ok && !(r.uncertain && G.S && G.S.cards[cs[0].id])) { P.hand.push(cs[0]); savePriv(); }
+    return r;
+  };
   // Play a land from your hand (counts as your one land for the turn).
   G.playLand = async function (id, tapped) {
     const c = P.hand.find(x => x.id === id); if (!c) return { ok: false };
@@ -406,6 +434,23 @@
   G.attack = list => act({ type: 'attack', list });
   G.block = list => act({ type: 'block', list });
   G.fromLibrary = (ids, zone, opts) => toPublic(P.library, ids, zone, opts, 'library');
+  // Reveal and route: the plan for a 'route' todo from my library, and carrying out the destinations chosen.
+  G.routePlan = t => window.Cards.routePlan(t, P.library, KEY);
+  G.routeApply = async function (t, decisions) {
+    const names = decisions.map(x => (P.library.find(c => c.id === x.id) || {}).d).filter(Boolean).map(d => d.n);
+    if (t.reveal && names.length) log(`${t.src}: revealed ${names.join(', ')}`);
+    else if (t.act === 'look at' && names.length) log(`${t.src}: looked at the top ${names.length} card${names.length > 1 ? 's' : ''} of their library`);
+    const by = to => decisions.filter(x => x.to === to).map(x => x.id);
+    // library first (top stays, bottom moves to the end)
+    const bot = by('bottom'); if (bot.length) { const r = take(P.library, bot); if (decisions.some(x => x.to === 'bottom' && x.random)) shuffle(r); P.library.push(...r); savePriv(); }
+    const hand = by('hand'); if (hand.length) G.libraryToHand(hand, t.src);
+    const bf = decisions.filter(x => x.to === 'battlefield');
+    const bfT = bf.filter(x => x.tapped).map(x => x.id), bfU = bf.filter(x => !x.tapped).map(x => x.id);
+    if (bfU.length) await G.fromLibrary(bfU, 'battlefield', {});
+    if (bfT.length) await G.fromLibrary(bfT, 'battlefield', { tapped: true });
+    const gy = by('graveyard'); if (gy.length) await G.fromLibrary(gy, 'graveyard', {});
+    const ex = by('exile'); if (ex.length) await G.fromLibrary(ex, 'exile', {});
+  };
   // Cascade (702.85): exile from the top until a nonland card with lesser mana value; it may be cast free; the rest go to the bottom in a random order.
   G.cascadeReveal = function (mv, top) {
     if (top) { const c = P.library.shift(); if (!c) return null; P.hand.push(c); savePriv(); log(`revealed ${c.d.n} from the top of their library`); return !isLand(c) && (+c.d.cmc || 0) < mv ? c : null; }
@@ -720,6 +765,7 @@
     if (P.autoDrew === k) return;
     P.autoDrew = k;
     if (P.skipDraw) { P.skipDraw = false; savePriv(true); log('skipped their draw this turn'); return; }
+    if (Object.values(G.S.cards).some(o => o.zone === 'battlefield' && o.ctrl === KEY && !o.faceDown && o.d && /(?:^|\n)skip your draw step/i.test(window.Cards.text(o)))) { savePriv(true); log('skipped their draw step'); return; }
     // 103.8a: in a two-player game the starting player skips their first draw.
     if (G.S.seats.length === 2 && T.n === 1 && T.first === KEY && !houseR().firstDraws) { savePriv(true); log('skipped their first draw (two-player game)'); return; }
     G.draw(1, 'drew a card for the turn');
@@ -808,6 +854,7 @@
       t: 'hand',
       push, chat,
       cards: push === 'chat' ? [] : P.hand.map(c => ({ id: c.id, d: c.d, land: isLand(c), rev: G.isRevealed(c.id) })),
+      elsewhere: push === 'chat' ? null : phoneElsewhere(),
       info: {
         prio: phonePrio(),
         name: m ? m.name : '', life: m ? m.life : 0, lib: P.library.length,
@@ -816,6 +863,28 @@
         over: G.S && G.S.winner ? (G.S.winner === 'draw' ? '🤝 The game is a draw' : G.S.winner === KEY ? '🏆 You win!' : `🏆 ${R.nameOf(G.S, G.S.winner)} wins the game`) : m && m.lost ? `You’re out — ${m.lost.why}` : ''
       }
     });
+  }
+  // What I can use from outside my hand, for the phone's extra rows: graveyard and exile cards I may cast or play (with the
+  // words that allow it, or the card that grants it), the top of my library, and activated abilities on my permanents.
+  const GRANT_WORDS = /(?:^|\n)((?:flashback|escape|unearth|embalm|eternalize|encore|disturb|jump-start|retrace|aftermath|foretell|plot|scavenge|madness|harmonize|warp|airbend)\b[^\n]*)/i;
+  function phoneElsewhere() {
+    const s = G.S; if (!s || !s.turn || !s.turn.active || !window.Rulebook) return null;
+    const out = { graveyard: [], exile: [], top: [], abilities: [] };
+    const entry = (c, zone, ways) => {
+      const grants = [...new Set(ways.filter(w => w.via && /^perm:/.test(w.via)).map(w => (w.label.match(/\(([^)]+)\)$/) || [])[1]).filter(Boolean))];
+      const words = (String((c.d.faces[c.face || 0] || c.d.faces[0]).o || '').match(GRANT_WORDS) || [])[1] || '';
+      return { id: c.id, d: c.d, zone, ways: ways.map(w => ({ label: w.label || w.kind, cost: w.cost || '' })), grants, words };
+    };
+    try {
+      for (const c of Object.values(s.cards)) {
+        if (!c.d || c.faceDown) continue;
+        if ((c.zone === 'graveyard' || c.zone === 'exile') && (c.owner === KEY || (c.exPerm && c.exPerm.by === KEY) || c.mayPlay)) { const w = window.Rulebook.ways(s, KEY, c); if (w.length) out[c.zone].push(entry(c, c.zone, w)); }
+        if (c.zone === 'battlefield' && c.ctrl === KEY) { const abs = window.Cards.abilities(c).map((a, i) => ({ a, i })).filter(x => !x.a.manaAb); if (abs.length) out.abilities.push({ id: c.id, d: c.d, face: c.face || 0, tapped: !!c.tapped, abilities: abs.map(x => ({ i: x.i, cost: x.a.cost, text: x.a.text, why: G.abilityProblem ? G.abilityProblem(c, x.a) : null })) }); }
+      }
+      const top = G.myTopCard && G.myTopCard();
+      if (top) { const w = window.Rulebook.ways(s, KEY, top, { top: true }); if (w.length) out.top.push(Object.assign(entry(top, 'library', w), { id: '__top' })); }
+    } catch (e) { return null; }
+    return out;
   }
   function phoneBanner(text) { if (G.phone && G.phone.linked) G.phone.send({ t: 'banner', text: String(text).replace(/use the Move to option\./, 'tap the card and use the Move to option.') }); }
   function phonePrio() {
@@ -841,9 +910,17 @@
   async function castFromPhone(id) {
     const c = P.hand.find(x => x.id === id); if (!c) return;
     const card = { id: c.id, owner: KEY, ctrl: KEY, d: c.d, zone: 'hand', counters: {}, face: 0 };
+    const pk = await phonePicks(card); if (!pk) return;
+    const cst = window.Cards.costOf(card); if (pk.wardPaid) cst.g += pk.wardMana;
+    if (G.autoPay && !(await G.autoPay(card, pk.x, cst))) { phoneBanner('Not enough untapped mana to pay for it automatically.'); return; }
+    await G.castFromHand(id, { tg: pk.tg.length ? pk.tg : undefined, mode: pk.mode || undefined, x: pk.x || undefined, wardPaid: pk.wardPaid || undefined, fromPool: G.lastFromPool });
+  }
+  // Modes, X, targets and ward for a card being cast from the phone: asked one at a time on the phone.
+  async function phonePicks(card, text) {
+    const c = card;
     const CD = window.Cards;
     let mode = null, x = 0;
-    const md = CD.modesOf(card);
+    const md = text ? null : CD.modesOf(card);
     if (md) {
       const n = md.pick === 'many' ? 1 : md.pick || 1;
       const picks = [];
@@ -853,7 +930,7 @@
       }
       mode = picks;
     }
-    if (CD.costOf(card).x) { const v = await phoneAsk(`${c.d.n}: choose X`, Array.from({ length: 13 }, (_, k) => ({ label: String(k), value: k }))); if (v == null) return; x = v; }
+    if (!text && CD.costOf(card).x) { const v = await phoneAsk(`${c.d.n}: choose X`, Array.from({ length: 13 }, (_, k) => ({ label: String(k), value: k }))); if (v == null) return; x = v; }
     const reqs = CD.targetReqs(card, mode);
     const tg = [];
     // Every target is chosen as the spell is cast (601.2c); a spell that needs a target it can't get stays in hand.
@@ -886,9 +963,38 @@
       if (v == null) return;
       wardPaid = v === 'pay';
     }
-    const cst = CD.costOf(card); if (wardPaid) cst.g += wardMana;
-    if (G.autoPay && !(await G.autoPay(card, x, cst))) { phoneBanner('Not enough untapped mana to pay for it automatically.'); return; }
-    await G.castFromHand(id, { tg: reqs.length ? tg : undefined, mode: mode || undefined, x: x || undefined, wardPaid: wardPaid || undefined, fromPool: G.lastFromPool });
+    return { mode, x, tg, wardPaid, wardMana };
+  }
+  // From the phone: cast or play a card from the graveyard, exile or the top of the library, the way the computer offered it.
+  async function playElsewhereFromPhone(cid, wi) {
+    const s = G.S, c = cid === '__top' ? (G.myTopCard && G.myTopCard()) : s.cards[cid]; if (!c) return;
+    const ways = window.Rulebook.ways(s, KEY, c, { top: c.zone === 'library' }); const w = ways[wi | 0]; if (!w) { phoneBanner(`${R.cardName(c)} can’t be played right now.`); return; }
+    if (w.act === 'play') { if (c.zone === 'library') await G.fromLibrary([c.id], 'battlefield', { playLand: true, perm: w.via }); else { const r = await act({ type: 'move', ids: [c.id], to: 'battlefield', playLand: true, perm: w.via }); if (r && r.ok === false && r.err) phoneBanner(r.err); } return; }
+    const card = Object.assign({}, c, { zone: c.zone === 'library' ? 'library' : c.zone });
+    const pk = await phonePicks(card); if (!pk) return;
+    const base = w.kind === 'normal' || w.kind === 'free' ? window.Cards.costOf(card) : window.Cards.parseCost((String(w.cost || '').match(/\{[^}]+\}/g) || []).join(''));
+    if (w.kind === 'free') for (const k of ['g', 'W', 'U', 'B', 'R', 'G', 'C', 'x']) base[k] = 0;
+    if (pk.wardPaid) base.g += pk.wardMana;
+    if (G.autoPay && !(await G.autoPay(card, pk.x, base))) { phoneBanner('Not enough untapped mana to pay for it automatically.'); return; }
+    const opts = { tg: pk.tg.length ? pk.tg : undefined, mode: pk.mode || undefined, x: pk.x || undefined, wardPaid: pk.wardPaid || undefined, fromPool: G.lastFromPool, alt: w.kind === 'normal' ? undefined : w.kind, perm: w.via };
+    const r = c.zone === 'library' ? await G.castFromLibrary(c.id, opts) : await G.castPublic(c.id, opts);
+    if (r && r.ok === false && r.err) phoneBanner(r.err);
+  }
+  // From the phone: an activated ability of one of my permanents.
+  async function activateFromPhone(cid, i) {
+    const s = G.S, c = s.cards[cid]; if (!c) return;
+    const ab = window.Cards.abilities(c)[i | 0]; if (!ab) return;
+    const why = G.abilityProblem ? G.abilityProblem(c, ab) : null; if (why) { phoneBanner(`${R.cardName(c)}: ${why}.`); return; }
+    const reqs = window.Cards.targetsIn(ab.text);
+    let tg;
+    if (reqs.length) { const pk = await phonePicks(Object.assign({}, c, { d: { n: R.cardName(c), faces: [{ n: R.cardName(c), t: 'Instant', o: ab.text }] } }), ab.text); if (!pk) return; tg = pk.tg; }
+    let x = 0; if (ab.mana && ab.mana.x) { const v = await phoneAsk(`${R.cardName(c)}: choose X`, Array.from({ length: 13 }, (_, k) => ({ label: String(k), value: k }))); if (v == null) return; x = v; }
+    const extra = {};
+    if (ab.sacOther) { const pool = Object.values(s.cards).filter(o => o.zone === 'battlefield' && o.ctrl === KEY && (!/another/i.test(ab.cost) || o.id !== c.id) && window.Cards.matchesWhat(o, ab.sacOther)); const v = await phoneAsk(`${R.cardName(c)}: sacrifice ${ab.sacOther}`, pool.map(o => ({ label: R.cardName(o), value: o.id }))); if (v == null) return; extra.sac = v; }
+    if (ab.extra) { extra.costs = []; for (const part of ab.extra) { if (!['bounce', 'untap', 'tapOther', 'exileGy', 'sacN'].includes(part.k) || part.self) { extra.costs.push([]); continue; } const pool = window.Cards.costPool(s, c, part); const picked = []; for (let n = 0; n < part.n; n++) { const v = await phoneAsk(`${R.cardName(c)}: cost — choose ${part.what} (${n + 1} of ${part.n})`, pool.filter(id => !picked.includes(id)).map(id => ({ label: R.cardName(s.cards[id]), value: id }))); if (v == null) return; picked.push(v); } extra.costs.push(picked); } }
+    if (window.Cards.costTotal(ab.mana, x) && G.autoPay && !(await G.autoPay(c, x, JSON.parse(JSON.stringify(ab.mana))))) { phoneBanner('Not enough untapped mana.'); return; }
+    const r = await act(Object.assign({ type: 'activate', id: c.id, i: i | 0, tg, x, fromPool: G.lastFromPool }, extra));
+    if (r && r.ok === false && r.err) phoneBanner(r.err);
   }
   G.phoneSync = phoneSync;
 
@@ -912,6 +1018,8 @@
       else if (h === 'top' || h === 'bottom') G.handToLibrary([id], h);
       else if (h === 'reveal') G.toggleReveal(id);
     }
+    if (m.t === 'elsewhere' && typeof m.id === 'string') { playElsewhereFromPhone(m.id, m.w); return; }
+    if (m.t === 'ability' && typeof m.id === 'string') { activateFromPhone(m.id, m.i); return; }
     if (m.t === 'draw') G.draw(1);
     if (m.t === 'chat' && typeof m.text === 'string' && m.text.trim()) { const ais = G.S.seats.filter(p => G.S.players[p] && G.S.players[p].ai); const to = ais.includes(m.to) ? m.to : ais[0]; if (to) act({ type: 'aiAsk', to, text: m.text.trim().slice(0, 300) }); }
     if (m.t === 'opening') G.openingHand();

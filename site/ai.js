@@ -44,6 +44,7 @@
     handToTop: ids => G.handToLibrary(ids, 'top'),
     impulse: t => G.impulse(t),
     digFind: t => G.digFind(t),
+    routePlan: t => G.routePlan(t), routeApply: (t, d) => G.routeApply(t, d),
     digFinish: (t, hits, rest, dest) => G.digFinish(t, hits, rest, dest),
     fromHand: (ids, zone, o) => G.fromHand(ids, zone, o),
     move: (ids, to, extra) => G.move(ids, to, null, extra),
