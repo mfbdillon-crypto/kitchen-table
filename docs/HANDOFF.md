@@ -8,6 +8,13 @@
 - Older browser tests (views, decks_ui, ux_fixes, table_strict, ui_stack, counters, looks) time out because of the changed menus; phone.mjs has been fixed, the rest still need updating.
 
 
+## Browser storage (v8.9, 19:50)
+The user couldn't add players because the browser's storage was full.
+- **Clean start:** opening a table code different from the last one (a new table, or joining someone else's) clears this browser's decks, AI players, saved games and pictures. Kept: name, player key, phone links and preferences (`KEEP` in game.js).
+- **Compact storage:** `LS.set` / `LS.raw.set` keep each card's data and each sleeve or playmat picture once, in a shared catalogue `kt:cat`, and store `{ $r: key }` references in their place. `LS.get` puts the full objects back.
+  - `LS.prune()` drops unused catalogue entries; it runs when a deck is deleted and when a save fails.
+  - Measured with 3 decks, 2 AIs and a game: 432 KB → 195 KB. Each extra AI or saved game is now about 10 KB instead of about 100 KB.
+
 ## PLAYTEST LOOP (started 15:57) — continue here
 The user asked for this loop:
 1. A fresh agent plays ONE game as a human against the AI in the browser (local server). It uses the dev tools, the logs and the AI trace to check that every move is legal and every option that should be offered was offered.
@@ -75,7 +82,7 @@ The agent prompt is in this session's history (the "Play one game as human vs AI
 - The 4-player AI sweep is clean: no errors or stalls. Games last about 40 turns (≈10 rounds), which is normal.
 
 ## Where things stand
-- Live and test sites both run **v8.8** (see version.txt).
+- Live and test sites both run **v8.9** (see version.txt).
   - Live: starlit-conkies-c2facb.netlify.app (siteId 12ee5b76-1741-480c-8f66-9a4f87d4af69)
   - Test: joyful-rabanadas-f66e6c.netlify.app (siteId 5236eb56-b402-43c4-a92f-1aac62cc691d)
 - The engine revision (docs/ENGINE_REVISION_PLAN.md) is built: stages 1–4 plus the follow-up mechanics.

@@ -10,11 +10,55 @@
   // with its own storage space so it never touches that person's decks, hand or identity.
   const AI_ID = params.get('m') === 'ai' ? (params.get('ai') || '').replace(/[^\w]/g, '').slice(0, 20) : '';
   const NS = AI_ID ? 'ai:' + AI_ID + ':' : '';
+  // Compact storage: every card (and every sleeve/playmat picture) is kept ONCE in a shared catalogue ('kt:cat'), and decks,
+  // saved games and the AI players' copies hold only short references to it — so three AIs and a few decks don't fill the
+  // browser's ~5 MB. Reading puts the full objects back, so the rest of the code never sees the difference.
+  const CAT_KEY = 'kt:cat';
+  let CAT = null;
+  const catLoad = () => { try { CAT = JSON.parse(localStorage.getItem(CAT_KEY) || '{}') || {}; } catch (e) { CAT = {}; } return CAT; };
+  const hashStr = str => { let h1 = 0x811c9dc5, h2 = 0x01000193; for (let i = 0; i < str.length; i++) { const c = str.charCodeAt(i); h1 = Math.imul(h1 ^ c, 16777619); h2 = Math.imul(h2 + c, 2246822519) ^ (h2 >>> 13); } return (h1 >>> 0).toString(36) + (h2 >>> 0).toString(36); };
+  function pack(v, added) {
+    if (typeof v === 'string') { if (v.length > 2000 && /^data:/.test(v)) { const k = 'i' + hashStr(v); if (!(CAT || catLoad())[k]) { CAT[k] = v; added.push(k); } return { $r: k }; } return v; }
+    if (!v || typeof v !== 'object') return v;
+    if (Array.isArray(v)) return v.map(x => pack(x, added));
+    if (Array.isArray(v.faces) && typeof v.n === 'string') {   // a card's data (d)
+      const str = JSON.stringify(v), k = 'c' + hashStr(str);
+      if (!(CAT || catLoad())[k]) { CAT[k] = v; added.push(k); }
+      return { $r: k };
+    }
+    const o = {}; for (const key of Object.keys(v)) o[key] = pack(v[key], added); return o;
+  }
+  function unpack(v) {
+    if (!v || typeof v !== 'object') return v;
+    if (Array.isArray(v)) return v.map(unpack);
+    if (typeof v.$r === 'string' && Object.keys(v).length === 1) {
+      let x = (CAT || catLoad())[v.$r]; if (x === undefined) x = catLoad()[v.$r];   // another frame (an AI) may have added it
+      return x === undefined ? null : (typeof x === 'string' ? x : structuredClone(x));
+    }
+    const o = {}; for (const key of Object.keys(v)) o[key] = unpack(v[key]); return o;
+  }
+  function catSave(added) {
+    if (!added.length) return true;
+    const mine = {}; for (const k of added) mine[k] = CAT[k];
+    catLoad(); Object.assign(CAT, mine);   // merge with what other frames wrote meanwhile
+    try { localStorage.setItem(CAT_KEY, JSON.stringify(CAT)); return true; } catch (e) { return false; }
+  }
+  // Drop catalogue entries nothing refers to any more (after decks are deleted or old games are wiped).
+  function catPrune() {
+    try {
+      const used = new Set();
+      for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (!k || k === CAT_KEY) continue; const v = localStorage.getItem(k) || ''; if (v.indexOf('"$r"') < 0) continue; for (const m of v.matchAll(/"\$r":"([a-z0-9]+)"/g)) used.add(m[1]); }
+      catLoad(); let n = 0; for (const k of Object.keys(CAT)) if (!used.has(k)) { delete CAT[k]; n++; }
+      if (n) localStorage.setItem(CAT_KEY, JSON.stringify(CAT));
+    } catch (e) { /* storage blocked */ }
+  }
+  const MEMO = new Map();   // big values already unpacked (decks are read on every redraw)
   const LS = {
-    get(k, d) { try { const v = localStorage.getItem(NS + k); return v ? JSON.parse(v) : d; } catch (e) { return d; } },
-    set(k, v) { try { localStorage.setItem(NS + k, JSON.stringify(v)); return true; } catch (e) { return false; } },
+    get(k, d) { try { const v = localStorage.getItem(NS + k); if (!v) return d; const c = MEMO.get(k); if (c && c.raw === v) return structuredClone(c.val); const val = unpack(JSON.parse(v)); if (v.length > 4000) MEMO.set(k, { raw: v, val: structuredClone(val) }); return val; } catch (e) { return d; } },
+    set(k, v) { try { const added = []; const packed = pack(v, added); if (!catSave(added)) return false; localStorage.setItem(NS + k, JSON.stringify(packed)); return true; } catch (e) { return false; } },
     del(k) { try { localStorage.removeItem(NS + k); } catch (e) {} },
-    raw: { get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch (e) { return false; } }, del(k) { try { localStorage.removeItem(k); } catch (e) {} } }
+    prune: () => catPrune(),
+    raw: { get(k, d) { try { const v = localStorage.getItem(k); return v ? unpack(JSON.parse(v)) : d; } catch (e) { return d; } }, set(k, v) { try { const added = []; const packed = pack(v, added); if (!catSave(added)) return false; localStorage.setItem(k, JSON.stringify(packed)); return true; } catch (e) { return false; } }, del(k) { try { localStorage.removeItem(k); } catch (e) {} } }
   };
 
   // The table code: from the link, else the last table this browser played at, else a new one (kept in the address bar
@@ -27,7 +71,20 @@
     try { history.replaceState(null, '', location.pathname + '?t=' + encodeURIComponent(tParam) + location.hash); } catch (e) { /* the code still works */ }
   }
   const TABLE = (tParam || 'main').replace(/[^\w-]/g, '').slice(0, 40) || 'main';
-  if (!params.get('m') && !params.get('ai')) { try { localStorage.setItem('kt:lastTable', JSON.stringify(TABLE)); } catch (e) {} }
+  // A new table (or another one) in this browser: start clean. Decks, AI players, saved games and pictures are all removed —
+  // they're what fills the browser's storage — and are loaded again for the new table. Only small settings stay: your name,
+  // your player key, linked phones and your preferences.
+  const KEEP = /^kt:(ident|name|phoneSecret|phones|phoneDev|autopass|autopay|bview|layout|rotate|lastTable)$/;
+  function freshStart() {
+    try {
+      for (let i = localStorage.length - 1; i >= 0; i--) { const k = localStorage.key(i); if (k && (/^ai:/.test(k) || (/^kt:/.test(k) && !KEEP.test(k)))) localStorage.removeItem(k); }
+    } catch (e) { /* storage blocked */ }
+  }
+  if (!params.get('m') && !params.get('ai')) {
+    let prev = null; try { prev = JSON.parse(localStorage.getItem('kt:lastTable') || 'null'); } catch (e) {}
+    if (prev !== TABLE) freshStart();
+    try { localStorage.setItem('kt:lastTable', JSON.stringify(TABLE)); } catch (e) {}
+  }
   // Old tables' games are wiped from this browser when you sit at another one (they can't be brought back).
   function wipeOtherTables() {
     try {
@@ -161,7 +218,7 @@
 
   // ---------------- decks (saved on this device) ----------------
   G.decks = () => LS.get('kt:decks', []);
-  G.saveDecks = list => { const ok = LS.set('kt:decks', list); if (!ok) G.toast('Your browser storage is full. Delete a deck or use smaller sleeve or playmat pictures.', 'err'); return ok; };
+  G.saveDecks = list => { let ok = LS.set('kt:decks', list); if (!ok) { LS.prune(); ok = LS.set('kt:decks', list); } else if (list.length < (G._deckN || 0)) LS.prune(); G._deckN = list.length; if (!ok) G.toast('Your browser storage is full. Delete a deck or use smaller sleeve or playmat pictures — or start a new table, which clears this browser’s saved decks and games.', 'err'); return ok; };
 
   // What everyone sees for your seat: sleeve, playmat and color palette.
   G.lookOf = deck => deck ? { sleeve: deck.sleeve || null, mat: deck.mat || null, palette: deck.palette || 'felt' } : null;
